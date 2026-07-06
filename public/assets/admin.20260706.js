@@ -4,6 +4,7 @@ const state = {
   posts: [],
   pages: [],
   categories: [],
+  media: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -69,6 +70,7 @@ function bindForms() {
   $("[data-post-form]").addEventListener("submit", savePost);
   $("[data-page-form]").addEventListener("submit", savePage);
   $("[data-category-form]").addEventListener("submit", saveCategory);
+  $("[data-media-form]").addEventListener("submit", saveMedia);
   $("[data-delete-post]").addEventListener("click", () => removeResource("posts", $("[data-post-form]")));
   $("[data-delete-page]").addEventListener("click", () => removeResource("pages", $("[data-page-form]")));
   $("[data-delete-category]").addEventListener("click", () => removeResource("categories", $("[data-category-form]")));
@@ -92,6 +94,10 @@ async function loadAll() {
   if (state.activeTab === "categories") {
     state.categories = (await api("/api/admin/categories")).categories;
     renderList("category", state.categories);
+  }
+  if (state.activeTab === "media") {
+    state.media = (await api("/api/admin/media")).media;
+    renderMediaList();
   }
 }
 
@@ -153,6 +159,53 @@ async function saveCategory(event) {
   await saveResource("categories", event.currentTarget);
 }
 
+async function saveMedia(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(event.currentTarget));
+  delete body.id;
+  await api("/api/admin/media", {
+    method: "POST",
+    body,
+  });
+  resetCurrentForm();
+  await loadAll();
+}
+
+function renderMediaList() {
+  const list = $("[data-media-list]");
+  list.replaceChildren();
+
+  for (const item of state.media) {
+    const button = document.createElement("button");
+    const thumb = document.createElement("span");
+    const details = document.createElement("span");
+    const title = document.createElement("strong");
+    const url = document.createElement("code");
+    const meta = document.createElement("span");
+
+    button.type = "button";
+    button.className = "list-item media-list-item";
+    thumb.className = "media-thumb";
+    details.className = "media-details";
+    title.textContent = item.filename || item.url || "Untitled";
+    url.textContent = item.url || "";
+    meta.textContent = [item.contentType, item.alt].filter(Boolean).join(" / ");
+
+    if (item.url) {
+      const image = document.createElement("img");
+      image.src = item.url;
+      image.alt = item.alt || item.filename || "";
+      image.loading = "lazy";
+      thumb.append(image);
+    }
+
+    details.append(title, url, meta);
+    button.append(thumb, details);
+    button.addEventListener("click", () => fillForm("media", item));
+    list.append(button);
+  }
+}
+
 async function saveResource(collection, form) {
   const body = Object.fromEntries(new FormData(form));
   const id = body.id;
@@ -202,6 +255,7 @@ function singular(collection) {
   if (collection === "posts") return "post";
   if (collection === "pages") return "page";
   if (collection === "categories") return "category";
+  if (collection === "media") return "media";
   return collection;
 }
 

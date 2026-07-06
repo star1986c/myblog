@@ -37,7 +37,6 @@ import {
 } from "./blog-render.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
-const MAX_MEDIA_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
@@ -47,7 +46,7 @@ const SECURITY_HEADERS = {
     "frame-ancestors 'none'",
     "script-src 'self'",
     "style-src 'self'",
-    "img-src 'self' data:",
+    "img-src 'self' data: https: http:",
     "font-src 'self'",
     "connect-src 'self'",
     "worker-src 'self'",
@@ -77,10 +76,6 @@ async function handleRequest(request, env) {
 
     if (url.pathname.startsWith("/api/")) {
       return withSiteHeaders(request, await handleApiRequest(request, env));
-    }
-
-    if (url.pathname.startsWith("/media/")) {
-      return withSiteHeaders(request, await handleMediaRequest(request, env));
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -302,93 +297,11 @@ async function handleAdminApi(request, env, path) {
       return jsonResponse({ media: await listMediaAssets(db) });
     }
     if (request.method === "POST") {
-      return await handleMediaUpload(request, env, db);
+      return jsonResponse({ media: await createMediaAsset(db, await readJson(request)) }, { status: 201 });
     }
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
-}
-
-async function handleMediaUpload(request, env, db) {
-  if (!env.MEDIA_BUCKET) {
-    return jsonResponse({ error: "Media bucket is not configured." }, { status: 503 });
-  }
-
-  const formData = await request.formData();
-  const file = formData.get("file");
-  if (!file || typeof file.name !== "string" || typeof file.stream !== "function") {
-    return jsonResponse({ error: "A file field is required." }, { status: 400 });
-  }
-
-  if (file.size > MAX_MEDIA_UPLOAD_BYTES) {
-    return jsonResponse({ error: "File is too large." }, { status: 413 });
-  }
-
-  const date = new Date();
-  const ext = extensionFromFilename(file.name);
-  const key = [
-    "media",
-    String(date.getUTCFullYear()),
-    String(date.getUTCMonth() + 1).padStart(2, "0"),
-    `${crypto.randomUUID()}${ext}`,
-  ].join("/");
-  const contentType = file.type || "application/octet-stream";
-
-  await env.MEDIA_BUCKET.put(key, file.stream(), {
-    httpMetadata: {
-      contentType,
-    },
-  });
-
-  const media = await createMediaAsset(db, {
-    key,
-    filename: file.name,
-    contentType,
-    size: file.size,
-    alt: formData.get("alt") || "",
-  });
-
-  return jsonResponse({ media, url: `/media/${key}` }, { status: 201 });
-}
-
-async function handleMediaRequest(request, env) {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return new Response("Method Not Allowed", {
-      status: 405,
-      headers: {
-        Allow: "GET, HEAD",
-        "Cache-Control": "no-store",
-        "Content-Type": "text/plain; charset=utf-8",
-      },
-    });
-  }
-
-  if (!env.MEDIA_BUCKET) {
-    return new Response("Media bucket is not configured.", {
-      status: 503,
-      headers: {
-        "Cache-Control": "no-store",
-        "Content-Type": "text/plain; charset=utf-8",
-      },
-    });
-  }
-
-  const key = decodeURIComponent(new URL(request.url).pathname.slice("/media/".length));
-  const object = await env.MEDIA_BUCKET.get(key);
-  if (!object) {
-    return new Response("Not Found", {
-      status: 404,
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-      },
-    });
-  }
-
-  const headers = new Headers();
-  object.writeHttpMetadata?.(headers);
-  headers.set("ETag", object.httpEtag || object.etag || "");
-  headers.set("Cache-Control", "public, max-age=3600, s-maxage=86400");
-  return new Response(request.method === "HEAD" ? null : object.body, { headers });
 }
 
 async function renderBlogIndexResponse(request, env) {
@@ -542,11 +455,6 @@ function trimTrailingSlash(path) {
 
 function trimSlashes(path) {
   return path.replace(/^\/+|\/+$/g, "");
-}
-
-function extensionFromFilename(filename) {
-  const match = String(filename).toLowerCase().match(/\.[a-z0-9]{1,12}$/);
-  return match ? match[0] : "";
 }
 
 export { cacheControlFor, withSiteHeaders };

@@ -17,6 +17,7 @@
           <button class="tab is-active" type="button" data-tab="posts">文章</button>
           <button class="tab" type="button" data-tab="pages">页面</button>
           <button class="tab" type="button" data-tab="categories">分类</button>
+          <button class="tab" type="button" data-tab="media">媒体</button>
         </nav>
         <button class="logout" type="button" data-logout hidden>退出</button>
       </aside>
@@ -165,6 +166,34 @@
                 <div class="actions">
                   <button class="primary" type="submit">保存分类</button>
                   <button type="button" data-delete-category>删除</button>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <section class="panel" data-panel="media">
+            <div class="split compact">
+              <div class="list" data-media-list></div>
+              <form class="editor" data-media-form>
+                <input name="id" type="hidden" />
+                <label>
+                  媒体地址
+                  <input name="url" type="url" required />
+                </label>
+                <label>
+                  文件名
+                  <input name="filename" />
+                </label>
+                <label>
+                  Content-Type
+                  <input name="contentType" />
+                </label>
+                <label>
+                  Alt
+                  <input name="alt" />
+                </label>
+                <div class="actions">
+                  <button class="primary" type="submit">保存媒体地址</button>
                 </div>
               </form>
             </div>

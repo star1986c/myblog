@@ -4,10 +4,12 @@ import worker from "../src/worker.js";
 import { signSession } from "../src/auth.js";
 
 class FakeD1 {
-  constructor({ posts = [], pages = [] } = {}) {
+  constructor({ posts = [], pages = [], media = [] } = {}) {
     this.posts = posts;
     this.pages = pages;
+    this.media = media;
     this.insertedPosts = [];
+    this.insertedMedia = [];
   }
 
   prepare(sql) {
@@ -28,6 +30,10 @@ class FakeStatement {
   }
 
   async all() {
+    if (this.sql.includes("FROM media_assets")) {
+      return { results: this.db.media };
+    }
+
     if (this.sql.includes("FROM pages") && this.sql.includes("visibility = 'public'")) {
       return {
         results: this.db.pages.filter(
@@ -66,6 +72,19 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.startsWith("INSERT INTO media_assets")) {
+      const [id, objectKey, url, filename, contentType, size, alt] = this.params;
+      this.db.insertedMedia.push({
+        id,
+        objectKey,
+        url,
+        filename,
+        contentType,
+        size,
+        alt,
+      });
+    }
+
     if (this.sql.startsWith("INSERT INTO posts")) {
       const [
         id,
@@ -218,4 +237,37 @@ test("admin-created posts default to draft and private", async () => {
   assert.equal(db.insertedPosts[0].status, "draft");
   assert.equal(db.insertedPosts[0].visibility, "private");
   assert.equal(db.insertedPosts[0].slug, "hidden-first-draft");
+});
+
+test("admin media records use a manually entered URL without R2", async () => {
+  const db = new FakeD1();
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "csrf-token",
+    now: 1_800_000_000_000,
+  });
+
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/media", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "csrf-token",
+      },
+      body: JSON.stringify({
+        url: "https://cdn.example.com/hero.png",
+        alt: "Hero image",
+      }),
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 201);
+  assert.equal(db.insertedMedia.length, 1);
+  assert.equal(db.insertedMedia[0].url, "https://cdn.example.com/hero.png");
+  assert.equal(db.insertedMedia[0].objectKey, "https://cdn.example.com/hero.png");
+  assert.equal(db.insertedMedia[0].filename, "hero.png");
 });

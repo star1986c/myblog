@@ -10,7 +10,7 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
 - Adds `favicon.svg`, `sitemap.xml`, and a robots file with AI crawler signals.
 - Adds a standalone JSON formatter at `/json/`.
 - Adds a standalone blog admin console at `/admin/`, public blog pages under `/blog/`,
-  and D1-backed content storage.
+  D1-backed content storage, and manually entered media URL records.
 - Keeps the Worker name as `wispy-cloud-0978`, matching the current Cloudflare custom domain binding.
 
 ## Local commands
@@ -51,8 +51,8 @@ npx wrangler secret put SESSION_SECRET
 New articles and pages default to `draft` and `private`. A public page only shows
 content where `status = published` and `visibility = public`.
 
-Media uploads are intentionally disabled in the initial deployment so R2 is not
-required. Add an R2 bucket binding later before enabling `/api/admin/media`.
+Media records use manually entered URLs, so R2 is not required for the blog
+admin or production deployment.
 
 ## Deploy
 

@@ -1,4 +1,5 @@
 import {
+  isManualMediaUrl,
   normalizeArticleInput,
   normalizeCategoryInput,
   normalizeMediaInput,
@@ -47,7 +48,8 @@ const CATEGORY_COLUMNS = [
 
 const MEDIA_COLUMNS = [
   "id",
-  "object_key AS key",
+  "object_key AS objectKey",
+  "COALESCE(NULLIF(url, ''), object_key) AS url",
   "filename",
   "content_type AS contentType",
   "size",
@@ -340,19 +342,23 @@ async function listMediaAssets(db) {
 
 async function createMediaAsset(db, input) {
   const media = normalizeMediaInput(input);
+  if (!isManualMediaUrl(media.url)) {
+    throw new ServiceError("Media URL must be an http(s) URL or same-origin path.", 400);
+  }
+
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
   await db
     .prepare(
       `INSERT INTO media_assets (
-        id, object_key, filename, content_type, size, alt, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        id, object_key, url, filename, content_type, size, alt, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, media.key, media.filename, media.contentType, media.size, media.alt, now)
+    .bind(id, media.url, media.url, media.filename, media.contentType, media.size, media.alt, now)
     .run();
 
-  return { id, ...media, createdAt: now };
+  return { id, objectKey: media.url, ...media, createdAt: now };
 }
 
 class ServiceError extends Error {

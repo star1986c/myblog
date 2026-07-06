@@ -45,13 +45,49 @@ function normalizeCategoryInput(input = {}) {
 }
 
 function normalizeMediaInput(input = {}) {
+  const url = cleanText(input.url || input.key);
+  const size = Number(input.size);
+
   return {
-    key: cleanText(input.key),
-    filename: cleanText(input.filename),
+    url,
+    filename: cleanText(input.filename) || filenameFromUrl(url),
     contentType: cleanText(input.contentType) || "application/octet-stream",
-    size: Number.isFinite(input.size) ? input.size : 0,
+    size: Number.isFinite(size) ? size : 0,
     alt: cleanText(input.alt),
   };
+}
+
+function isManualMediaUrl(value) {
+  const url = cleanText(value);
+  if (url.startsWith("/") && !url.startsWith("//")) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function filenameFromUrl(value) {
+  const url = cleanText(value);
+  if (!url) {
+    return "";
+  }
+
+  try {
+    const parsed = url.startsWith("/")
+      ? new URL(url, "https://local.invalid")
+      : new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const filename = parts.length > 0 ? parts[parts.length - 1] : "";
+    return decodeURIComponent(filename).trim();
+  } catch {
+    const parts = url.split(/[/?#]/).filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1].trim() : "";
+  }
 }
 
 function canShowPublicly(article) {
@@ -83,5 +119,6 @@ export {
   normalizeArticleInput,
   normalizeCategoryInput,
   normalizeMediaInput,
+  isManualMediaUrl,
   slugify,
 };
