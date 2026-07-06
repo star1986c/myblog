@@ -31,6 +31,17 @@ test("standalone JSON page includes a tree viewer toolbar and property table", (
   assert.match(jsonHtml, /<th>Value<\/th>/);
 });
 
+test("standalone JSON page includes a right click context menu for selected tree nodes", () => {
+  assert.match(jsonHtml, /data-json-context-menu/);
+  assert.match(jsonHtml, /data-json-menu-action="copy-key"/);
+  assert.match(jsonHtml, /data-json-menu-action="copy-value"/);
+  assert.match(jsonHtml, /data-json-menu-action="copy-pair"/);
+  assert.match(jsonHtml, /data-json-menu-action="expand-children"/);
+  assert.match(jsonHtml, /data-json-menu-action="expand-all"/);
+  assert.match(jsonHtml, /data-json-menu-action="collapse-children"/);
+  assert.match(jsonHtml, /data-json-menu-action="collapse-all"/);
+});
+
 test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
 });

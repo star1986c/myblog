@@ -92,6 +92,22 @@ export function getPropertyRows(node) {
   }];
 }
 
+export function getCopyPayload(node, mode) {
+  if (!node) {
+    return "";
+  }
+
+  if (mode === "key") {
+    return node.key;
+  }
+
+  if (mode === "value") {
+    return node.summary;
+  }
+
+  return `${node.key} : ${node.summary}`;
+}
+
 export function findTreeMatches(nodes, query) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) {

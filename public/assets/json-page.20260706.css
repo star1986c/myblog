@@ -535,6 +535,41 @@ h1 {
   font-weight: 750;
 }
 
+.json-context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 176px;
+  border: 1px solid #7799c6;
+  padding: 8px 0;
+  background: #f1f1f1;
+  box-shadow: 4px 5px 13px rgba(31, 41, 55, 0.22);
+}
+
+.json-context-menu[hidden] {
+  display: none;
+}
+
+.json-context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  padding: 6px 18px;
+  color: #222222;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.json-context-menu button:hover,
+.json-context-menu button:focus-visible {
+  background: #d8e8fb;
+  outline: none;
+}
+
 @media (max-width: 980px) {
   .tool-shell {
     padding: 12px;

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   findTreeMatches,
   formatJson,
+  getCopyPayload,
   getPropertyRows,
   minifyJson,
   parseJson,
@@ -122,4 +123,16 @@ test("findTreeMatches finds key and value matches across the tree", () => {
 
   assert.deepEqual(findTreeMatches(nodes, "format"), ["$.features[0]"]);
   assert.deepEqual(findTreeMatches(nodes, "features"), ["$.features"]);
+});
+
+test("getCopyPayload returns key, value, and key plus value for a tree node", () => {
+  const result = parseJson('{"url":"https://superstar1014.qzz.io/"}');
+  assert.equal(result.ok, true);
+
+  const root = toTreeNodes(result.value)[0];
+  const url = root.children.find((node) => node.key === "url");
+
+  assert.equal(getCopyPayload(url, "key"), "url");
+  assert.equal(getCopyPayload(url, "value"), '"https://superstar1014.qzz.io/"');
+  assert.equal(getCopyPayload(url, "pair"), 'url : "https://superstar1014.qzz.io/"');
 });

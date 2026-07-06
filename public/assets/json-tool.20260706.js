@@ -2,6 +2,7 @@ import {
   findTreeMatches,
   flattenTreeNodes,
   formatJson,
+  getCopyPayload,
   getPropertyRows,
   minifyJson,
   parseJson,
@@ -32,6 +33,7 @@ function initializeJsonTool(root) {
     properties: root.querySelector("[data-json-properties]"),
     status: root.querySelector("[data-json-status]"),
     search: root.querySelector("[data-json-search]"),
+    contextMenu: root.querySelector("[data-json-context-menu]"),
   };
 
   const state = {
@@ -43,12 +45,22 @@ function initializeJsonTool(root) {
   };
 
   root.addEventListener("click", async (event) => {
+    const menuButton = event.target.closest("[data-json-menu-action]");
+    if (menuButton) {
+      await handleContextMenuAction(menuButton.dataset.jsonMenuAction, elements, state);
+      hideContextMenu(elements);
+      return;
+    }
+
     const summary = event.target.closest("[data-json-node]");
     if (summary) {
       event.preventDefault();
       selectPath(summary.dataset.path, elements, state);
+      hideContextMenu(elements);
       return;
     }
+
+    hideContextMenu(elements);
 
     const button = event.target.closest("[data-json-action]");
     if (!button) return;
@@ -104,6 +116,27 @@ function initializeJsonTool(root) {
       setTreeExpanded(elements.tree, false);
     }
   });
+
+  root.addEventListener("contextmenu", (event) => {
+    const summary = event.target.closest("[data-json-node]");
+    if (!summary) {
+      hideContextMenu(elements);
+      return;
+    }
+
+    event.preventDefault();
+    selectPath(summary.dataset.path, elements, state);
+    showContextMenu(elements, event.clientX, event.clientY);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      hideContextMenu(elements);
+    }
+  });
+
+  window.addEventListener("resize", () => hideContextMenu(elements));
+  window.addEventListener("scroll", () => hideContextMenu(elements), true);
 
   elements.search.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -290,6 +323,54 @@ function markMatches(tree, paths) {
   });
 }
 
+async function handleContextMenuAction(action, elements, state) {
+  const selected = state.nodeMap.get(state.selectedPath);
+  if (!selected) {
+    setStatus(elements.status, "请先选择节点", true);
+    return;
+  }
+
+  if (action === "copy-key") {
+    await copyText(getCopyPayload(selected, "key"), elements.status, "已复制 Key");
+    return;
+  }
+
+  if (action === "copy-value") {
+    await copyText(getCopyPayload(selected, "value"), elements.status, "已复制 Value");
+    return;
+  }
+
+  if (action === "copy-pair") {
+    await copyText(getCopyPayload(selected, "pair"), elements.status, "已复制 Key+Value");
+    return;
+  }
+
+  if (action === "expand-children") {
+    setNodeSubtreeExpanded(elements.tree, selected.path, true);
+    setStatus(elements.status, "已展开当前节点子树");
+    return;
+  }
+
+  if (action === "collapse-children") {
+    setNodeSubtreeExpanded(elements.tree, selected.path, false);
+    openAncestors(elements.tree, selected.path);
+    setStatus(elements.status, "已收起当前节点子树");
+    return;
+  }
+
+  if (action === "expand-all") {
+    setTreeExpanded(elements.tree, true);
+    setStatus(elements.status, "已展开所有节点");
+    return;
+  }
+
+  if (action === "collapse-all") {
+    setTreeExpanded(elements.tree, false);
+    openAncestors(elements.tree, selected.path);
+    setStatus(elements.status, "已收起所有节点");
+  }
+}
+
 function openAncestors(tree, path) {
   tree.querySelectorAll("details[data-path]").forEach((details) => {
     const current = details.dataset.path;
@@ -299,10 +380,42 @@ function openAncestors(tree, path) {
   });
 }
 
+function setNodeSubtreeExpanded(tree, path, expanded) {
+  tree.querySelectorAll("details[data-path]").forEach((details) => {
+    const current = details.dataset.path;
+    if (current === path || current.startsWith(`${path}.`) || current.startsWith(`${path}[`)) {
+      details.open = expanded;
+    }
+  });
+}
+
 function setTreeExpanded(tree, expanded) {
   tree.querySelectorAll("details").forEach((details) => {
     details.open = expanded || details.dataset.path === "$";
   });
+}
+
+function showContextMenu(elements, x, y) {
+  const menu = elements.contextMenu;
+  if (!menu) {
+    return;
+  }
+
+  menu.hidden = false;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideContextMenu(elements) {
+  if (elements.contextMenu) {
+    elements.contextMenu.hidden = true;
+  }
 }
 
 function clearViewer(elements, state) {
@@ -325,11 +438,33 @@ async function copyInput(text, status) {
   }
 
   try {
-    await navigator.clipboard.writeText(value);
+    await writeClipboard(value);
     setStatus(status, "已复制");
   } catch {
     setStatus(status, "浏览器阻止复制", true);
   }
+}
+
+async function copyText(value, status, successMessage) {
+  if (!value) {
+    setStatus(status, "没有可复制内容", true);
+    return;
+  }
+
+  try {
+    await writeClipboard(value);
+    setStatus(status, successMessage);
+  } catch {
+    setStatus(status, "浏览器阻止复制", true);
+  }
+}
+
+async function writeClipboard(value) {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Clipboard API is unavailable");
+  }
+
+  await navigator.clipboard.writeText(value);
 }
 
 function emptyPropertyRow(message) {
