@@ -44,9 +44,9 @@ function initializeJsonTool(root) {
     if (action === "clear") {
       input.value = "";
       latestOutput = "";
-      output.textContent = "Formatted JSON will appear here.";
+      output.textContent = "格式化后的 JSON 会显示在这里。";
       tree.innerHTML = "";
-      setStatus(status, "Waiting for input");
+      setStatus(status, "等待输入");
       return;
     }
 
@@ -72,15 +72,15 @@ function initializeJsonTool(root) {
   input.addEventListener("input", () => {
     if (!input.value.trim()) {
       latestOutput = "";
-      output.textContent = "Formatted JSON will appear here.";
+      output.textContent = "格式化后的 JSON 会显示在这里。";
       tree.innerHTML = "";
-      setStatus(status, "Waiting for input");
+      setStatus(status, "等待输入");
       return;
     }
 
     const result = parseJson(input.value);
     if (result.ok) {
-      setStatus(status, "Valid JSON");
+      setStatus(status, "JSON 有效");
     }
   });
 }
@@ -89,24 +89,24 @@ function applyResult(result, elements) {
   const { input, output, tree, status } = elements;
 
   if (!input.value.trim()) {
-    output.textContent = "Paste JSON first.";
+    output.textContent = "请先粘贴 JSON。";
     tree.innerHTML = "";
-    setStatus(status, "No input");
+    setStatus(status, "没有输入");
     return;
   }
 
   if (!result.ok) {
     output.textContent = result.message;
     tree.innerHTML = "";
-    const location = result.line && result.column ? ` at line ${result.line}, column ${result.column}` : "";
-    setStatus(status, `Invalid JSON${location}`, true);
+    const location = result.line && result.column ? `，第 ${result.line} 行，第 ${result.column} 列` : "";
+    setStatus(status, `JSON 无效${location}`, true);
     return;
   }
 
   output.textContent = result.value;
   const parsed = parseJson(result.value);
   tree.replaceChildren(...renderTree(parsed.ok ? toTreeNodes(parsed.value) : []));
-  setStatus(status, "Formatted locally");
+  setStatus(status, "已在本地处理");
 }
 
 function renderTree(nodes) {
@@ -142,16 +142,16 @@ function renderTree(nodes) {
 
 async function copyOutput(text, status) {
   const value = text.trim();
-  if (!value || value === "Formatted JSON will appear here.") {
-    setStatus(status, "Nothing to copy", true);
+  if (!value || value === "格式化后的 JSON 会显示在这里。") {
+    setStatus(status, "没有可复制内容", true);
     return;
   }
 
   try {
     await navigator.clipboard.writeText(value);
-    setStatus(status, "Copied");
+    setStatus(status, "已复制");
   } catch {
-    setStatus(status, "Copy blocked by browser", true);
+    setStatus(status, "浏览器阻止复制", true);
   }
 }
 
