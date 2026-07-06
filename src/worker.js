@@ -1,5 +1,6 @@
 import {
   clearSessionCookie,
+  createPasswordHash,
   readSession,
   signSession,
   verifyPasswordHash,
@@ -13,6 +14,8 @@ import {
   deleteCategory,
   deletePage,
   deletePost,
+  getAdminAccount,
+  getAdminSetting,
   getCategoryBySlug,
   getPublicPageBySlug,
   getPublicPostBySlug,
@@ -24,6 +27,7 @@ import {
   listPublicPosts,
   listPublicPostsByCategory,
   requireDatabase,
+  updateAdminAccount,
   updateCategory,
   updatePage,
   updatePost,
@@ -37,6 +41,7 @@ import {
 } from "./blog-render.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
+const MIN_ADMIN_PASSWORD_LENGTH = 12;
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
@@ -129,9 +134,10 @@ async function handleApiRequest(request, env) {
 
   if (path === "/api/auth/me" && request.method === "GET") {
     const session = await readAdminSession(request, env);
+    const account = session && env.BLOG_DB ? await getAdminAccount(env.BLOG_DB) : null;
     return jsonResponse({
       authenticated: Boolean(session),
-      user: session ? { username: session.username } : null,
+      user: session ? publicAdminAccount(account, session.username) : null,
       csrfToken: session?.csrfToken || null,
     });
   }
@@ -181,32 +187,37 @@ async function handleApiRequest(request, env) {
 }
 
 async function handleLogin(request, env) {
-  if (!env.ADMIN_USERNAME || !env.ADMIN_PASSWORD_HASH || !env.SESSION_SECRET) {
+  const db = requireDatabase(env);
+  const account = await getAdminAccount(db);
+  const credentials = account || legacyAdminAccount(env);
+  const sessionSecret = await resolveSessionSecret(env, db);
+
+  if (!credentials || !sessionSecret) {
     return jsonResponse({ error: "Authentication is not configured." }, { status: 503 });
   }
 
   const body = await readJson(request);
   const username = typeof body.username === "string" ? body.username : "";
   const password = typeof body.password === "string" ? body.password : "";
-  const passwordMatches = await verifyPasswordHash(password, env.ADMIN_PASSWORD_HASH);
+  const passwordMatches = await verifyPasswordHash(password, credentials.passwordHash);
 
-  if (username !== env.ADMIN_USERNAME || !passwordMatches) {
+  if (username !== credentials.username || !passwordMatches) {
     return jsonResponse({ error: "Invalid username or password." }, { status: 401 });
   }
 
   const cookie = await signSession({
-    secret: env.SESSION_SECRET,
-    username,
+    secret: sessionSecret,
+    username: credentials.username,
   });
   const session = await readSession({
     cookieHeader: cookie,
-    secret: env.SESSION_SECRET,
+    secret: sessionSecret,
   });
 
   return jsonResponse(
     {
       ok: true,
-      user: { username },
+      user: publicAdminAccount(credentials),
       csrfToken: session.csrfToken,
     },
     {
@@ -231,6 +242,16 @@ async function handleAdminApi(request, env, path) {
   }
 
   const db = requireDatabase(env);
+
+  if (path === "/api/admin/account") {
+    if (request.method === "GET") {
+      const account = await getAdminAccount(db);
+      return jsonResponse({ account: publicAdminAccount(account, session.username) });
+    }
+    if (request.method === "PUT") {
+      return await handleAccountUpdate(request, env, db);
+    }
+  }
 
   if (path === "/api/admin/posts") {
     if (request.method === "GET") {
@@ -401,10 +422,86 @@ function cacheControlFor(pathname, contentType) {
 }
 
 async function readAdminSession(request, env) {
+  const sessionSecret = await resolveSessionSecret(env, env.BLOG_DB);
   return await readSession({
     cookieHeader: request.headers.get("Cookie"),
-    secret: env.SESSION_SECRET,
+    secret: sessionSecret,
   });
+}
+
+async function resolveSessionSecret(env, db) {
+  if (env.SESSION_SECRET) {
+    return env.SESSION_SECRET;
+  }
+  return db ? await getAdminSetting(db, "session_secret") : "";
+}
+
+function legacyAdminAccount(env) {
+  if (!env.ADMIN_USERNAME || !env.ADMIN_PASSWORD_HASH) {
+    return null;
+  }
+  return {
+    id: "legacy",
+    username: env.ADMIN_USERNAME,
+    passwordHash: env.ADMIN_PASSWORD_HASH,
+    mustChangePassword: 0,
+  };
+}
+
+async function handleAccountUpdate(request, env, db) {
+  const account = await getAdminAccount(db);
+  if (!account) {
+    throw new ServiceError("Administrator account is not configured.", 503);
+  }
+
+  const body = await readJson(request);
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+  const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+
+  if (!username) {
+    throw new ServiceError("Username is required.", 400);
+  }
+  if (newPassword.length < MIN_ADMIN_PASSWORD_LENGTH) {
+    throw new ServiceError(`New password must be at least ${MIN_ADMIN_PASSWORD_LENGTH} characters.`, 400);
+  }
+  if (!(await verifyPasswordHash(currentPassword, account.passwordHash))) {
+    throw new ServiceError("Current password is incorrect.", 403);
+  }
+
+  const updated = await updateAdminAccount(db, account.id, {
+    username,
+    passwordHash: await createPasswordHash(newPassword),
+    mustChangePassword: 0,
+  });
+  const sessionSecret = await resolveSessionSecret(env, db);
+  const cookie = await signSession({
+    secret: sessionSecret,
+    username: updated.username,
+  });
+  const session = await readSession({
+    cookieHeader: cookie,
+    secret: sessionSecret,
+  });
+
+  return jsonResponse(
+    {
+      account: publicAdminAccount(updated),
+      csrfToken: session.csrfToken,
+    },
+    {
+      headers: {
+        "Set-Cookie": cookie,
+      },
+    },
+  );
+}
+
+function publicAdminAccount(account, fallbackUsername = "") {
+  return {
+    username: account?.username || fallbackUsername,
+    mustChangePassword: Boolean(Number(account?.mustChangePassword || 0)),
+  };
 }
 
 async function readJson(request) {
@@ -437,6 +534,14 @@ function htmlResponse(body, options = {}) {
 function errorResponse(request, error) {
   const status = Number.isInteger(error?.status) ? error.status : 500;
   const message = status >= 500 ? "Internal Server Error" : error.message;
+  if (status >= 500) {
+    console.error(JSON.stringify({
+      level: "error",
+      path: new URL(request.url).pathname,
+      message: error?.message || "Unknown error",
+      stack: error?.stack || "",
+    }));
+  }
   if (new URL(request.url).pathname.startsWith("/api/")) {
     return jsonResponse({ error: message }, { status });
   }

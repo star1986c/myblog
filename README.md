@@ -39,12 +39,18 @@ creating or changing the D1 database, run:
 npx wrangler d1 migrations apply superstar1014-blog --remote
 ```
 
-Set administrator secrets:
+Apply migrations before deployment. The migrations seed a D1-backed administrator
+account so the site can be tested without R2 or credential secrets.
+
+Default administrator:
+
+- Username: `admin`
+- Password: generated during setup; change it immediately from the `账号` tab.
+
+`SESSION_SECRET` can still be set as an encrypted Worker secret to override the
+D1-seeded session secret:
 
 ```bash
-node scripts/hash-password.mjs '<admin-password>'
-npx wrangler secret put ADMIN_USERNAME
-npx wrangler secret put ADMIN_PASSWORD_HASH
 npx wrangler secret put SESSION_SECRET
 ```
 

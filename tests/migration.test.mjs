@@ -7,6 +7,10 @@ const manualMediaMigration = await readFile(
   new URL("../migrations/0002_manual_media_urls.sql", import.meta.url),
   "utf8",
 );
+const defaultAdminMigration = await readFile(
+  new URL("../migrations/0003_default_admin_account.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -24,4 +28,12 @@ test("manual media migration adds URL storage without R2 objects", () => {
   assert.match(manualMediaMigration, /ALTER TABLE media_assets ADD COLUMN url TEXT/);
   assert.match(manualMediaMigration, /UPDATE media_assets SET url = object_key/);
   assert.match(manualMediaMigration, /idx_media_assets_url/);
+});
+
+test("default admin migration seeds a D1-backed login account", () => {
+  assert.match(defaultAdminMigration, /CREATE TABLE IF NOT EXISTS admin_accounts/);
+  assert.match(defaultAdminMigration, /CREATE TABLE IF NOT EXISTS admin_settings/);
+  assert.match(defaultAdminMigration, /INSERT INTO admin_accounts/);
+  assert.match(defaultAdminMigration, /must_change_password/);
+  assert.match(defaultAdminMigration, /session_secret/);
 });

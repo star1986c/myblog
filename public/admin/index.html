@@ -18,6 +18,7 @@
           <button class="tab" type="button" data-tab="pages">页面</button>
           <button class="tab" type="button" data-tab="categories">分类</button>
           <button class="tab" type="button" data-tab="media">媒体</button>
+          <button class="tab" type="button" data-tab="account">账号</button>
         </nav>
         <button class="logout" type="button" data-logout hidden>退出</button>
       </aside>
@@ -197,6 +198,33 @@
                 </div>
               </form>
             </div>
+          </section>
+
+          <section class="panel" data-panel="account">
+            <form class="editor account-editor" data-account-form>
+              <label>
+                用户名
+                <input name="username" autocomplete="username" required />
+              </label>
+              <label>
+                当前密码
+                <input name="currentPassword" type="password" autocomplete="current-password" required />
+              </label>
+              <div class="row">
+                <label>
+                  新密码
+                  <input name="newPassword" type="password" autocomplete="new-password" required />
+                </label>
+                <label>
+                  确认新密码
+                  <input name="confirmPassword" type="password" autocomplete="new-password" required />
+                </label>
+              </div>
+              <div class="actions">
+                <button class="primary" type="submit">更新账号</button>
+              </div>
+              <p class="message" data-account-message></p>
+            </form>
           </section>
         </section>
       </section>

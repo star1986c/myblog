@@ -57,6 +57,15 @@ const MEDIA_COLUMNS = [
   "created_at AS createdAt",
 ].join(", ");
 
+const ADMIN_ACCOUNT_COLUMNS = [
+  "id",
+  "username",
+  "password_hash AS passwordHash",
+  "must_change_password AS mustChangePassword",
+  "created_at AS createdAt",
+  "updated_at AS updatedAt",
+].join(", ");
+
 function requireDatabase(env) {
   if (!env?.BLOG_DB) {
     throw new ServiceError("Blog database is not configured.", 503);
@@ -361,6 +370,54 @@ async function createMediaAsset(db, input) {
   return { id, objectKey: media.url, ...media, createdAt: now };
 }
 
+async function getAdminAccount(db) {
+  return await db
+    .prepare(`SELECT ${ADMIN_ACCOUNT_COLUMNS} FROM admin_accounts ORDER BY created_at ASC LIMIT 1`)
+    .first();
+}
+
+async function getAdminSetting(db, key) {
+  const row = await db
+    .prepare("SELECT value FROM admin_settings WHERE key = ? LIMIT 1")
+    .bind(key)
+    .first();
+  return row?.value || "";
+}
+
+async function updateAdminAccount(db, id, input) {
+  const username = cleanAdminUsername(input.username);
+  if (!username) {
+    throw new ServiceError("Username is required.", 400);
+  }
+  if (!input.passwordHash) {
+    throw new ServiceError("Password hash is required.", 400);
+  }
+
+  const mustChangePassword = input.mustChangePassword ? 1 : 0;
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `UPDATE admin_accounts
+       SET username = ?, password_hash = ?, must_change_password = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(username, input.passwordHash, mustChangePassword, now, id)
+    .run();
+
+  return {
+    id,
+    username,
+    passwordHash: input.passwordHash,
+    mustChangePassword,
+    updatedAt: now,
+  };
+}
+
+function cleanAdminUsername(value) {
+  return typeof value === "string" ? value.trim().slice(0, 96) : "";
+}
+
 class ServiceError extends Error {
   constructor(message, status = 500) {
     super(message);
@@ -378,6 +435,8 @@ export {
   deleteCategory,
   deletePage,
   deletePost,
+  getAdminAccount,
+  getAdminSetting,
   getCategoryBySlug,
   getPublicPageBySlug,
   getPublicPostBySlug,
@@ -389,6 +448,7 @@ export {
   listPublicPosts,
   listPublicPostsByCategory,
   requireDatabase,
+  updateAdminAccount,
   updateCategory,
   updatePage,
   updatePost,

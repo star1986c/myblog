@@ -18,6 +18,15 @@ test("verifies pbkdf2 password hashes and rejects wrong passwords", async () => 
   assert.equal(await verifyPasswordHash("wrong password", hash), false);
 });
 
+test("default password hashes stay within the Workers PBKDF2 iteration limit", async () => {
+  const hash = await createPasswordHash("worker-compatible-password", {
+    salt: new Uint8Array(16).fill(9),
+  });
+  const [, iterations] = hash.split("$");
+
+  assert.ok(Number(iterations) <= 100_000);
+});
+
 test("signs and reads administrator sessions with csrf token", async () => {
   const cookie = await signSession({
     secret: "test-session-secret",

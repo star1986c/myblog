@@ -63,3 +63,10 @@ test("admin console uses manual media URLs instead of file upload", () => {
   assert.match(adminHtml, /name="url"/);
   assert.doesNotMatch(adminHtml, /type="file"/);
 });
+
+test("admin console includes an account password change panel", () => {
+  assert.match(adminHtml, /data-tab="account"/);
+  assert.match(adminHtml, /data-account-form/);
+  assert.match(adminHtml, /name="currentPassword"/);
+  assert.match(adminHtml, /name="newPassword"/);
+});

@@ -5,6 +5,7 @@ const state = {
   pages: [],
   categories: [],
   media: [],
+  account: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -12,8 +13,10 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const loginForm = $("[data-login]");
 const loginMessage = $("[data-login-message]");
+const accountMessage = $("[data-account-message]");
 const consoleEl = $("[data-console]");
 const logoutButton = $("[data-logout]");
+const createButton = $("[data-create]");
 
 init();
 
@@ -24,23 +27,33 @@ async function init() {
   if (session.authenticated) {
     state.csrfToken = session.csrfToken;
     showConsole();
-    await loadAll();
+    if (session.user?.mustChangePassword) {
+      await selectTab("account");
+    } else {
+      await loadAll();
+    }
   }
 }
 
 function bindTabs() {
   $$("[data-tab]").forEach((button) => {
     button.addEventListener("click", async () => {
-      state.activeTab = button.dataset.tab;
-      $$("[data-tab]").forEach((tab) => tab.classList.toggle("is-active", tab === button));
-      $$("[data-panel]").forEach((panel) => {
-        panel.classList.toggle("is-active", panel.dataset.panel === state.activeTab);
-      });
-      $("[data-section-label]").textContent = button.textContent;
-      resetCurrentForm();
-      await loadAll();
+      await selectTab(button.dataset.tab);
     });
   });
+}
+
+async function selectTab(tabName) {
+  state.activeTab = tabName;
+  const button = $(`[data-tab="${tabName}"]`);
+  $$("[data-tab]").forEach((tab) => tab.classList.toggle("is-active", tab === button));
+  $$("[data-panel]").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.panel === state.activeTab);
+  });
+  $("[data-section-label]").textContent = button?.textContent || "";
+  createButton.hidden = tabName === "account";
+  resetCurrentForm();
+  await loadAll();
 }
 
 function bindForms() {
@@ -55,7 +68,11 @@ function bindForms() {
       });
       state.csrfToken = result.csrfToken;
       showConsole();
-      await loadAll();
+      if (result.user?.mustChangePassword) {
+        await selectTab("account");
+      } else {
+        await loadAll();
+      }
     } catch (error) {
       loginMessage.textContent = error.message;
     }
@@ -66,11 +83,12 @@ function bindForms() {
     window.location.reload();
   });
 
-  $("[data-create]").addEventListener("click", resetCurrentForm);
+  createButton.addEventListener("click", resetCurrentForm);
   $("[data-post-form]").addEventListener("submit", savePost);
   $("[data-page-form]").addEventListener("submit", savePage);
   $("[data-category-form]").addEventListener("submit", saveCategory);
   $("[data-media-form]").addEventListener("submit", saveMedia);
+  $("[data-account-form]").addEventListener("submit", saveAccount);
   $("[data-delete-post]").addEventListener("click", () => removeResource("posts", $("[data-post-form]")));
   $("[data-delete-page]").addEventListener("click", () => removeResource("pages", $("[data-page-form]")));
   $("[data-delete-category]").addEventListener("click", () => removeResource("categories", $("[data-category-form]")));
@@ -98,6 +116,10 @@ async function loadAll() {
   if (state.activeTab === "media") {
     state.media = (await api("/api/admin/media")).media;
     renderMediaList();
+  }
+  if (state.activeTab === "account") {
+    state.account = (await api("/api/admin/account")).account;
+    renderAccount();
   }
 }
 
@@ -142,6 +164,9 @@ function resetCurrentForm() {
   if (form.elements.visibility) {
     form.elements.visibility.value = "private";
   }
+  if (state.activeTab === "account" && state.account) {
+    renderAccount();
+  }
 }
 
 async function savePost(event) {
@@ -169,6 +194,46 @@ async function saveMedia(event) {
   });
   resetCurrentForm();
   await loadAll();
+}
+
+async function saveAccount(event) {
+  event.preventDefault();
+  accountMessage.textContent = "";
+  const form = event.currentTarget;
+  const body = Object.fromEntries(new FormData(form));
+  if (body.newPassword !== body.confirmPassword) {
+    accountMessage.textContent = "两次输入的新密码不一致";
+    return;
+  }
+  delete body.confirmPassword;
+
+  try {
+    const result = await api("/api/admin/account", {
+      method: "PUT",
+      body,
+    });
+    state.account = result.account;
+    if (result.csrfToken) {
+      state.csrfToken = result.csrfToken;
+    }
+    form.elements.currentPassword.value = "";
+    form.elements.newPassword.value = "";
+    form.elements.confirmPassword.value = "";
+    accountMessage.textContent = "账号已更新";
+  } catch (error) {
+    accountMessage.textContent = error.message;
+  }
+}
+
+function renderAccount() {
+  const form = $("[data-account-form]");
+  form.elements.username.value = state.account?.username || "";
+  form.elements.currentPassword.value = "";
+  form.elements.newPassword.value = "";
+  form.elements.confirmPassword.value = "";
+  accountMessage.textContent = state.account?.mustChangePassword
+    ? "请先修改默认密码"
+    : "";
 }
 
 function renderMediaList() {
@@ -256,6 +321,7 @@ function singular(collection) {
   if (collection === "pages") return "page";
   if (collection === "categories") return "category";
   if (collection === "media") return "media";
+  if (collection === "account") return "account";
   return collection;
 }
 

@@ -211,6 +211,10 @@ p {
   padding: 18px;
 }
 
+.account-editor {
+  max-width: 680px;
+}
+
 label {
   display: grid;
   gap: 7px;

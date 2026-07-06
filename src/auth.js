@@ -2,7 +2,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const HASH_ALGORITHM = "pbkdf2_sha256";
-const DEFAULT_ITERATIONS = 210_000;
+const DEFAULT_ITERATIONS = 100_000;
 const HASH_BYTES = 32;
 const SALT_BYTES = 16;
 

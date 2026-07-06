@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/worker.js";
-import { signSession } from "../src/auth.js";
+import { createPasswordHash, readSession, signSession, verifyPasswordHash } from "../src/auth.js";
 
 class FakeD1 {
-  constructor({ posts = [], pages = [], media = [] } = {}) {
+  constructor({ posts = [], pages = [], media = [], adminAccount = null, settings = {} } = {}) {
     this.posts = posts;
     this.pages = pages;
     this.media = media;
+    this.adminAccount = adminAccount;
+    this.settings = {
+      session_secret: "test-session-secret",
+      ...settings,
+    };
     this.insertedPosts = [];
     this.insertedMedia = [];
+    this.updatedAdminAccount = null;
   }
 
   prepare(sql) {
@@ -58,6 +64,15 @@ class FakeStatement {
   }
 
   async first() {
+    if (this.sql.includes("FROM admin_accounts")) {
+      return this.db.adminAccount;
+    }
+
+    if (this.sql.includes("FROM admin_settings")) {
+      const key = this.params[0];
+      return this.db.settings[key] ? { value: this.db.settings[key] } : null;
+    }
+
     if (this.sql.includes("FROM posts") && this.sql.includes("slug = ?")) {
       const slug = this.params[0];
       return this.db.posts.find(
@@ -72,6 +87,21 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.includes("UPDATE admin_accounts")) {
+      const [username, passwordHash, mustChangePassword, updatedAt, id] = this.params;
+      this.db.updatedAdminAccount = {
+        id,
+        username,
+        passwordHash,
+        mustChangePassword,
+        updatedAt,
+      };
+      this.db.adminAccount = {
+        ...this.db.adminAccount,
+        ...this.db.updatedAdminAccount,
+      };
+    }
+
     if (this.sql.startsWith("INSERT INTO media_assets")) {
       const [id, objectKey, url, filename, contentType, size, alt] = this.params;
       this.db.insertedMedia.push({
@@ -173,6 +203,55 @@ test("admin post list requires a valid session", async () => {
   assert.equal(response.status, 401);
 });
 
+test("admin login uses the D1 default account without credential secrets", async () => {
+  const passwordHash = await createPasswordHash("default-password", {
+    iterations: 1000,
+    salt: new Uint8Array(16).fill(3),
+  });
+  const db = new FakeD1({
+    adminAccount: {
+      id: "default",
+      username: "admin",
+      passwordHash,
+      mustChangePassword: 1,
+    },
+    settings: {
+      session_secret: "db-session-secret",
+    },
+  });
+  const env = makeEnv({
+    ADMIN_USERNAME: undefined,
+    ADMIN_PASSWORD_HASH: undefined,
+    SESSION_SECRET: undefined,
+    BLOG_DB: db,
+  });
+
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        username: "admin",
+        password: "default-password",
+      }),
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.user.username, "admin");
+  assert.equal(body.user.mustChangePassword, true);
+  const session = await readSession({
+    cookieHeader: response.headers.get("Set-Cookie"),
+    secret: "db-session-secret",
+    now: Date.now(),
+  });
+  assert.equal(session.username, "admin");
+});
+
 test("public pages API only returns published and public pages", async () => {
   const env = makeEnv({
     BLOG_DB: new FakeD1({
@@ -204,6 +283,50 @@ test("public pages API only returns published and public pages", async () => {
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.deepEqual(body.pages.map((page) => page.slug), ["about"]);
+});
+
+test("admin can change the default account password after login", async () => {
+  const passwordHash = await createPasswordHash("old-default-password", {
+    iterations: 1000,
+    salt: new Uint8Array(16).fill(5),
+  });
+  const db = new FakeD1({
+    adminAccount: {
+      id: "default",
+      username: "admin",
+      passwordHash,
+      mustChangePassword: 1,
+    },
+  });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: "admin",
+    csrfToken: "csrf-token",
+    now: 1_800_000_000_000,
+  });
+
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/account", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "csrf-token",
+      },
+      body: JSON.stringify({
+        username: "star",
+        currentPassword: "old-default-password",
+        newPassword: "new-strong-password",
+      }),
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(db.updatedAdminAccount.username, "star");
+  assert.equal(db.updatedAdminAccount.mustChangePassword, 0);
+  assert.equal(await verifyPasswordHash("new-strong-password", db.updatedAdminAccount.passwordHash), true);
 });
 
 test("admin-created posts default to draft and private", async () => {
