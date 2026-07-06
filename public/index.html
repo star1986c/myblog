@@ -28,10 +28,12 @@
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
-    <link rel="preload" href="/assets/styles.20260706.css" as="style" />
+    <link rel="preload" href="/assets/styles.20260706-json.css" as="style" />
     <link rel="modulepreload" href="/vendor/three-0.160.0.module.js" />
     <link rel="modulepreload" href="/assets/solar-system.20260706.js" />
-    <link rel="stylesheet" href="/assets/styles.20260706.css" />
+    <link rel="modulepreload" href="/assets/json-tool-core.20260706.js" />
+    <link rel="modulepreload" href="/assets/json-tool.20260706.js" />
+    <link rel="stylesheet" href="/assets/styles.20260706-json.css" />
   </head>
   <body>
     <canvas id="three-scene" aria-hidden="true"></canvas>
@@ -58,6 +60,7 @@
         <div class="links">
           <a href="#system">System</a>
           <a href="#signals">Signals</a>
+          <a href="#json-tool">JSON Tool</a>
           <a href="#contact">Contact</a>
         </div>
       </nav>
@@ -130,6 +133,62 @@
         </div>
       </section>
 
+      <section class="section tool-section" id="json-tool">
+        <div class="section-inner">
+          <div class="section-heading tool-heading">
+            <h2>JSON formatter, built in.</h2>
+            <p>
+              Paste JSON locally, format it, compress it, and inspect a readable
+              tree without sending data anywhere.
+            </p>
+          </div>
+
+          <div class="json-workbench" data-json-tool>
+            <div class="json-panel json-input-panel">
+              <div class="panel-bar">
+                <div>
+                  <strong>Input</strong>
+                  <span>Paste raw JSON</span>
+                </div>
+                <button class="icon-button" type="button" data-json-action="sample" aria-label="Load sample JSON">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 5h16M4 12h10M4 19h16" />
+                  </svg>
+                </button>
+              </div>
+              <textarea
+                id="json-input"
+                class="json-textarea"
+                spellcheck="false"
+                placeholder='{"name":"AI Build Lab","tools":["format","minify","view"]}'
+              ></textarea>
+              <div class="tool-actions" aria-label="JSON actions">
+                <button class="button primary" type="button" data-json-action="format">Format</button>
+                <button class="button" type="button" data-json-action="minify">Minify</button>
+                <button class="button" type="button" data-json-action="clear">Clear</button>
+              </div>
+            </div>
+
+            <div class="json-panel json-output-panel">
+              <div class="panel-bar">
+                <div>
+                  <strong>Output</strong>
+                  <span data-json-status>Waiting for input</span>
+                </div>
+                <button class="icon-button" type="button" data-json-action="copy" aria-label="Copy formatted JSON">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8 8h10v12H8z" />
+                    <path d="M6 16H4V4h12v2" />
+                  </svg>
+                </button>
+              </div>
+              <pre class="json-output" data-json-output aria-live="polite">Formatted JSON will appear here.</pre>
+              <div class="json-tree" data-json-tree aria-label="JSON tree"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <footer id="contact">
         <span>(c) 2026 AI Build Lab</span>
         <span>Solar-system inspired AI lab interface.</span>
@@ -137,5 +196,6 @@
     </main>
 
     <script type="module" src="/assets/solar-system.20260706.js"></script>
+    <script type="module" src="/assets/json-tool.20260706.js"></script>
   </body>
 </html>
