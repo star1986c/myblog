@@ -4,7 +4,6 @@ const state = {
   posts: [],
   pages: [],
   categories: [],
-  media: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -70,7 +69,6 @@ function bindForms() {
   $("[data-post-form]").addEventListener("submit", savePost);
   $("[data-page-form]").addEventListener("submit", savePage);
   $("[data-category-form]").addEventListener("submit", saveCategory);
-  $("[data-media-form]").addEventListener("submit", uploadMedia);
   $("[data-delete-post]").addEventListener("click", () => removeResource("posts", $("[data-post-form]")));
   $("[data-delete-page]").addEventListener("click", () => removeResource("pages", $("[data-page-form]")));
   $("[data-delete-category]").addEventListener("click", () => removeResource("categories", $("[data-category-form]")));
@@ -95,10 +93,6 @@ async function loadAll() {
     state.categories = (await api("/api/admin/categories")).categories;
     renderList("category", state.categories);
   }
-  if (state.activeTab === "media") {
-    state.media = (await api("/api/admin/media")).media;
-    renderMedia();
-  }
 }
 
 function renderList(type, items) {
@@ -115,20 +109,6 @@ function renderList(type, items) {
     `;
     button.addEventListener("click", () => fillForm(type, item));
     list.append(button);
-  }
-}
-
-function renderMedia() {
-  const list = $("[data-media-list]");
-  list.replaceChildren();
-  for (const item of state.media) {
-    const card = document.createElement("article");
-    card.className = "media-card";
-    card.innerHTML = `
-      <img src="/media/${encodeURIComponent(item.key)}" alt="${escapeHtml(item.alt || item.filename)}" />
-      <code>/media/${escapeHtml(item.key)}</code>
-    `;
-    list.append(card);
   }
 }
 
@@ -192,21 +172,6 @@ async function removeResource(collection, form) {
   }
   await api(`/api/admin/${collection}/${encodeURIComponent(id)}`, { method: "DELETE" });
   resetCurrentForm();
-  await loadAll();
-}
-
-async function uploadMedia(event) {
-  event.preventDefault();
-  const response = await fetch("/api/admin/media", {
-    method: "POST",
-    headers: { "X-CSRF-Token": state.csrfToken },
-    body: new FormData(event.currentTarget),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed: ${response.status}`);
-  }
-  event.currentTarget.reset();
   await loadAll();
 }
 

@@ -19,12 +19,6 @@
       "migrations_dir": "./migrations"
     }
   ],
-  "r2_buckets": [
-    {
-      "binding": "MEDIA_BUCKET",
-      "bucket_name": "superstar1014-media"
-    }
-  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

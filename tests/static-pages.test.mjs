@@ -56,3 +56,9 @@ test("admin console is served from a standalone page with private article defaul
   assert.match(adminHtml, /name="status"/);
   assert.match(adminHtml, /value="draft" selected/);
 });
+
+test("admin console does not expose media upload before R2 is enabled", () => {
+  assert.doesNotMatch(adminHtml, /data-tab="media"/);
+  assert.doesNotMatch(adminHtml, /data-media-form/);
+  assert.doesNotMatch(adminHtml, /type="file"/);
+});
