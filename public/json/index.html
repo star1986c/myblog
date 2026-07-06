@@ -70,11 +70,11 @@
       </section>
 
       <section class="json-workbench" aria-label="JSON formatter workspace">
-        <div class="json-panel">
+        <div class="json-panel editor-panel">
           <div class="panel-bar">
             <div>
               <strong>输入</strong>
-              <span>原始 JSON</span>
+              <span data-json-status>等待输入</span>
             </div>
             <button class="icon-button" type="button" data-json-action="sample" aria-label="载入示例 JSON">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -92,25 +92,46 @@
             <button class="button primary" type="button" data-json-action="format">格式化</button>
             <button class="button" type="button" data-json-action="minify">压缩</button>
             <button class="button" type="button" data-json-action="clear">清空</button>
+            <button class="button" type="button" data-json-action="copy">复制</button>
           </div>
         </div>
 
-        <div class="json-panel">
-          <div class="panel-bar">
-            <div>
-              <strong>输出</strong>
-              <span data-json-status>等待输入</span>
+        <div class="viewer-grid">
+          <section class="viewer-panel" aria-label="JSON tree viewer">
+            <div class="viewer-title">视图</div>
+            <div class="viewer-toolbar">
+              <label class="search-label">
+                查找:
+                <input type="search" data-json-search autocomplete="off" />
+              </label>
+              <button type="button" data-json-action="search">GO!</button>
+              <button type="button" data-json-action="next">↓ 下一个</button>
+              <button type="button" data-json-action="previous">↑ 上一个</button>
+              <button type="button" data-json-action="expand">全部展开</button>
+              <button type="button" data-json-action="collapse">全部收缩</button>
+              <a href="/">回到首页</a>
             </div>
-            <button class="icon-button" type="button" data-json-action="copy" aria-label="复制输出 JSON">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 8h10v12H8z" />
-                <path d="M6 16H4V4h12v2" />
-              </svg>
-            </button>
-          </div>
-          <pre class="json-output" data-json-output aria-live="polite">格式化后的 JSON 会显示在这里。</pre>
-          <div class="tree-heading">树形结构</div>
-          <div class="json-tree" data-json-tree aria-label="JSON tree"></div>
+            <div class="json-tree" data-json-tree aria-label="JSON tree">
+              <div class="empty-view">格式化或粘贴有效 JSON 后会显示树形结构。</div>
+            </div>
+          </section>
+
+          <section class="property-panel" aria-label="Selected JSON node properties">
+            <div class="viewer-title">属性</div>
+            <table class="property-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody data-json-properties>
+                <tr>
+                  <td colspan="2">请选择左侧节点。</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
         </div>
       </section>
     </main>

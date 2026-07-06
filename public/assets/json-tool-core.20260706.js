@@ -34,14 +34,15 @@ export function minifyJson(input) {
   };
 }
 
-export function toTreeNodes(value, key = "root", depth = 0) {
+export function toTreeNodes(value, key = "root", depth = 0, path = "$") {
   if (Array.isArray(value)) {
     return [{
       key,
+      path,
       type: "array",
       summary: `[${value.length}]`,
       depth,
-      children: value.flatMap((item, index) => toTreeNodes(item, String(index), depth + 1)),
+      children: value.flatMap((item, index) => toTreeNodes(item, String(index), depth + 1, `${path}[${index}]`)),
     }];
   }
 
@@ -49,20 +50,68 @@ export function toTreeNodes(value, key = "root", depth = 0) {
     const entries = Object.entries(value);
     return [{
       key,
+      path,
       type: "object",
       summary: `{${entries.length}}`,
       depth,
-      children: entries.flatMap(([childKey, childValue]) => toTreeNodes(childValue, childKey, depth + 1)),
+      children: entries.flatMap(([childKey, childValue]) => {
+        return toTreeNodes(childValue, childKey, depth + 1, childPath(path, childKey));
+      }),
     }];
   }
 
   return [{
     key,
+    path,
     type: value === null ? "null" : typeof value,
     summary: JSON.stringify(value),
     depth,
     children: [],
   }];
+}
+
+export function flattenTreeNodes(nodes) {
+  return nodes.flatMap((node) => [node, ...flattenTreeNodes(node.children)]);
+}
+
+export function getPropertyRows(node) {
+  if (!node) {
+    return [];
+  }
+
+  if (node.children.length) {
+    return node.children.map((child) => ({
+      name: child.key,
+      value: child.summary,
+    }));
+  }
+
+  return [{
+    name: node.key,
+    value: node.summary,
+  }];
+}
+
+export function findTreeMatches(nodes, query) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  return flattenTreeNodes(nodes)
+    .filter((node) => {
+      return [node.key, node.type, node.summary]
+        .some((item) => String(item).toLowerCase().includes(normalized));
+    })
+    .map((node) => node.path);
+}
+
+function childPath(parentPath, key) {
+  if (/^[A-Za-z_$][\w$]*$/.test(key)) {
+    return `${parentPath}.${key}`;
+  }
+
+  return `${parentPath}[${JSON.stringify(key)}]`;
 }
 
 function normalizeJsonErrorMessage(error) {

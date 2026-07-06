@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  findTreeMatches,
   formatJson,
+  getPropertyRows,
   minifyJson,
   parseJson,
   toTreeNodes,
@@ -45,18 +47,21 @@ test("toTreeNodes creates readable nested object and array nodes", () => {
   assert.deepEqual(nodes, [
     {
       key: "root",
+      path: "$",
       type: "object",
       summary: "{2}",
       depth: 0,
       children: [
         {
           key: "user",
+          path: "$.user",
           type: "object",
           summary: "{1}",
           depth: 1,
           children: [
             {
               key: "name",
+              path: "$.user.name",
               type: "string",
               summary: '"Star"',
               depth: 2,
@@ -66,12 +71,14 @@ test("toTreeNodes creates readable nested object and array nodes", () => {
         },
         {
           key: "roles",
+          path: "$.roles",
           type: "array",
           summary: "[2]",
           depth: 1,
           children: [
             {
               key: "0",
+              path: "$.roles[0]",
               type: "string",
               summary: '"admin"',
               depth: 2,
@@ -79,6 +86,7 @@ test("toTreeNodes creates readable nested object and array nodes", () => {
             },
             {
               key: "1",
+              path: "$.roles[1]",
               type: "string",
               summary: '"dev"',
               depth: 2,
@@ -89,4 +97,29 @@ test("toTreeNodes creates readable nested object and array nodes", () => {
       ],
     },
   ]);
+});
+
+test("getPropertyRows returns Name and Value rows for the selected array node", () => {
+  const result = parseJson('{"features":["format","minify","tree view","copy"]}');
+  assert.equal(result.ok, true);
+
+  const root = toTreeNodes(result.value)[0];
+  const features = root.children.find((node) => node.key === "features");
+
+  assert.deepEqual(getPropertyRows(features), [
+    { name: "0", value: '"format"' },
+    { name: "1", value: '"minify"' },
+    { name: "2", value: '"tree view"' },
+    { name: "3", value: '"copy"' },
+  ]);
+});
+
+test("findTreeMatches finds key and value matches across the tree", () => {
+  const result = parseJson('{"name":"AI Build Lab","features":["format","minify"]}');
+  assert.equal(result.ok, true);
+
+  const nodes = toTreeNodes(result.value);
+
+  assert.deepEqual(findTreeMatches(nodes, "format"), ["$.features[0]"]);
+  assert.deepEqual(findTreeMatches(nodes, "features"), ["$.features"]);
 });

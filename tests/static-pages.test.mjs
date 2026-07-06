@@ -20,6 +20,17 @@ test("JSON formatter is served from a standalone page", () => {
   assert.match(jsonHtml, /src="\/assets\/json-tool\.20260706\.js"/);
 });
 
+test("standalone JSON page includes a tree viewer toolbar and property table", () => {
+  assert.match(jsonHtml, /data-json-search/);
+  assert.match(jsonHtml, /data-json-action="next"/);
+  assert.match(jsonHtml, /data-json-action="previous"/);
+  assert.match(jsonHtml, /data-json-action="expand"/);
+  assert.match(jsonHtml, /data-json-action="collapse"/);
+  assert.match(jsonHtml, /data-json-properties/);
+  assert.match(jsonHtml, /<th>Name<\/th>/);
+  assert.match(jsonHtml, /<th>Value<\/th>/);
+});
+
 test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
 });
