@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.wrangler-home/
+.dev.vars
+.DS_Store
+npm-debug.log*
+output/
