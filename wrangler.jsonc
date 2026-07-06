@@ -11,6 +11,20 @@
     "html_handling": "auto-trailing-slash",
     "run_worker_first": true
   },
+  "d1_databases": [
+    {
+      "binding": "BLOG_DB",
+      "database_name": "superstar1014-blog",
+      "database_id": "b91cb125-571f-429c-b99e-ac54ae56f4bc",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "superstar1014-media"
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

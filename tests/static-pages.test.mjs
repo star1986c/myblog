@@ -4,6 +4,7 @@ import test from "node:test";
 
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
+const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
 test("home page links to the JSON tool without embedding the formatter", () => {
@@ -44,4 +45,14 @@ test("standalone JSON page includes a right click context menu for selected tree
 
 test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
+});
+
+test("admin console is served from a standalone page with private article defaults", () => {
+  assert.match(adminHtml, /data-admin-app/);
+  assert.match(adminHtml, /href="\/assets\/admin\.20260706\.css"/);
+  assert.match(adminHtml, /src="\/assets\/admin\.20260706\.js"/);
+  assert.match(adminHtml, /name="visibility"/);
+  assert.match(adminHtml, /value="private" selected/);
+  assert.match(adminHtml, /name="status"/);
+  assert.match(adminHtml, /value="draft" selected/);
 });
