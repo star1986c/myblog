@@ -95,7 +95,11 @@ function bindForms() {
 }
 
 function showConsole() {
+  document.body.classList.add("is-authenticated");
   loginForm.hidden = true;
+  loginForm.setAttribute("aria-hidden", "true");
+  loginForm.reset();
+  loginMessage.textContent = "";
   consoleEl.hidden = false;
   logoutButton.hidden = false;
 }

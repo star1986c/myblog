@@ -5,6 +5,8 @@ import test from "node:test";
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
+const adminCss = await readFile(new URL("../public/assets/admin.20260706.css", import.meta.url), "utf8");
+const adminJs = await readFile(new URL("../public/assets/admin.20260706.js", import.meta.url), "utf8");
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
 test("home page links to the JSON tool without embedding the formatter", () => {
@@ -69,4 +71,11 @@ test("admin console includes an account password change panel", () => {
   assert.match(adminHtml, /data-account-form/);
   assert.match(adminHtml, /name="currentPassword"/);
   assert.match(adminHtml, /name="newPassword"/);
+});
+
+test("admin login form is forcibly hidden after authentication", () => {
+  assert.match(adminJs, /classList\.add\("is-authenticated"\)/);
+  assert.match(adminCss, /\.is-authenticated\s+\[data-login\]/);
+  assert.match(adminCss, /display:\s*none\s*!important/);
+  assert.match(adminCss, /\.is-authenticated\s+\[data-console\]/);
 });

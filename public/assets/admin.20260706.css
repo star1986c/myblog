@@ -111,6 +111,14 @@ button:hover {
   background: var(--panel);
 }
 
+body.is-authenticated [data-login] {
+  display: none !important;
+}
+
+body.is-authenticated [data-console] {
+  display: grid !important;
+}
+
 h1,
 p {
   margin: 0;
