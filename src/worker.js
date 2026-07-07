@@ -406,6 +406,10 @@ function cacheControlFor(pathname, contentType) {
     return "public, max-age=31536000, immutable";
   }
 
+  if (isDynamicContentPath(pathname)) {
+    return "public, max-age=60, s-maxage=60";
+  }
+
   if (pathname === "/favicon.svg" || pathname === "/favicon.ico") {
     return "public, max-age=86400";
   }
@@ -419,6 +423,16 @@ function cacheControlFor(pathname, contentType) {
   }
 
   return "public, max-age=3600";
+}
+
+function isDynamicContentPath(pathname) {
+  return (
+    pathname === "/blog" ||
+    pathname === "/blog/" ||
+    pathname.startsWith("/blog/") ||
+    pathname.startsWith("/category/") ||
+    pathname.startsWith("/p/")
+  );
 }
 
 async function readAdminSession(request, env) {

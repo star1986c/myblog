@@ -9,6 +9,13 @@ test("sets short browser cache and long edge cache for HTML", () => {
   );
 });
 
+test("sets short cache for dynamic blog content", () => {
+  assert.equal(cacheControlFor("/blog/", "text/html; charset=utf-8"), "public, max-age=60, s-maxage=60");
+  assert.equal(cacheControlFor("/blog/my-post", "text/html; charset=utf-8"), "public, max-age=60, s-maxage=60");
+  assert.equal(cacheControlFor("/category/cloudflare", "text/html; charset=utf-8"), "public, max-age=60, s-maxage=60");
+  assert.equal(cacheControlFor("/p/about", "text/html; charset=utf-8"), "public, max-age=60, s-maxage=60");
+});
+
 test("sets immutable cache for fingerprinted static assets", () => {
   assert.equal(
     cacheControlFor("/assets/solar-system.20260706.js", "application/javascript"),

@@ -1,7 +1,7 @@
 function renderBlogIndex(posts) {
   const items = posts.length
     ? posts.map(renderPostCard).join("")
-    : `<p class="empty">No public posts yet.</p>`;
+    : renderEmptyState("Private drafts are still being shaped. Public notes will appear here after they are published.");
 
   return renderDocument({
     title: "Blog | AI Build Lab",
@@ -9,14 +9,17 @@ function renderBlogIndex(posts) {
     body: `
       <header class="site-header">
         <a class="brand" href="/">AI Build Lab</a>
-        <nav><a href="/json/">JSON Tool</a></nav>
+        <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
       </header>
       <main class="blog-shell">
-        <section class="blog-heading">
-          <p>Blog</p>
-          <h1>Build notes and field logs.</h1>
-        </section>
-        <section class="post-list">${items}</section>
+        ${renderBlogHero({
+          eyebrow: "AI Build Lab Journal",
+          title: "Build notes, release logs, and useful experiments.",
+          description: "A quiet notebook for Cloudflare Workers, AI tooling, small product decisions, and the practical details behind this personal site.",
+          count: posts.length,
+          countLabel: `${posts.length} public ${posts.length === 1 ? "note" : "notes"}`,
+        })}
+        <section class="post-list" aria-label="Published notes">${items}</section>
       </main>
     `,
   });
@@ -32,11 +35,14 @@ function renderPost(post) {
         <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
       </header>
       <main class="article-shell">
+        <a class="article-back" href="/blog/">Back to blog</a>
         <article class="article">
-          <p class="meta">${escapeHtml(formatDate(post.publishedAt || post.createdAt))}</p>
-          <h1>${escapeHtml(post.title)}</h1>
-          ${post.excerpt ? `<p class="excerpt">${escapeHtml(post.excerpt)}</p>` : ""}
-          <div class="content">${renderContent(post.content)}</div>
+          <header class="article-header">
+            ${renderDate(post.publishedAt || post.createdAt)}
+            <h1>${escapeHtml(post.title)}</h1>
+            ${post.excerpt ? `<p class="excerpt">${escapeHtml(post.excerpt)}</p>` : ""}
+          </header>
+          <div class="article-content">${renderContent(post.content)}</div>
         </article>
       </main>
     `,
@@ -53,10 +59,12 @@ function renderStandalonePage(page) {
         <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
       </header>
       <main class="article-shell">
-        <article class="article">
-          <h1>${escapeHtml(page.title)}</h1>
-          ${page.excerpt ? `<p class="excerpt">${escapeHtml(page.excerpt)}</p>` : ""}
-          <div class="content">${renderContent(page.content)}</div>
+        <article class="article article--page">
+          <header class="article-header">
+            <h1>${escapeHtml(page.title)}</h1>
+            ${page.excerpt ? `<p class="excerpt">${escapeHtml(page.excerpt)}</p>` : ""}
+          </header>
+          <div class="article-content">${renderContent(page.content)}</div>
         </article>
       </main>
     `,
@@ -66,7 +74,7 @@ function renderStandalonePage(page) {
 function renderCategory(category, posts) {
   const items = posts.length
     ? posts.map(renderPostCard).join("")
-    : `<p class="empty">No public posts in this category yet.</p>`;
+    : renderEmptyState("No public posts in this category yet.");
 
   return renderDocument({
     title: `${category.name} | AI Build Lab`,
@@ -77,12 +85,14 @@ function renderCategory(category, posts) {
         <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
       </header>
       <main class="blog-shell">
-        <section class="blog-heading">
-          <p>Category</p>
-          <h1>${escapeHtml(category.name)}</h1>
-          ${category.description ? `<span>${escapeHtml(category.description)}</span>` : ""}
-        </section>
-        <section class="post-list">${items}</section>
+        ${renderBlogHero({
+          eyebrow: "Category",
+          title: category.name,
+          description: category.description,
+          count: posts.length,
+          countLabel: `${posts.length} public ${posts.length === 1 ? "note" : "notes"}`,
+        })}
+        <section class="post-list" aria-label="Category notes">${items}</section>
       </main>
     `,
   });
@@ -98,9 +108,11 @@ function renderBlogNotConfigured() {
         <nav><a href="/json/">JSON Tool</a></nav>
       </header>
       <main class="blog-shell">
-        <section class="blog-heading">
-          <p>Blog</p>
+        <section class="blog-hero">
+          <div class="blog-hero__copy">
+          <p class="eyebrow">Blog</p>
           <h1>Blog backend is being configured.</h1>
+          </div>
         </section>
       </main>
     `,
@@ -108,14 +120,47 @@ function renderBlogNotConfigured() {
 }
 
 function renderPostCard(post) {
+  const dateValue = post.publishedAt || post.createdAt;
   return `
     <article class="post-card">
-      <a href="/blog/${encodeURIComponent(post.slug)}">
-        <span>${escapeHtml(formatDate(post.publishedAt || post.createdAt))}</span>
-        <h2>${escapeHtml(post.title)}</h2>
-        ${post.excerpt ? `<p>${escapeHtml(post.excerpt)}</p>` : ""}
+      <a class="post-card__link" href="/blog/${encodeURIComponent(post.slug)}">
+        <div class="post-card__meta">
+          ${renderDate(dateValue)}
+          <span>Published note</span>
+        </div>
+        <div class="post-card__body">
+          <h2>${escapeHtml(post.title)}</h2>
+          ${post.excerpt ? `<p>${escapeHtml(post.excerpt)}</p>` : ""}
+        </div>
+        <span class="post-card__action">Read article</span>
       </a>
     </article>
+  `;
+}
+
+function renderBlogHero({ eyebrow, title, description, count, countLabel }) {
+  return `
+    <section class="blog-hero">
+      <div class="blog-hero__copy">
+        <p class="eyebrow">${escapeHtml(eyebrow)}</p>
+        <h1>${escapeHtml(title)}</h1>
+        ${description ? `<span>${escapeHtml(description)}</span>` : ""}
+      </div>
+      <aside class="blog-stats" aria-label="Blog summary">
+        <strong>${escapeHtml(String(count))}</strong>
+        <span>${escapeHtml(countLabel)}</span>
+        <small>Published when notes are ready, not when drafts are saved.</small>
+      </aside>
+    </section>
+  `;
+}
+
+function renderEmptyState(message) {
+  return `
+    <div class="empty-state">
+      <strong>No public posts yet</strong>
+      <p>${escapeHtml(message)}</p>
+    </div>
   `;
 }
 
@@ -143,6 +188,13 @@ function renderContent(content) {
     .split(/\n{2,}/)
     .map((paragraph) => `<p>${paragraph.replace(/\n/g, "<br>")}</p>`)
     .join("");
+}
+
+function renderDate(value) {
+  const formatted = formatDate(value);
+  return formatted
+    ? `<p class="meta"><time datetime="${escapeHtml(value)}">${escapeHtml(formatted)}</time></p>`
+    : "";
 }
 
 function formatDate(value) {
