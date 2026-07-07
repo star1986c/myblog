@@ -17,6 +17,10 @@ const accountMessage = $("[data-account-message]");
 const consoleEl = $("[data-console]");
 const logoutButton = $("[data-logout]");
 const createButton = $("[data-create]");
+const sectionLabel = $("[data-section-label]");
+const sectionTitle = $("[data-section-title]");
+const sectionDescription = $("[data-section-description]");
+const workspaceMessage = $("[data-workspace-message]");
 
 init();
 
@@ -44,14 +48,23 @@ function bindTabs() {
 }
 
 async function selectTab(tabName) {
-  state.activeTab = tabName;
   const button = $(`[data-tab="${tabName}"]`);
+  if (!button) {
+    return;
+  }
+
+  state.activeTab = tabName;
   $$("[data-tab]").forEach((tab) => tab.classList.toggle("is-active", tab === button));
   $$("[data-panel]").forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.panel === state.activeTab);
   });
-  $("[data-section-label]").textContent = button?.textContent || "";
+
+  sectionLabel.textContent = button.dataset.label || button.textContent.trim();
+  sectionTitle.textContent = button.dataset.title || "内容管理";
+  sectionDescription.textContent = button.dataset.description || "";
+  createButton.textContent = button.dataset.createLabel || "新建";
   createButton.hidden = tabName === "account";
+  setWorkspaceMessage("");
   resetCurrentForm();
   await loadAll();
 }
@@ -83,7 +96,10 @@ function bindForms() {
     window.location.reload();
   });
 
-  createButton.addEventListener("click", resetCurrentForm);
+  createButton.addEventListener("click", () => {
+    resetCurrentForm();
+    setWorkspaceMessage("正在创建新内容", "success");
+  });
   $("[data-post-form]").addEventListener("submit", savePost);
   $("[data-page-form]").addEventListener("submit", savePage);
   $("[data-category-form]").addEventListener("submit", saveCategory);
@@ -130,16 +146,36 @@ async function loadAll() {
 function renderList(type, items) {
   const list = $(`[data-${type}-list]`);
   list.replaceChildren();
+
+  if (!items.length) {
+    renderEmptyState(list, type);
+    return;
+  }
+
   for (const item of items) {
     const button = document.createElement("button");
+    const title = escapeHtml(item.title || item.name || "Untitled");
+    const slug = escapeHtml(item.slug || "");
+    const meta = item.visibility
+      ? `
+        <span class="status-badge ${badgeClass("status", item.status)}">${statusLabel(item.status)}</span>
+        <span class="visibility-badge ${badgeClass("visibility", item.visibility)}">${visibilityLabel(item.visibility)}</span>
+      `
+      : "";
+
     button.type = "button";
     button.className = "list-item";
+    button.dataset.itemId = item.id || "";
     button.innerHTML = `
-      <strong>${escapeHtml(item.title || item.name)}</strong>
-      <span>${escapeHtml(item.slug || "")}</span>
-      ${item.visibility ? `<span>${item.status} / ${item.visibility}</span>` : ""}
+      <span class="item-title">${title}</span>
+      ${slug ? `<span class="item-slug">${slug}</span>` : ""}
+      ${meta ? `<span class="item-meta">${meta}</span>` : ""}
     `;
-    button.addEventListener("click", () => fillForm(type, item));
+    button.addEventListener("click", () => {
+      fillForm(type, item);
+      setActiveListItem(type, item.id);
+      setWorkspaceMessage("");
+    });
     list.append(button);
   }
 }
@@ -154,11 +190,13 @@ function fillForm(type, item) {
 }
 
 function resetCurrentForm() {
-  const form = $(`[data-${singular(state.activeTab)}-form]`);
+  const type = singular(state.activeTab);
+  const form = $(`[data-${type}-form]`);
   if (!form) {
     return;
   }
   form.reset();
+  clearActiveListItem(type);
   if (form.elements.id) {
     form.elements.id.value = "";
   }
@@ -192,12 +230,18 @@ async function saveMedia(event) {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.currentTarget));
   delete body.id;
-  await api("/api/admin/media", {
-    method: "POST",
-    body,
-  });
-  resetCurrentForm();
-  await loadAll();
+
+  try {
+    await api("/api/admin/media", {
+      method: "POST",
+      body,
+    });
+    resetCurrentForm();
+    await loadAll();
+    setWorkspaceMessage("媒体地址已保存", "success");
+  } catch (error) {
+    setWorkspaceMessage(error.message, "error");
+  }
 }
 
 async function saveAccount(event) {
@@ -224,6 +268,7 @@ async function saveAccount(event) {
     form.elements.newPassword.value = "";
     form.elements.confirmPassword.value = "";
     accountMessage.textContent = "账号已更新";
+    setWorkspaceMessage("账号信息已更新", "success");
   } catch (error) {
     accountMessage.textContent = error.message;
   }
@@ -244,6 +289,11 @@ function renderMediaList() {
   const list = $("[data-media-list]");
   list.replaceChildren();
 
+  if (!state.media.length) {
+    renderEmptyState(list, "media");
+    return;
+  }
+
   for (const item of state.media) {
     const button = document.createElement("button");
     const thumb = document.createElement("span");
@@ -254,6 +304,7 @@ function renderMediaList() {
 
     button.type = "button";
     button.className = "list-item media-list-item";
+    button.dataset.itemId = item.id || "";
     thumb.className = "media-thumb";
     details.className = "media-details";
     title.textContent = item.filename || item.url || "Untitled";
@@ -270,7 +321,11 @@ function renderMediaList() {
 
     details.append(title, url, meta);
     button.append(thumb, details);
-    button.addEventListener("click", () => fillForm("media", item));
+    button.addEventListener("click", () => {
+      fillForm("media", item);
+      setActiveListItem("media", item.id);
+      setWorkspaceMessage("");
+    });
     list.append(button);
   }
 }
@@ -279,22 +334,38 @@ async function saveResource(collection, form) {
   const body = Object.fromEntries(new FormData(form));
   const id = body.id;
   delete body.id;
-  await api(id ? `/api/admin/${collection}/${encodeURIComponent(id)}` : `/api/admin/${collection}`, {
-    method: id ? "PUT" : "POST",
-    body,
-  });
-  resetCurrentForm();
-  await loadAll();
+
+  try {
+    await api(id ? `/api/admin/${collection}/${encodeURIComponent(id)}` : `/api/admin/${collection}`, {
+      method: id ? "PUT" : "POST",
+      body,
+    });
+    resetCurrentForm();
+    await loadAll();
+    setWorkspaceMessage(`${collectionLabel(collection)}已保存`, "success");
+  } catch (error) {
+    setWorkspaceMessage(error.message, "error");
+  }
 }
 
 async function removeResource(collection, form) {
   const id = form.elements.id?.value;
   if (!id) {
+    setWorkspaceMessage("请先选择要删除的内容", "error");
     return;
   }
-  await api(`/api/admin/${collection}/${encodeURIComponent(id)}`, { method: "DELETE" });
-  resetCurrentForm();
-  await loadAll();
+  if (!window.confirm(`确认删除这个${collectionLabel(collection)}？`)) {
+    return;
+  }
+
+  try {
+    await api(`/api/admin/${collection}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    resetCurrentForm();
+    await loadAll();
+    setWorkspaceMessage(`${collectionLabel(collection)}已删除`, "success");
+  } catch (error) {
+    setWorkspaceMessage(error.message, "error");
+  }
 }
 
 async function api(path, options = {}) {
@@ -318,6 +389,76 @@ async function api(path, options = {}) {
     throw new Error(body.error || `Request failed: ${response.status}`);
   }
   return body;
+}
+
+function renderEmptyState(list, type) {
+  const copy = emptyStateCopy(type);
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  empty.innerHTML = `
+    <strong>${escapeHtml(copy.title)}</strong>
+    <span>${escapeHtml(copy.description)}</span>
+  `;
+  list.append(empty);
+}
+
+function emptyStateCopy(type) {
+  const copy = {
+    post: ["还没有文章", "点击新建文章后，内容会先保存为私有草稿。"],
+    page: ["还没有页面", "独立页面默认不会公开显示。"],
+    category: ["还没有分类", "分类创建后可以用于公开文章归档。"],
+    media: ["还没有媒体地址", "保存外部图片或媒体 URL 后会显示在这里。"],
+  };
+  const [title, description] = copy[type] || ["暂无内容", "保存后会显示在这里。"];
+  return { title, description };
+}
+
+function setActiveListItem(type, id) {
+  const list = $(`[data-${type}-list]`);
+  if (!list) {
+    return;
+  }
+  list.querySelectorAll(".list-item").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.itemId === String(id || ""));
+  });
+}
+
+function clearActiveListItem(type) {
+  const list = $(`[data-${type}-list]`);
+  if (!list) {
+    return;
+  }
+  list.querySelectorAll(".list-item").forEach((item) => item.classList.remove("is-active"));
+}
+
+function setWorkspaceMessage(text, tone = "") {
+  workspaceMessage.textContent = text;
+  workspaceMessage.classList.toggle("is-success", tone === "success");
+  workspaceMessage.classList.toggle("is-error", tone === "error");
+}
+
+function collectionLabel(collection) {
+  if (collection === "posts") return "文章";
+  if (collection === "pages") return "页面";
+  if (collection === "categories") return "分类";
+  return "内容";
+}
+
+function statusLabel(status) {
+  if (status === "published") return "已发布";
+  return "草稿";
+}
+
+function visibilityLabel(visibility) {
+  if (visibility === "public") return "公开";
+  return "私有";
+}
+
+function badgeClass(kind, value) {
+  if (kind === "status" && value === "published") return "is-published";
+  if (kind === "status") return "is-draft";
+  if (kind === "visibility" && value === "public") return "is-public";
+  return "is-private";
 }
 
 function singular(collection) {

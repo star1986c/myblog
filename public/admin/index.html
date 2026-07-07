@@ -5,27 +5,99 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Admin | AI Build Lab</title>
     <meta name="robots" content="noindex,nofollow" />
-    <meta name="theme-color" content="#0f1720" />
+    <meta name="theme-color" content="#08111c" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/assets/admin.20260706.css" />
+    <link rel="stylesheet" href="/assets/admin.20260707.css" />
   </head>
   <body>
     <main class="admin-shell" data-admin-app>
       <aside class="sidebar">
-        <a class="brand" href="/">AI Build Lab</a>
+        <a class="brand" href="/">
+          <span class="brand-mark">AI</span>
+          <span>
+            <strong>AI Build Lab</strong>
+            <small>Content Studio</small>
+          </span>
+        </a>
+
+        <div class="sidebar-card" aria-label="Publishing policy">
+          <span>默认发布策略</span>
+          <strong>草稿 + 私有</strong>
+          <small>公开内容需要同时设为已发布和公开可见。</small>
+        </div>
+
         <nav class="tabs" aria-label="Admin sections">
-          <button class="tab is-active" type="button" data-tab="posts">文章</button>
-          <button class="tab" type="button" data-tab="pages">页面</button>
-          <button class="tab" type="button" data-tab="categories">分类</button>
-          <button class="tab" type="button" data-tab="media">媒体</button>
-          <button class="tab" type="button" data-tab="account">账号</button>
+          <button
+            class="tab is-active"
+            type="button"
+            data-tab="posts"
+            data-label="文章"
+            data-title="文章工作台"
+            data-description="管理正文、摘要、发布状态和 SEO 信息。"
+            data-create-label="新建文章"
+          >
+            <span>文章</span>
+            <small>Posts</small>
+          </button>
+          <button
+            class="tab"
+            type="button"
+            data-tab="pages"
+            data-label="页面"
+            data-title="独立页面"
+            data-description="维护关于页、说明页和其他固定内容。"
+            data-create-label="新建页面"
+          >
+            <span>页面</span>
+            <small>Pages</small>
+          </button>
+          <button
+            class="tab"
+            type="button"
+            data-tab="categories"
+            data-label="分类"
+            data-title="分类管理"
+            data-description="整理文章归档入口和分类描述。"
+            data-create-label="新建分类"
+          >
+            <span>分类</span>
+            <small>Categories</small>
+          </button>
+          <button
+            class="tab"
+            type="button"
+            data-tab="media"
+            data-label="媒体"
+            data-title="媒体地址"
+            data-description="保存图片、封面和外部媒体地址。"
+            data-create-label="新增媒体"
+          >
+            <span>媒体</span>
+            <small>Media URLs</small>
+          </button>
+          <button
+            class="tab"
+            type="button"
+            data-tab="account"
+            data-label="账号"
+            data-title="账号安全"
+            data-description="修改后台用户名和登录密码。"
+            data-create-label=""
+          >
+            <span>账号</span>
+            <small>Account</small>
+          </button>
         </nav>
-        <button class="logout" type="button" data-logout hidden>退出</button>
+
+        <a class="sidebar-link" href="/blog/" target="_blank" rel="noreferrer">查看博客</a>
+        <button class="logout" type="button" data-logout hidden>退出登录</button>
       </aside>
 
       <section class="workspace">
         <form class="login-panel" data-login>
+          <p class="login-kicker">Content Studio</p>
           <h1>后台登录</h1>
+          <p class="login-copy">登录成功后会自动进入内容后台。</p>
           <label>
             用户名
             <input name="username" autocomplete="username" required />
@@ -38,65 +110,96 @@
           <p class="message" data-login-message></p>
         </form>
 
-        <section class="console" data-console hidden>
+        <section class="console workspace-shell" data-console hidden>
           <header class="toolbar">
-            <div>
+            <div class="toolbar-main">
               <p data-section-label>文章</p>
-              <h1 data-section-title>内容管理</h1>
+              <h1 data-section-title>文章工作台</h1>
+              <span data-section-description>管理正文、摘要、发布状态和 SEO 信息。</span>
             </div>
-            <button class="primary" type="button" data-create>新建</button>
+            <div class="toolbar-actions">
+              <a class="secondary-link" href="/blog/" target="_blank" rel="noreferrer">打开博客</a>
+              <button class="primary" type="button" data-create>新建文章</button>
+            </div>
+            <p class="toolbar-message" data-workspace-message role="status"></p>
           </header>
 
           <section class="panel is-active" data-panel="posts">
             <div class="split">
-              <div class="list" data-post-list></div>
+              <aside class="list-column">
+                <div class="list-header">
+                  <strong>文章列表</strong>
+                  <span>公开内容会出现在 /blog/</span>
+                </div>
+                <div class="list" data-post-list></div>
+              </aside>
+
               <form class="editor" data-post-form>
+                <div class="editor-heading">
+                  <div>
+                    <p>编辑文章</p>
+                    <h2>内容与发布</h2>
+                  </div>
+                  <span>默认私有草稿</span>
+                </div>
                 <input name="id" type="hidden" />
-                <label>
-                  标题
-                  <input name="title" required />
-                </label>
-                <label>
-                  Slug
-                  <input name="slug" />
-                </label>
-                <div class="row">
+                <section class="form-section">
+                  <h3>内容</h3>
                   <label>
-                    状态
-                    <select name="status">
-                      <option value="draft" selected>草稿</option>
-                      <option value="published">已发布</option>
-                    </select>
+                    标题
+                    <input name="title" required />
                   </label>
                   <label>
-                    可见性
-                    <select name="visibility">
-                      <option value="private" selected>私有</option>
-                      <option value="public">公开</option>
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  摘要
-                  <input name="excerpt" />
-                </label>
-                <label>
-                  正文
-                  <textarea name="content" rows="14"></textarea>
-                </label>
-                <div class="row">
-                  <label>
-                    SEO 标题
-                    <input name="seoTitle" />
+                    Slug
+                    <input name="slug" />
                   </label>
                   <label>
-                    SEO 描述
-                    <input name="seoDescription" />
+                    摘要
+                    <input name="excerpt" />
                   </label>
-                </div>
+                  <label>
+                    正文
+                    <textarea name="content" rows="14"></textarea>
+                  </label>
+                </section>
+
+                <section class="form-section">
+                  <h3>发布</h3>
+                  <div class="row">
+                    <label>
+                      状态
+                      <select name="status">
+                        <option value="draft" selected>草稿</option>
+                        <option value="published">已发布</option>
+                      </select>
+                    </label>
+                    <label>
+                      可见性
+                      <select name="visibility">
+                        <option value="private" selected>私有</option>
+                        <option value="public">公开</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="form-section">
+                  <h3>SEO</h3>
+                  <div class="row">
+                    <label>
+                      SEO 标题
+                      <input name="seoTitle" />
+                    </label>
+                    <label>
+                      SEO 描述
+                      <input name="seoDescription" />
+                    </label>
+                  </div>
+                </section>
+
                 <div class="actions">
                   <button class="primary" type="submit">保存文章</button>
-                  <button type="button" data-delete-post>删除</button>
+                  <button class="danger" type="button" data-delete-post>删除</button>
                 </div>
               </form>
             </div>
@@ -104,44 +207,66 @@
 
           <section class="panel" data-panel="pages">
             <div class="split">
-              <div class="list" data-page-list></div>
-              <form class="editor" data-page-form>
-                <input name="id" type="hidden" />
-                <label>
-                  标题
-                  <input name="title" required />
-                </label>
-                <label>
-                  Slug
-                  <input name="slug" />
-                </label>
-                <div class="row">
-                  <label>
-                    状态
-                    <select name="status">
-                      <option value="draft" selected>草稿</option>
-                      <option value="published">已发布</option>
-                    </select>
-                  </label>
-                  <label>
-                    可见性
-                    <select name="visibility">
-                      <option value="private" selected>私有</option>
-                      <option value="public">公开</option>
-                    </select>
-                  </label>
+              <aside class="list-column">
+                <div class="list-header">
+                  <strong>页面列表</strong>
+                  <span>固定页面使用 /p/ 路径</span>
                 </div>
-                <label>
-                  摘要
-                  <input name="excerpt" />
-                </label>
-                <label>
-                  正文
-                  <textarea name="content" rows="14"></textarea>
-                </label>
+                <div class="list" data-page-list></div>
+              </aside>
+
+              <form class="editor" data-page-form>
+                <div class="editor-heading">
+                  <div>
+                    <p>编辑页面</p>
+                    <h2>页面内容</h2>
+                  </div>
+                  <span>默认私有草稿</span>
+                </div>
+                <input name="id" type="hidden" />
+                <section class="form-section">
+                  <h3>内容</h3>
+                  <label>
+                    标题
+                    <input name="title" required />
+                  </label>
+                  <label>
+                    Slug
+                    <input name="slug" />
+                  </label>
+                  <label>
+                    摘要
+                    <input name="excerpt" />
+                  </label>
+                  <label>
+                    正文
+                    <textarea name="content" rows="14"></textarea>
+                  </label>
+                </section>
+
+                <section class="form-section">
+                  <h3>发布</h3>
+                  <div class="row">
+                    <label>
+                      状态
+                      <select name="status">
+                        <option value="draft" selected>草稿</option>
+                        <option value="published">已发布</option>
+                      </select>
+                    </label>
+                    <label>
+                      可见性
+                      <select name="visibility">
+                        <option value="private" selected>私有</option>
+                        <option value="public">公开</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
                 <div class="actions">
                   <button class="primary" type="submit">保存页面</button>
-                  <button type="button" data-delete-page>删除</button>
+                  <button class="danger" type="button" data-delete-page>删除</button>
                 </div>
               </form>
             </div>
@@ -149,24 +274,40 @@
 
           <section class="panel" data-panel="categories">
             <div class="split compact">
-              <div class="list" data-category-list></div>
+              <aside class="list-column">
+                <div class="list-header">
+                  <strong>分类列表</strong>
+                  <span>用于公开文章归档</span>
+                </div>
+                <div class="list" data-category-list></div>
+              </aside>
+
               <form class="editor" data-category-form>
+                <div class="editor-heading">
+                  <div>
+                    <p>编辑分类</p>
+                    <h2>分类信息</h2>
+                  </div>
+                </div>
                 <input name="id" type="hidden" />
-                <label>
-                  名称
-                  <input name="name" required />
-                </label>
-                <label>
-                  Slug
-                  <input name="slug" />
-                </label>
-                <label>
-                  描述
-                  <textarea name="description" rows="5"></textarea>
-                </label>
+                <section class="form-section">
+                  <h3>基础信息</h3>
+                  <label>
+                    名称
+                    <input name="name" required />
+                  </label>
+                  <label>
+                    Slug
+                    <input name="slug" />
+                  </label>
+                  <label>
+                    描述
+                    <textarea name="description" rows="5"></textarea>
+                  </label>
+                </section>
                 <div class="actions">
                   <button class="primary" type="submit">保存分类</button>
-                  <button type="button" data-delete-category>删除</button>
+                  <button class="danger" type="button" data-delete-category>删除</button>
                 </div>
               </form>
             </div>
@@ -174,25 +315,44 @@
 
           <section class="panel" data-panel="media">
             <div class="split compact">
-              <div class="list" data-media-list></div>
+              <aside class="list-column">
+                <div class="list-header">
+                  <strong>媒体列表</strong>
+                  <span>手写外部媒体地址</span>
+                </div>
+                <div class="list" data-media-list></div>
+              </aside>
+
               <form class="editor" data-media-form>
+                <div class="editor-heading">
+                  <div>
+                    <p>编辑媒体</p>
+                    <h2>媒体地址</h2>
+                  </div>
+                  <span>不使用 R2 上传</span>
+                </div>
                 <input name="id" type="hidden" />
-                <label>
-                  媒体地址
-                  <input name="url" type="url" required />
-                </label>
-                <label>
-                  文件名
-                  <input name="filename" />
-                </label>
-                <label>
-                  Content-Type
-                  <input name="contentType" />
-                </label>
-                <label>
-                  Alt
-                  <input name="alt" />
-                </label>
+                <section class="form-section">
+                  <h3>地址信息</h3>
+                  <label>
+                    媒体地址
+                    <input name="url" type="url" required />
+                  </label>
+                  <label>
+                    文件名
+                    <input name="filename" />
+                  </label>
+                  <div class="row">
+                    <label>
+                      Content-Type
+                      <input name="contentType" />
+                    </label>
+                    <label>
+                      Alt
+                      <input name="alt" />
+                    </label>
+                  </div>
+                </section>
                 <div class="actions">
                   <button class="primary" type="submit">保存媒体地址</button>
                 </div>
@@ -202,24 +362,37 @@
 
           <section class="panel" data-panel="account">
             <form class="editor account-editor" data-account-form>
-              <label>
-                用户名
-                <input name="username" autocomplete="username" required />
-              </label>
-              <label>
-                当前密码
-                <input name="currentPassword" type="password" autocomplete="current-password" required />
-              </label>
-              <div class="row">
-                <label>
-                  新密码
-                  <input name="newPassword" type="password" autocomplete="new-password" required />
-                </label>
-                <label>
-                  确认新密码
-                  <input name="confirmPassword" type="password" autocomplete="new-password" required />
-                </label>
+              <div class="editor-heading">
+                <div>
+                  <p>账号</p>
+                  <h2>登录信息</h2>
+                </div>
+                <span>修改后重新签发会话</span>
               </div>
+              <section class="form-section">
+                <h3>账号资料</h3>
+                <label>
+                  用户名
+                  <input name="username" autocomplete="username" required />
+                </label>
+                <label>
+                  当前密码
+                  <input name="currentPassword" type="password" autocomplete="current-password" required />
+                </label>
+              </section>
+              <section class="form-section">
+                <h3>新密码</h3>
+                <div class="row">
+                  <label>
+                    新密码
+                    <input name="newPassword" type="password" autocomplete="new-password" required />
+                  </label>
+                  <label>
+                    确认新密码
+                    <input name="confirmPassword" type="password" autocomplete="new-password" required />
+                  </label>
+                </div>
+              </section>
               <div class="actions">
                 <button class="primary" type="submit">更新账号</button>
               </div>
@@ -230,6 +403,6 @@
       </section>
     </main>
 
-    <script type="module" src="/assets/admin.20260706.js"></script>
+    <script type="module" src="/assets/admin.20260707.js"></script>
   </body>
 </html>

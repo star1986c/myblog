@@ -5,8 +5,8 @@ import test from "node:test";
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
-const adminCss = await readFile(new URL("../public/assets/admin.20260706.css", import.meta.url), "utf8");
-const adminJs = await readFile(new URL("../public/assets/admin.20260706.js", import.meta.url), "utf8");
+const adminCss = await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8");
+const adminJs = await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8");
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
 test("home page links to the JSON tool without embedding the formatter", () => {
@@ -51,8 +51,8 @@ test("sitemap includes the standalone JSON tool URL", () => {
 
 test("admin console is served from a standalone page with private article defaults", () => {
   assert.match(adminHtml, /data-admin-app/);
-  assert.match(adminHtml, /href="\/assets\/admin\.20260706\.css"/);
-  assert.match(adminHtml, /src="\/assets\/admin\.20260706\.js"/);
+  assert.match(adminHtml, /href="\/assets\/admin\.20260707\.css"/);
+  assert.match(adminHtml, /src="\/assets\/admin\.20260707\.js"/);
   assert.match(adminHtml, /name="visibility"/);
   assert.match(adminHtml, /value="private" selected/);
   assert.match(adminHtml, /name="status"/);
@@ -73,9 +73,26 @@ test("admin console includes an account password change panel", () => {
   assert.match(adminHtml, /name="newPassword"/);
 });
 
+test("admin console presents a polished content workspace", () => {
+  assert.match(adminHtml, /Content Studio/);
+  assert.match(adminHtml, /data-section-description/);
+  assert.match(adminHtml, /data-workspace-message/);
+  assert.match(adminHtml, /data-create-label="新建文章"/);
+  assert.match(adminHtml, /class="form-section"/);
+  assert.match(adminHtml, /class="list-column"/);
+  assert.match(adminCss, /\.workspace-shell/);
+  assert.match(adminCss, /\.status-badge/);
+  assert.match(adminCss, /\.empty-state/);
+  assert.match(adminJs, /renderEmptyState/);
+  assert.match(adminJs, /setWorkspaceMessage/);
+});
+
 test("admin login form is forcibly hidden after authentication", () => {
   assert.match(adminJs, /classList\.add\("is-authenticated"\)/);
   assert.match(adminCss, /\.is-authenticated\s+\[data-login\]/);
   assert.match(adminCss, /display:\s*none\s*!important/);
+  assert.match(adminCss, /\.console\[hidden\]/);
+  assert.match(adminCss, /\.sidebar\s+\.tabs/);
+  assert.match(adminCss, /body\.is-authenticated\s+\.tabs/);
   assert.match(adminCss, /\.is-authenticated\s+\[data-console\]/);
 });
