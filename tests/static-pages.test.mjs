@@ -22,14 +22,24 @@ test("home page links to the JSON tool without embedding the formatter", () => {
 });
 
 test("home page links to the standalone password generator", () => {
-  assert.match(indexHtml, /<a href="\/password\/">Password<\/a>/);
+  assert.match(indexHtml, /href="\/password\/"/);
   assert.doesNotMatch(indexHtml, /data-password-tool/);
+});
+
+test("home page presents the site as personal developer tools and a technical blog", () => {
+  assert.match(indexHtml, /个人开发工具与技术博客/);
+  assert.match(indexHtml, /Personal developer lab/);
+  assert.match(indexHtml, /href="\/blog\/"/);
+  assert.match(indexHtml, /id="tools"/);
+  assert.match(indexHtml, /id="about"/);
+  assert.match(indexHtml, /href="\/assets\/styles\.20260710\.css"/);
 });
 
 test("JSON formatter is served from a standalone page", () => {
   assert.match(jsonHtml, /<main class="tool-shell" data-json-tool>/);
   assert.match(jsonHtml, /href="https:\/\/superstar1014\.qzz\.io\/json\/"/);
-  assert.match(jsonHtml, /href="\/assets\/json-page\.20260706\.css"/);
+  assert.match(jsonHtml, /href="\/assets\/json-page\.20260710\.css"/);
+  assert.match(jsonHtml, /href="\/assets\/tool-brand\.20260710\.css"/);
   assert.match(jsonHtml, /src="\/assets\/json-tool\.20260706\.js"/);
 });
 
@@ -62,6 +72,7 @@ test("sitemap includes the standalone JSON tool URL", () => {
 test("password generator includes secure local controls and history", () => {
   assert.match(passwordHtml, /<main class="password-shell" data-password-tool>/);
   assert.match(passwordHtml, /href="https:\/\/superstar1014\.qzz\.io\/password\/"/);
+  assert.match(passwordHtml, /href="\/assets\/tool-brand\.20260710\.css"/);
   assert.match(passwordHtml, /data-character="lowercase"/);
   assert.match(passwordHtml, /data-character="symbols"/);
   assert.match(passwordHtml, /data-password-excluded/);

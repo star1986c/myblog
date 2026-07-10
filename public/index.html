@@ -1,142 +1,276 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI Build Lab | Solar System Field</title>
+    <title>AI Build Lab | 个人开发工具与技术博客</title>
     <meta
       name="description"
-      content="A cinematic solar-system inspired 3D entrance for AI Build Lab."
+      content="一个由个人开发者持续维护的技术站，提供轻量开发工具、工程实践记录与 AI 辅助开发笔记。"
     />
-    <meta name="theme-color" content="#02040a" />
+    <meta name="theme-color" content="#05070b" />
     <meta name="robots" content="index,follow" />
     <link rel="canonical" href="https://superstar1014.qzz.io/" />
 
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="AI Build Lab | Solar System Field" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="AI Build Lab | 个人开发工具与技术博客" />
     <meta
       property="og:description"
-      content="A quiet universe of orbiting bodies, light, and motion for a cinematic AI lab entrance."
+      content="把常用工具做得更顺手，也把真实的开发过程写下来。"
     />
     <meta property="og:url" content="https://superstar1014.qzz.io/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="AI Build Lab | Solar System Field" />
+    <meta name="twitter:title" content="AI Build Lab | 个人开发工具与技术博客" />
     <meta
       name="twitter:description"
-      content="A cinematic solar-system inspired 3D entrance for AI Build Lab."
+      content="个人开发者维护的轻量工具、技术文章与工程实验。"
     />
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
-    <link rel="preload" href="/assets/styles.20260706.css" as="style" />
+    <link rel="preload" href="/assets/styles.20260710.css" as="style" />
     <link rel="modulepreload" href="/vendor/three-0.160.0.module.js" />
     <link rel="modulepreload" href="/assets/solar-system.20260706.js" />
-    <link rel="stylesheet" href="/assets/styles.20260706.css" />
+    <link rel="stylesheet" href="/assets/styles.20260710.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
     <canvas id="three-scene" aria-hidden="true"></canvas>
     <div class="fallback" aria-hidden="true"></div>
 
-    <main class="page">
-      <nav class="nav" aria-label="Main navigation">
-        <a class="brand" href="/">
-          <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
-            <rect width="48" height="48" rx="8" fill="#080D18" />
-            <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
-            <circle cx="24" cy="24" r="14.5" fill="none" stroke="#6ED6FF" stroke-width="2" />
-            <circle cx="36" cy="20" r="2.6" fill="#B8A2FF" />
-            <path
-              d="M12 30C19 38 31 38 38 30"
-              fill="none"
-              stroke="#FF7F5F"
-              stroke-width="2.2"
-              stroke-linecap="round"
-            />
-          </svg>
-          <span>AI Build Lab</span>
-        </a>
-        <div class="links">
-          <a href="#system">System</a>
-          <a href="#signals">Signals</a>
-          <a href="/json/">JSON Tool</a>
-          <a href="/password/">Password</a>
-          <a href="#contact">Contact</a>
-        </div>
-      </nav>
+    <div class="page">
+      <header class="site-header">
+        <nav class="nav container" aria-label="主要导航">
+          <a class="brand" href="/" aria-label="AI Build Lab 首页">
+            <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+              <rect width="48" height="48" rx="9" fill="#080D18" />
+              <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
+              <circle cx="24" cy="24" r="14.5" fill="none" stroke="#6ED6FF" stroke-width="2" />
+              <circle cx="36" cy="20" r="2.6" fill="#7DE2B8" />
+              <path
+                d="M12 30C19 38 31 38 38 30"
+                fill="none"
+                stroke="#FF7F5F"
+                stroke-width="2.2"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span>
+              <strong>AI Build Lab</strong>
+              <small>个人开发实验室</small>
+            </span>
+          </a>
+          <div class="links">
+            <a href="#tools">工具</a>
+            <a href="/blog/">博客</a>
+            <a href="#about">关于</a>
+          </div>
+        </nav>
+      </header>
 
-      <section class="hero" id="signals">
-        <div class="hero-copy">
-          <h1>Solar System Field.</h1>
-          <p class="lead">
-            A quiet universe of orbiting bodies, light, and motion for a more
-            cinematic AI lab entrance.
-          </p>
-          <div class="actions">
-            <a class="button primary" href="#system">View System</a>
-            <a class="button" href="#contact">Contact</a>
-          </div>
-        </div>
-
-        <div class="orbit-strip" aria-label="Solar system signals">
-          <div class="orbit-note">
-            <strong>Solar core</strong>
-            <span>Animated light source and corona.</span>
-          </div>
-          <div class="orbit-note">
-            <strong>Orbital paths</strong>
-            <span>Multiple planets moving at different speeds.</span>
-          </div>
-          <div class="orbit-note">
-            <strong>Deep field</strong>
-            <span>Layered stars and subtle nebula glow.</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="section" id="system">
-        <div class="section-inner">
-          <div class="section-heading">
-            <h2>Cosmic motion, kept minimal.</h2>
-            <p>
-              The page stays light on text and lets the solar system carry the
-              visual identity.
+      <main id="main-content">
+        <section class="hero container" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <p class="eyebrow"><span></span> Personal developer lab</p>
+            <h1 id="hero-title">把常用工具做得更顺手，<em>也把开发过程写下来。</em></h1>
+            <p class="lead">
+              AI Build Lab 是我持续维护的个人技术站。这里有开箱即用的开发工具，
+              也有关于后端、AI 辅助开发与产品构建的真实笔记。
             </p>
+            <div class="actions">
+              <a class="button primary" href="#tools">
+                探索开发工具
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M4 10h12M11 5l5 5-5 5" />
+                </svg>
+              </a>
+              <a class="button" href="/blog/">阅读技术文章</a>
+            </div>
+            <ul class="hero-facts" aria-label="网站特点">
+              <li><span></span>免费使用</li>
+              <li><span></span>轻量快速</li>
+              <li><span></span>持续迭代</li>
+            </ul>
           </div>
 
-          <div class="work-grid">
-            <article class="work">
-              <h3>Immersive canvas</h3>
+          <aside class="developer-card" aria-label="开发者工作台概览">
+            <div class="terminal-bar">
+              <span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span>~/ai-build-lab</span>
+              <span>main</span>
+            </div>
+            <div class="terminal-body">
+              <p><span class="prompt">$</span> whoami</p>
+              <strong>independent_developer</strong>
+              <p><span class="prompt">$</span> cat focus.txt</p>
+              <div class="focus-list">
+                <span>useful tools</span>
+                <span>technical notes</span>
+                <span>small experiments</span>
+              </div>
+            </div>
+            <dl class="lab-stats">
+              <div>
+                <dt>工具</dt>
+                <dd>02 <span>online</span></dd>
+              </div>
+              <div>
+                <dt>内容</dt>
+                <dd>Blog <span>open</span></dd>
+              </div>
+              <div>
+                <dt>运行于</dt>
+                <dd>Edge <span>global</span></dd>
+              </div>
+            </dl>
+          </aside>
+        </section>
+
+        <section class="section tools-section" id="tools" aria-labelledby="tools-title">
+          <div class="container">
+            <div class="section-heading">
+              <div>
+                <p class="section-index">01 / Developer tools</p>
+                <h2 id="tools-title">解决真实小问题的开发工具。</h2>
+              </div>
               <p>
-                A full-screen WebGL scene with planets, orbit rings, and a
-                dense star field.
+                无需注册，不堆叠无关功能。每个工具都围绕一个明确场景设计，
+                尽可能在浏览器本地完成处理。
               </p>
-              <code>three.js scene</code>
-            </article>
-            <article class="work">
-              <h3>Responsive orbit</h3>
-              <p>
-                Camera, scale, and composition adjust for desktop and mobile
-                without covering the main copy.
-              </p>
-              <code>desktop + mobile</code>
-            </article>
-            <article class="work">
-              <h3>Subtle motion</h3>
-              <p>
-                Different orbital speeds and pointer parallax create motion
-                without turning the site into a game.
-              </p>
-              <code>ambient interaction</code>
-            </article>
+            </div>
+
+            <div class="tool-grid">
+              <a class="tool-card" href="/json/">
+                <div class="tool-card__top">
+                  <span class="tool-icon">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3m13 5h3a2 2 0 0 0 2-2v-3M9 8l-3 4 3 4m6-8 3 4-3 4m-2-9-2 10" />
+                    </svg>
+                  </span>
+                  <span class="tool-status"><i></i> Available</span>
+                </div>
+                <div class="tool-card__body">
+                  <p>01</p>
+                  <h3>JSON Formatter</h3>
+                  <span>格式化、校验、树形浏览与节点搜索，让复杂 JSON 更容易阅读和定位。</span>
+                </div>
+                <div class="tool-card__footer">
+                  <ul aria-label="JSON 工具能力">
+                    <li>格式化</li>
+                    <li>树视图</li>
+                    <li>节点搜索</li>
+                  </ul>
+                  <span class="card-action" aria-hidden="true">
+                    打开工具
+                    <svg viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5" /></svg>
+                  </span>
+                </div>
+              </a>
+
+              <a class="tool-card" href="/password/">
+                <div class="tool-card__top">
+                  <span class="tool-icon">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M7 10V7a5 5 0 0 1 10 0v3m-9 11h8a3 3 0 0 0 3-3v-5a3 3 0 0 0-3-3H8a3 3 0 0 0-3 3v5a3 3 0 0 0 3 3Zm4-7v3" />
+                    </svg>
+                  </span>
+                  <span class="tool-status"><i></i> Available</span>
+                </div>
+                <div class="tool-card__body">
+                  <p>02</p>
+                  <h3>Password Generator</h3>
+                  <span>使用浏览器安全随机数生成高强度密码，规则可调，历史记录仅保存在本地。</span>
+                </div>
+                <div class="tool-card__footer">
+                  <ul aria-label="密码工具能力">
+                    <li>安全随机</li>
+                    <li>规则可调</li>
+                    <li>本地历史</li>
+                  </ul>
+                  <span class="card-action" aria-hidden="true">
+                    打开工具
+                    <svg viewBox="0 0 20 20"><path d="M4 10h12M11 5l5 5-5 5" /></svg>
+                  </span>
+                </div>
+              </a>
+            </div>
           </div>
+        </section>
+
+        <section class="section notes-section" aria-labelledby="notes-title">
+          <div class="container notes-grid">
+            <div class="notes-copy">
+              <p class="section-index">02 / Technical blog</p>
+              <h2 id="notes-title">不只交付结果，也记录为什么这样做。</h2>
+              <p>
+                博客收录真实项目中的取舍、踩坑与实现细节。文章不追逐数量，
+                更关注一段经验能否被复用，以及它能否帮助下一次做出更好的决定。
+              </p>
+              <a class="text-link" href="/blog/">
+                浏览全部技术文章
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M11 5l5 5-5 5" /></svg>
+              </a>
+            </div>
+
+            <div class="topic-list" aria-label="博客关注方向">
+              <article>
+                <span>01</span>
+                <div>
+                  <h3>Backend &amp; Architecture</h3>
+                  <p>接口设计、数据建模、服务边界与工程实践。</p>
+                </div>
+                <code>backend</code>
+              </article>
+              <article>
+                <span>02</span>
+                <div>
+                  <h3>AI-assisted Development</h3>
+                  <p>AI 编程工作流、工具协作与真实效率复盘。</p>
+                </div>
+                <code>ai-dev</code>
+              </article>
+              <article>
+                <span>03</span>
+                <div>
+                  <h3>Build Notes</h3>
+                  <p>从想法到上线的产品构建记录与技术选择。</p>
+                </div>
+                <code>shipping</code>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section about-section" id="about" aria-labelledby="about-title">
+          <div class="container about-grid">
+            <div>
+              <p class="section-index">03 / About the lab</p>
+              <h2 id="about-title">一个开发者，一组长期维护的作品。</h2>
+            </div>
+            <div class="about-copy">
+              <p>
+                这里不是产品陈列橱窗，而是我的个人开发现场。工具来自日常工作里反复出现的需求，
+                文章来自已经验证过的实践。功能会继续迭代，笔记也会随着理解加深而更新。
+              </p>
+              <dl class="principles">
+                <div><dt>01</dt><dd><strong>实用优先</strong><span>先解决问题，再增加表达。</span></dd></div>
+                <div><dt>02</dt><dd><strong>公开过程</strong><span>记录取舍，也记录不完美。</span></dd></div>
+                <div><dt>03</dt><dd><strong>长期维护</strong><span>小步迭代，保持工具可靠。</span></dd></div>
+              </dl>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <div class="container footer-inner">
+          <a class="footer-brand" href="/">AI Build Lab</a>
+          <p>个人开发工具 · 技术文章 · 工程实验</p>
+          <span>© 2026 Independent build</span>
         </div>
-      </section>
-
-      <footer id="contact">
-        <span>(c) 2026 AI Build Lab</span>
-        <span>Solar-system inspired AI lab interface.</span>
       </footer>
-    </main>
+    </div>
 
     <script type="module" src="/assets/solar-system.20260706.js"></script>
   </body>

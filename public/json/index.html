@@ -8,7 +8,7 @@
       name="description"
       content="A local JSON formatter, minifier, validator, and tree viewer for AI Build Lab."
     />
-    <meta name="theme-color" content="#080b12" />
+    <meta name="theme-color" content="#05070b" />
     <meta name="robots" content="index,follow" />
     <link rel="canonical" href="https://superstar1014.qzz.io/json/" />
 
@@ -28,12 +28,14 @@
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
-    <link rel="preload" href="/assets/json-page.20260706.css" as="style" />
+    <link rel="preload" href="/assets/json-page.20260710.css" as="style" />
     <link rel="modulepreload" href="/assets/json-tool-core.20260706.js" />
     <link rel="modulepreload" href="/assets/json-tool.20260706.js" />
-    <link rel="stylesheet" href="/assets/json-page.20260706.css" />
+    <link rel="stylesheet" href="/assets/json-page.20260710.css" />
+    <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
+    <a class="skip-link" href="#json-workbench">跳到 JSON 工作区</a>
     <main class="tool-shell" data-json-tool>
       <header class="tool-topbar">
         <a class="brand" href="/" aria-label="Back to AI Build Lab home">
@@ -41,7 +43,7 @@
             <rect width="48" height="48" rx="8" fill="#080D18" />
             <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
             <circle cx="24" cy="24" r="14.5" fill="none" stroke="#6ED6FF" stroke-width="2" />
-            <circle cx="36" cy="20" r="2.6" fill="#B8A2FF" />
+            <circle cx="36" cy="20" r="2.6" fill="#7DE2B8" />
             <path
               d="M12 30C19 38 31 38 38 30"
               fill="none"
@@ -50,7 +52,10 @@
               stroke-linecap="round"
             />
           </svg>
-          <span>AI Build Lab</span>
+          <span>
+            <strong>AI Build Lab</strong>
+            <small>个人开发实验室</small>
+          </span>
         </a>
         <nav class="tool-nav" aria-label="Tool navigation">
           <a href="/">首页</a>
@@ -60,17 +65,26 @@
       </header>
 
       <section class="tool-title" aria-labelledby="json-title">
-        <div>
+        <div class="title-copy">
+          <div class="eyebrow">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3m13 5h3a2 2 0 0 0 2-2v-3M9 8l-3 4 3 4m6-8 3 4-3 4m-2-9-2 10" />
+            </svg>
+            <span>Developer utility</span>
+          </div>
           <h1 id="json-title">JSON 格式化工具</h1>
           <p>粘贴 JSON 后可格式化、压缩、校验错误位置，并查看树形结构。数据只在当前浏览器处理。</p>
         </div>
         <div class="privacy-note">
-          <span>Local only</span>
-          <strong>不上传数据</strong>
+          <span class="privacy-dot" aria-hidden="true"></span>
+          <div>
+            <strong>仅在本地处理</strong>
+            <span>输入内容不会上传到服务器</span>
+          </div>
         </div>
       </section>
 
-      <section class="json-workbench" aria-label="JSON formatter workspace">
+      <section class="json-workbench" id="json-workbench" aria-label="JSON formatter workspace">
         <div class="json-panel editor-panel">
           <div class="panel-bar">
             <div>

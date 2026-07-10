@@ -32,8 +32,10 @@
     <link rel="modulepreload" href="/assets/password-tool-core.20260710.js" />
     <link rel="modulepreload" href="/assets/password-tool.20260710.js" />
     <link rel="stylesheet" href="/assets/password-page.20260710.css" />
+    <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
+    <a class="skip-link" href="#password-workbench">跳到密码生成工作区</a>
     <main class="password-shell" data-password-tool>
       <header class="tool-topbar">
         <a class="brand" href="/" aria-label="返回 AI Build Lab 首页">
@@ -41,7 +43,7 @@
             <rect width="48" height="48" rx="8" fill="#080D18" />
             <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
             <circle cx="24" cy="24" r="14.5" fill="none" stroke="#6ED6FF" stroke-width="2" />
-            <circle cx="36" cy="20" r="2.6" fill="#B8A2FF" />
+            <circle cx="36" cy="20" r="2.6" fill="#7DE2B8" />
             <path
               d="M12 30C19 38 31 38 38 30"
               fill="none"
@@ -50,7 +52,10 @@
               stroke-linecap="round"
             />
           </svg>
-          <span>AI Build Lab</span>
+          <span>
+            <strong>AI Build Lab</strong>
+            <small>个人开发实验室</small>
+          </span>
         </a>
         <nav class="tool-nav" aria-label="工具导航">
           <a href="/">首页</a>
@@ -80,7 +85,7 @@
         </div>
       </section>
 
-      <section class="password-workbench" aria-label="随机密码生成器">
+      <section class="password-workbench" id="password-workbench" aria-label="随机密码生成器">
         <form class="settings-card" data-password-form novalidate>
           <div class="card-heading">
             <div>
