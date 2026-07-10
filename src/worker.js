@@ -42,6 +42,7 @@ import {
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
+const IPINFO_TIMEOUT_MS = 3500;
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
@@ -157,6 +158,10 @@ async function handleApiRequest(request, env) {
     );
   }
 
+  if (path === "/api/public/ip-info" && request.method === "GET") {
+    return jsonResponse(await lookupVisitorNetworkInfo(request, env));
+  }
+
   if (path === "/api/public/posts" && request.method === "GET") {
     const db = requireDatabase(env);
     return jsonResponse({ posts: await listPublicPosts(db) });
@@ -184,6 +189,188 @@ async function handleApiRequest(request, env) {
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
+}
+
+async function lookupVisitorNetworkInfo(request, env = {}, fetchImpl = fetch) {
+  const ip =
+    normalizeClientIp(request.headers.get("CF-Connecting-IPv6")) ||
+    normalizeClientIp(request.headers.get("CF-Connecting-IP"));
+  if (!ip) {
+    throw new ServiceError("Client IP is unavailable.", 503);
+  }
+
+  const fallback = cloudflareNetworkInfo(request, ip);
+  if (!isPublicRoutableIp(ip)) {
+    return unattributedNetworkInfo(ip);
+  }
+
+  const headers = new Headers({
+    Accept: "application/json",
+  });
+  const encodedIp = encodeURIComponent(ip);
+  let endpoint = `https://ipinfo.io/${encodedIp}/json`;
+
+  if (typeof env.IPINFO_TOKEN === "string" && env.IPINFO_TOKEN.trim()) {
+    endpoint = `https://api.ipinfo.io/lite/${encodedIp}`;
+    headers.set("Authorization", `Bearer ${env.IPINFO_TOKEN.trim()}`);
+  }
+
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "GET",
+      headers,
+      cache: "no-store",
+      signal: AbortSignal.timeout(IPINFO_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      throw new Error(`IPinfo returned ${response.status}.`);
+    }
+
+    const body = await response.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("IPinfo returned an invalid response.");
+    }
+
+    return mergeIpinfoNetworkInfo(body, fallback);
+  } catch (error) {
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "ipinfo_lookup_failed",
+      message: error instanceof Error ? error.message : "Unknown IPinfo error",
+    }));
+    return fallback;
+  }
+}
+
+function normalizeClientIp(value) {
+  const ip = typeof value === "string" ? value.trim() : "";
+  if (!ip || ip.length > 45) {
+    return "";
+  }
+
+  const ipv4Parts = ip.split(".");
+  const isIpv4 = ipv4Parts.length === 4 && ipv4Parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) {
+      return false;
+    }
+    const number = Number(part);
+    return number >= 0 && number <= 255;
+  });
+  const isIpv6 = ip.includes(":") && /^[0-9a-f:.]+$/i.test(ip);
+  return isIpv4 || isIpv6 ? ip : "";
+}
+
+function isPublicRoutableIp(ip) {
+  const ipv4 = parseIpv4(ip);
+  if (ipv4) {
+    return isPublicRoutableIpv4(ipv4);
+  }
+
+  const normalized = ip.toLowerCase();
+  const mappedIpv4 = normalized.startsWith("::ffff:")
+    ? parseIpv4(normalized.slice("::ffff:".length))
+    : null;
+  if (mappedIpv4) {
+    return isPublicRoutableIpv4(mappedIpv4);
+  }
+
+  return normalized !== "::" &&
+    normalized !== "::1" &&
+    !normalized.startsWith("fc") &&
+    !normalized.startsWith("fd") &&
+    !/^fe[89ab]/.test(normalized) &&
+    !normalized.startsWith("ff") &&
+    !normalized.startsWith("2001:db8:");
+}
+
+function parseIpv4(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4 || !parts.every((part) => /^\d{1,3}$/.test(part))) {
+    return null;
+  }
+
+  const numbers = parts.map(Number);
+  return numbers.every((part) => part >= 0 && part <= 255) ? numbers : null;
+}
+
+function isPublicRoutableIpv4([first, second]) {
+  return first !== 0 &&
+    first !== 10 &&
+    !(first === 100 && second >= 64 && second <= 127) &&
+    first !== 127 &&
+    !(first === 169 && second === 254) &&
+    !(first === 172 && second >= 16 && second <= 31) &&
+    !(first === 192 && second === 0) &&
+    !(first === 192 && second === 168) &&
+    !(first === 198 && (second === 18 || second === 19)) &&
+    !(first === 198 && second === 51) &&
+    !(first === 203 && second === 0) &&
+    first < 224;
+}
+
+function cloudflareNetworkInfo(request, ip) {
+  const cf = request.cf && typeof request.cf === "object" ? request.cf : {};
+  const asn = Number.isInteger(cf.asn) ? `AS${cf.asn}` : "";
+  return {
+    ip,
+    city: safeNetworkText(cf.city),
+    region: safeNetworkText(cf.region),
+    country: safeNetworkText(cf.country),
+    countryCode: safeNetworkText(cf.country),
+    asn,
+    organization: safeNetworkText(cf.asOrganization),
+    source: "cloudflare",
+  };
+}
+
+function unattributedNetworkInfo(ip) {
+  return {
+    ip,
+    city: "",
+    region: "",
+    country: "",
+    countryCode: "",
+    asn: "",
+    organization: "",
+    source: "cloudflare",
+  };
+}
+
+function mergeIpinfoNetworkInfo(body, fallback) {
+  const legacyOrganization = parseLegacyOrganization(body.org);
+  const nestedAsn = body.asn && typeof body.asn === "object" ? body.asn : {};
+  const rawCountry = safeNetworkText(body.country);
+  const explicitCountryCode = safeNetworkText(body.country_code);
+  const countryCode = explicitCountryCode || (/^[A-Z]{2}$/.test(rawCountry) ? rawCountry : "");
+  const directAsn = typeof body.asn === "string" ? safeNetworkText(body.asn) : "";
+
+  return {
+    ip: fallback.ip,
+    city: safeNetworkText(body.city) || fallback.city,
+    region: safeNetworkText(body.region) || fallback.region,
+    country: rawCountry || fallback.country,
+    countryCode: countryCode || fallback.countryCode,
+    asn: directAsn || safeNetworkText(nestedAsn.asn) || legacyOrganization.asn || fallback.asn,
+    organization:
+      safeNetworkText(body.as_name) ||
+      safeNetworkText(nestedAsn.name) ||
+      legacyOrganization.organization ||
+      fallback.organization,
+    source: "ipinfo",
+  };
+}
+
+function parseLegacyOrganization(value) {
+  const organization = safeNetworkText(value);
+  const match = /^(AS\d+)\s+(.+)$/.exec(organization);
+  return match
+    ? { asn: match[1], organization: match[2] }
+    : { asn: "", organization };
+}
+
+function safeNetworkText(value) {
+  return typeof value === "string" ? value.trim().slice(0, 160) : "";
 }
 
 async function handleLogin(request, env) {
@@ -576,4 +763,4 @@ function trimSlashes(path) {
   return path.replace(/^\/+|\/+$/g, "");
 }
 
-export { cacheControlFor, withSiteHeaders };
+export { cacheControlFor, lookupVisitorNetworkInfo, withSiteHeaders };

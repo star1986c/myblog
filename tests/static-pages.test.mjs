@@ -9,6 +9,14 @@ const passwordJs = await readFile(
   new URL("../public/assets/password-tool.20260710.js", import.meta.url),
   "utf8",
 );
+const visitorNetworkJs = await readFile(
+  new URL("../public/assets/visitor-network.20260710.js", import.meta.url),
+  "utf8",
+);
+const visitorNetworkCss = await readFile(
+  new URL("../public/assets/visitor-network.20260710.css", import.meta.url),
+  "utf8",
+);
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
 const adminCss = await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8");
 const adminJs = await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8");
@@ -33,6 +41,18 @@ test("home page presents the site as personal developer tools and a technical bl
   assert.match(indexHtml, /id="tools"/);
   assert.match(indexHtml, /id="about"/);
   assert.match(indexHtml, /href="\/assets\/styles\.20260710\.css"/);
+});
+
+test("home page includes an on-demand visitor network lookup", () => {
+  assert.match(indexHtml, /data-visitor-network/);
+  assert.match(indexHtml, /data-network-trigger/);
+  assert.match(indexHtml, /aria-controls="visitor-network-result"/);
+  assert.match(indexHtml, /src="\/assets\/visitor-network\.20260710\.js"/);
+  assert.match(indexHtml, /href="\/assets\/visitor-network\.20260710\.css"/);
+  assert.match(visitorNetworkJs, /fetch\("\/api\/public\/ip-info"/);
+  assert.match(visitorNetworkJs, /cache:\s*"no-store"/);
+  assert.match(visitorNetworkCss, /\.network-button/);
+  assert.match(visitorNetworkCss, /min-height:\s*44px/);
 });
 
 test("JSON formatter is served from a standalone page", () => {

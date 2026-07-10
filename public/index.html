@@ -32,7 +32,9 @@
     <link rel="preload" href="/assets/styles.20260710.css" as="style" />
     <link rel="modulepreload" href="/vendor/three-0.160.0.module.js" />
     <link rel="modulepreload" href="/assets/solar-system.20260706.js" />
+    <link rel="modulepreload" href="/assets/visitor-network.20260710.js" />
     <link rel="stylesheet" href="/assets/styles.20260710.css" />
+    <link rel="stylesheet" href="/assets/visitor-network.20260710.css" />
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -124,6 +126,46 @@
                 <dd>Edge <span>global</span></dd>
               </div>
             </dl>
+            <div class="visitor-network" data-visitor-network data-state="idle">
+              <div class="visitor-network__heading">
+                <div class="visitor-network__copy">
+                  <span>访客网络</span>
+                  <strong>公网出口与 IP 归属</strong>
+                  <small>点击后查询，结果不会缓存</small>
+                </div>
+                <button
+                  class="network-button"
+                  type="button"
+                  data-network-trigger
+                  aria-controls="visitor-network-result"
+                  aria-expanded="false"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8.5" />
+                    <path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.2 3.6 8.5S14.4 18.1 12 20.5C9.6 18.1 8.4 15.3 8.4 12S9.6 5.9 12 3.5Z" />
+                  </svg>
+                  <span data-network-button-label>查看 IP</span>
+                </button>
+              </div>
+              <div
+                class="visitor-network__result"
+                id="visitor-network-result"
+                data-network-result
+                hidden
+              >
+                <div class="network-field">
+                  <span>公网出口 IP</span>
+                  <strong data-network-ip>—</strong>
+                </div>
+                <div class="network-field">
+                  <span>归属信息</span>
+                  <strong data-network-location>—</strong>
+                  <small data-network-organization></small>
+                </div>
+                <p data-network-provider></p>
+              </div>
+              <p class="network-status" data-network-status role="status" aria-live="polite"></p>
+            </div>
           </aside>
         </section>
 
@@ -273,5 +315,6 @@
     </div>
 
     <script type="module" src="/assets/solar-system.20260706.js"></script>
+    <script type="module" src="/assets/visitor-network.20260710.js"></script>
   </body>
 </html>

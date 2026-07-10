@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker from "../src/worker.js";
+import worker, { lookupVisitorNetworkInfo } from "../src/worker.js";
 import { createPasswordHash, readSession, signSession, verifyPasswordHash } from "../src/auth.js";
 
 class FakeD1 {
@@ -160,6 +160,153 @@ function makeEnv(overrides = {}) {
     ...overrides,
   };
 }
+
+function makeVisitorRequest(ip, cf = {}) {
+  const request = new Request("https://superstar1014.qzz.io/api/public/ip-info", {
+    headers: {
+      "CF-Connecting-IP": ip,
+    },
+  });
+  Object.defineProperty(request, "cf", {
+    configurable: true,
+    value: cf,
+  });
+  return request;
+}
+
+test("visitor network lookup sends the Cloudflare client IP to IPinfo", async () => {
+  let calledUrl = "";
+  let authorization = "";
+  const request = makeVisitorRequest("8.8.8.8", {
+    country: "US",
+    asn: 64500,
+    asOrganization: "Fallback Network",
+  });
+
+  const network = await lookupVisitorNetworkInfo(
+    request,
+    { IPINFO_TOKEN: "test-ipinfo-token" },
+    async (url, options) => {
+      calledUrl = String(url);
+      authorization = new Headers(options.headers).get("Authorization") || "";
+      return new Response(JSON.stringify({
+        ip: "198.51.100.7",
+        country_code: "US",
+        country: "United States",
+        asn: "AS64501",
+        as_name: "Example Network",
+      }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  );
+
+  assert.equal(calledUrl, "https://api.ipinfo.io/lite/8.8.8.8");
+  assert.equal(authorization, "Bearer test-ipinfo-token");
+  assert.equal(network.ip, "8.8.8.8");
+  assert.equal(network.country, "United States");
+  assert.equal(network.countryCode, "US");
+  assert.equal(network.asn, "AS64501");
+  assert.equal(network.organization, "Example Network");
+  assert.equal(network.source, "ipinfo");
+});
+
+test("visitor network lookup prefers the original IPv6 header", async () => {
+  const request = makeVisitorRequest("1.1.1.1", {
+    country: "TW",
+  });
+  request.headers.set("CF-Connecting-IPv6", "2606:4700:4700::1111");
+
+  const network = await lookupVisitorNetworkInfo(request, {}, async () => new Response(
+    JSON.stringify({ country: "TW" }),
+    { headers: { "Content-Type": "application/json" } },
+  ));
+
+  assert.equal(network.ip, "2606:4700:4700::1111");
+});
+
+test("visitor network lookup falls back to Cloudflare metadata", async () => {
+  const request = makeVisitorRequest("2001:4860:4860::8888", {
+    city: "Taipei",
+    region: "Taipei City",
+    country: "TW",
+    asn: 64502,
+    asOrganization: "Example ISP",
+  });
+
+  const network = await lookupVisitorNetworkInfo(request, {}, async () => {
+    throw new Error("IPinfo unavailable");
+  });
+
+  assert.deepEqual(network, {
+    ip: "2001:4860:4860::8888",
+    city: "Taipei",
+    region: "Taipei City",
+    country: "TW",
+    countryCode: "TW",
+    asn: "AS64502",
+    organization: "Example ISP",
+    source: "cloudflare",
+  });
+});
+
+test("visitor network lookup does not query IPinfo for non-public addresses", async () => {
+  let lookupCalled = false;
+  const request = makeVisitorRequest("::1", {
+    city: "Unrelated edge location",
+    country: "US",
+    asn: 64504,
+    asOrganization: "Unrelated edge network",
+  });
+
+  const network = await lookupVisitorNetworkInfo(request, {}, async () => {
+    lookupCalled = true;
+    throw new Error("should not be called");
+  });
+
+  assert.equal(lookupCalled, false);
+  assert.deepEqual(network, {
+    ip: "::1",
+    city: "",
+    region: "",
+    country: "",
+    countryCode: "",
+    asn: "",
+    organization: "",
+    source: "cloudflare",
+  });
+});
+
+test("public visitor network API is never cached", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ip: "1.1.1.1",
+    city: "Taipei",
+    region: "Taipei City",
+    country: "TW",
+    org: "AS64503 Example ISP",
+  }), {
+    headers: { "Content-Type": "application/json" },
+  });
+
+  try {
+    const response = await worker.fetch(
+      makeVisitorRequest("1.1.1.1", {
+        country: "TW",
+      }),
+      makeEnv(),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(body.ip, "1.1.1.1");
+    assert.equal(body.organization, "Example ISP");
+    assert.equal(body.source, "ipinfo");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("public posts API only returns published and public articles", async () => {
   const env = makeEnv({
