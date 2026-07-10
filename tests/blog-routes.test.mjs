@@ -157,6 +157,16 @@ function makeEnv(overrides = {}) {
         return new Response("missing", { status: 404 });
       },
     },
+    IP_INFO_CLIENT_RATE_LIMITER: {
+      async limit() {
+        return { success: true };
+      },
+    },
+    IP_INFO_IP_RATE_LIMITER: {
+      async limit() {
+        return { success: true };
+      },
+    },
     ...overrides,
   };
 }
@@ -164,7 +174,10 @@ function makeEnv(overrides = {}) {
 function makeVisitorRequest(ip, cf = {}) {
   const request = new Request("https://superstar1014.qzz.io/api/public/ip-info", {
     headers: {
+      Accept: "application/json",
       "CF-Connecting-IP": ip,
+      "User-Agent": "visitor-network-test",
+      "X-AI-Build-Lab-Request": "visitor-network",
     },
   });
   Object.defineProperty(request, "cf", {
@@ -172,6 +185,29 @@ function makeVisitorRequest(ip, cf = {}) {
     value: cf,
   });
   return request;
+}
+
+function makeMemoryCache() {
+  const responses = new Map();
+  const keys = [];
+  const bodies = [];
+  const cacheControls = [];
+  return {
+    keys,
+    bodies,
+    cacheControls,
+    async match(request) {
+      const response = responses.get(String(request.url));
+      return response ? response.clone() : undefined;
+    },
+    async put(request, response) {
+      const key = String(request.url);
+      keys.push(key);
+      bodies.push(await response.clone().text());
+      cacheControls.push(response.headers.get("Cache-Control"));
+      responses.set(key, response.clone());
+    },
+  };
 }
 
 test("visitor network lookup sends the Cloudflare client IP to IPinfo", async () => {
@@ -186,18 +222,21 @@ test("visitor network lookup sends the Cloudflare client IP to IPinfo", async ()
   const network = await lookupVisitorNetworkInfo(
     request,
     { IPINFO_TOKEN: "test-ipinfo-token" },
-    async (url, options) => {
-      calledUrl = String(url);
-      authorization = new Headers(options.headers).get("Authorization") || "";
-      return new Response(JSON.stringify({
-        ip: "198.51.100.7",
-        country_code: "US",
-        country: "United States",
-        asn: "AS64501",
-        as_name: "Example Network",
-      }), {
-        headers: { "Content-Type": "application/json" },
-      });
+    {
+      cache: null,
+      fetchImpl: async (url, options) => {
+        calledUrl = String(url);
+        authorization = new Headers(options.headers).get("Authorization") || "";
+        return new Response(JSON.stringify({
+          ip: "198.51.100.7",
+          country_code: "US",
+          country: "United States",
+          asn: "AS64501",
+          as_name: "Example Network",
+        }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
     },
   );
 
@@ -209,6 +248,112 @@ test("visitor network lookup sends the Cloudflare client IP to IPinfo", async ()
   assert.equal(network.asn, "AS64501");
   assert.equal(network.organization, "Example Network");
   assert.equal(network.source, "ipinfo");
+  assert.equal(network.cached, false);
+});
+
+test("visitor network lookup falls back from IPinfo to IPWhois", async () => {
+  const calledProviders = [];
+  const request = makeVisitorRequest("8.8.4.4", { country: "US" });
+
+  const network = await lookupVisitorNetworkInfo(request, {}, {
+    cache: null,
+    fetchImpl: async (url) => {
+      const endpoint = String(url);
+      if (endpoint.includes("ipinfo.io")) {
+        calledProviders.push("ipinfo");
+        return new Response("unavailable", { status: 503 });
+      }
+      calledProviders.push("ipwhois");
+      return new Response(JSON.stringify({
+        success: true,
+        country: "United States",
+        country_code: "US",
+        region: "California",
+        city: "Mountain View",
+        connection: { asn: 15169, org: "Google LLC" },
+      }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  assert.deepEqual(calledProviders, ["ipinfo", "ipwhois"]);
+  assert.equal(network.source, "ipwhois");
+  assert.equal(network.asn, "AS15169");
+  assert.equal(network.organization, "Google LLC");
+  assert.equal(network.cached, false);
+});
+
+test("visitor network lookup falls back from IPWhois to GeoJS", async () => {
+  const calledProviders = [];
+  const request = makeVisitorRequest("8.8.4.4", { country: "US" });
+
+  const network = await lookupVisitorNetworkInfo(request, {}, {
+    cache: null,
+    fetchImpl: async (url) => {
+      const endpoint = String(url);
+      if (endpoint.includes("ipinfo.io")) {
+        calledProviders.push("ipinfo");
+        return new Response("unavailable", { status: 503 });
+      }
+      if (endpoint.includes("ipwho.is")) {
+        calledProviders.push("ipwhois");
+        return new Response(JSON.stringify({ success: false, message: "limited" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      calledProviders.push("geojs");
+      return new Response(JSON.stringify({
+        country: "United States",
+        country_code: "US",
+        asn: 15169,
+        organization_name: "Google LLC",
+      }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  assert.deepEqual(calledProviders, ["ipinfo", "ipwhois", "geojs"]);
+  assert.equal(network.source, "geojs");
+  assert.equal(network.asn, "AS15169");
+  assert.equal(network.organization, "Google LLC");
+});
+
+test("visitor network lookup caches provider data without storing the raw IP", async () => {
+  const request = makeVisitorRequest("8.8.8.8", { country: "US" });
+  const cache = makeMemoryCache();
+  const backgroundWrites = [];
+  let providerCalls = 0;
+
+  const first = await lookupVisitorNetworkInfo(request, {}, {
+    cache,
+    ctx: {
+      waitUntil(promise) {
+        backgroundWrites.push(promise);
+      },
+    },
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return new Response(JSON.stringify({
+        country: "US",
+        org: "AS15169 Google LLC",
+      }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+  await Promise.all(backgroundWrites);
+
+  const second = await lookupVisitorNetworkInfo(request, {}, {
+    cache,
+    fetchImpl: async () => {
+      throw new Error("cache hit should skip providers");
+    },
+  });
+
+  assert.equal(first.cached, false);
+  assert.equal(second.cached, true);
+  assert.equal(second.source, "ipinfo");
+  assert.equal(providerCalls, 1);
+  assert.equal(cache.keys.length, 1);
+  assert.doesNotMatch(cache.keys[0], /8\.8\.8\.8/);
+  assert.doesNotMatch(cache.bodies[0], /8\.8\.8\.8/);
+  assert.equal(cache.cacheControls[0], "public, max-age=21600");
 });
 
 test("visitor network lookup prefers the original IPv6 header", async () => {
@@ -217,10 +362,13 @@ test("visitor network lookup prefers the original IPv6 header", async () => {
   });
   request.headers.set("CF-Connecting-IPv6", "2606:4700:4700::1111");
 
-  const network = await lookupVisitorNetworkInfo(request, {}, async () => new Response(
-    JSON.stringify({ country: "TW" }),
-    { headers: { "Content-Type": "application/json" } },
-  ));
+  const network = await lookupVisitorNetworkInfo(request, {}, {
+    cache: null,
+    fetchImpl: async () => new Response(
+      JSON.stringify({ country: "TW" }),
+      { headers: { "Content-Type": "application/json" } },
+    ),
+  });
 
   assert.equal(network.ip, "2606:4700:4700::1111");
 });
@@ -234,8 +382,11 @@ test("visitor network lookup falls back to Cloudflare metadata", async () => {
     asOrganization: "Example ISP",
   });
 
-  const network = await lookupVisitorNetworkInfo(request, {}, async () => {
-    throw new Error("IPinfo unavailable");
+  const network = await lookupVisitorNetworkInfo(request, {}, {
+    cache: null,
+    fetchImpl: async () => {
+      throw new Error("provider unavailable");
+    },
   });
 
   assert.deepEqual(network, {
@@ -247,6 +398,7 @@ test("visitor network lookup falls back to Cloudflare metadata", async () => {
     asn: "AS64502",
     organization: "Example ISP",
     source: "cloudflare",
+    cached: false,
   });
 });
 
@@ -259,9 +411,12 @@ test("visitor network lookup does not query IPinfo for non-public addresses", as
     asOrganization: "Unrelated edge network",
   });
 
-  const network = await lookupVisitorNetworkInfo(request, {}, async () => {
-    lookupCalled = true;
-    throw new Error("should not be called");
+  const network = await lookupVisitorNetworkInfo(request, {}, {
+    cache: null,
+    fetchImpl: async () => {
+      lookupCalled = true;
+      throw new Error("should not be called");
+    },
   });
 
   assert.equal(lookupCalled, false);
@@ -274,11 +429,49 @@ test("visitor network lookup does not query IPinfo for non-public addresses", as
     asn: "",
     organization: "",
     source: "cloudflare",
+    cached: false,
   });
 });
 
-test("public visitor network API is never cached", async () => {
+test("public visitor network API rejects requests without the same-origin client header", async () => {
+  const request = makeVisitorRequest("1.1.1.1");
+  request.headers.delete("X-AI-Build-Lab-Request");
+
+  const response = await worker.fetch(request, makeEnv());
+
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("public visitor network API rejects cross-site browser requests", async () => {
+  const request = makeVisitorRequest("1.1.1.1");
+  request.headers.set("Sec-Fetch-Site", "cross-site");
+
+  const response = await worker.fetch(request, makeEnv());
+
+  assert.equal(response.status, 403);
+});
+
+test("public visitor network API rate limits repeated callers", async () => {
+  const response = await worker.fetch(
+    makeVisitorRequest("1.1.1.1"),
+    makeEnv({
+      IP_INFO_CLIENT_RATE_LIMITER: {
+        async limit() {
+          return { success: false };
+        },
+      },
+    }),
+  );
+
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Retry-After"), "60");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("public visitor network API is never browser-cached and hashes rate-limit keys", async () => {
   const originalFetch = globalThis.fetch;
+  const rateLimitKeys = [];
   globalThis.fetch = async () => new Response(JSON.stringify({
     ip: "1.1.1.1",
     city: "Taipei",
@@ -294,7 +487,20 @@ test("public visitor network API is never cached", async () => {
       makeVisitorRequest("1.1.1.1", {
         country: "TW",
       }),
-      makeEnv(),
+      makeEnv({
+        IP_INFO_CLIENT_RATE_LIMITER: {
+          async limit({ key }) {
+            rateLimitKeys.push(key);
+            return { success: true };
+          },
+        },
+        IP_INFO_IP_RATE_LIMITER: {
+          async limit({ key }) {
+            rateLimitKeys.push(key);
+            return { success: true };
+          },
+        },
+      }),
     );
     const body = await response.json();
 
@@ -303,6 +509,9 @@ test("public visitor network API is never cached", async () => {
     assert.equal(body.ip, "1.1.1.1");
     assert.equal(body.organization, "Example ISP");
     assert.equal(body.source, "ipinfo");
+    assert.equal(body.cached, false);
+    assert.equal(rateLimitKeys.length, 2);
+    assert.equal(rateLimitKeys.every((key) => !key.includes("1.1.1.1")), true);
   } finally {
     globalThis.fetch = originalFetch;
   }

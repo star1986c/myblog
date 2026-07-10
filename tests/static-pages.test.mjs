@@ -10,7 +10,7 @@ const passwordJs = await readFile(
   "utf8",
 );
 const visitorNetworkJs = await readFile(
-  new URL("../public/assets/visitor-network.20260710.js", import.meta.url),
+  new URL("../public/assets/visitor-network.20260710-v2.js", import.meta.url),
   "utf8",
 );
 const visitorNetworkCss = await readFile(
@@ -47,10 +47,14 @@ test("home page includes an on-demand visitor network lookup", () => {
   assert.match(indexHtml, /data-visitor-network/);
   assert.match(indexHtml, /data-network-trigger/);
   assert.match(indexHtml, /aria-controls="visitor-network-result"/);
-  assert.match(indexHtml, /src="\/assets\/visitor-network\.20260710\.js"/);
+  assert.match(indexHtml, /src="\/assets\/visitor-network\.20260710-v2\.js"/);
   assert.match(indexHtml, /href="\/assets\/visitor-network\.20260710\.css"/);
   assert.match(visitorNetworkJs, /fetch\("\/api\/public\/ip-info"/);
+  assert.match(visitorNetworkJs, /"X-AI-Build-Lab-Request":\s*"visitor-network"/);
   assert.match(visitorNetworkJs, /cache:\s*"no-store"/);
+  assert.match(visitorNetworkJs, /IPWhois/);
+  assert.match(visitorNetworkJs, /GeoJS/);
+  assert.match(visitorNetworkJs, /查询过于频繁/);
   assert.match(visitorNetworkCss, /\.network-button/);
   assert.match(visitorNetworkCss, /min-height:\s*44px/);
 });

@@ -42,7 +42,11 @@ import {
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
-const IPINFO_TIMEOUT_MS = 3500;
+const IP_PROVIDER_TIMEOUT_MS = 2200;
+const IP_CACHE_TTL_SECONDS = 6 * 60 * 60;
+const VISITOR_NETWORK_HEADER = "X-AI-Build-Lab-Request";
+const VISITOR_NETWORK_HEADER_VALUE = "visitor-network";
+const CACHEABLE_NETWORK_SOURCES = ["ipinfo", "ipwhois", "geojs"];
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
@@ -68,68 +72,68 @@ const SECURITY_HEADERS = {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handleRequest(request, env);
+      return await handleRequest(request, env, ctx);
     } catch (error) {
       return withSiteHeaders(request, errorResponse(request, error));
     }
   },
 };
 
-async function handleRequest(request, env) {
-    const url = new URL(request.url);
+async function handleRequest(request, env, ctx) {
+  const url = new URL(request.url);
 
-    if (url.pathname.startsWith("/api/")) {
-      return withSiteHeaders(request, await handleApiRequest(request, env));
-    }
+  if (url.pathname.startsWith("/api/")) {
+    return withSiteHeaders(request, await handleApiRequest(request, env, ctx));
+  }
 
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return withSiteHeaders(request, new Response("Method Not Allowed", {
-        status: 405,
-        headers: {
-          Allow: "GET, HEAD",
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cache-Control": "no-store",
-        },
-      }));
-    }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return withSiteHeaders(request, new Response("Method Not Allowed", {
+      status: 405,
+      headers: {
+        Allow: "GET, HEAD",
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    }));
+  }
 
-    if (url.pathname === "/blog" || url.pathname === "/blog/") {
-      return withSiteHeaders(request, await renderBlogIndexResponse(request, env));
-    }
+  if (url.pathname === "/blog" || url.pathname === "/blog/") {
+    return withSiteHeaders(request, await renderBlogIndexResponse(request, env));
+  }
 
-    if (url.pathname.startsWith("/blog/")) {
-      return withSiteHeaders(request, await renderPostResponse(request, env, url));
-    }
+  if (url.pathname.startsWith("/blog/")) {
+    return withSiteHeaders(request, await renderPostResponse(request, env, url));
+  }
 
-    if (url.pathname.startsWith("/category/")) {
-      return withSiteHeaders(request, await renderCategoryResponse(request, env, url));
-    }
+  if (url.pathname.startsWith("/category/")) {
+    return withSiteHeaders(request, await renderCategoryResponse(request, env, url));
+  }
 
-    if (url.pathname.startsWith("/p/")) {
-      return withSiteHeaders(request, await renderPageResponse(request, env, url));
-    }
+  if (url.pathname.startsWith("/p/")) {
+    return withSiteHeaders(request, await renderPageResponse(request, env, url));
+  }
 
-    let response = await env.ASSETS.fetch(request);
+  let response = await env.ASSETS.fetch(request);
 
-    if (response.status === 404 && acceptsHtml(request) && url.pathname !== "/404.html") {
-      const notFoundUrl = new URL(request.url);
-      notFoundUrl.pathname = "/404";
-      notFoundUrl.search = "";
-      const notFoundRequest = new Request(notFoundUrl, request);
-      const notFoundResponse = await env.ASSETS.fetch(notFoundRequest);
-      response = new Response(notFoundResponse.body, {
-        status: 404,
-        statusText: "Not Found",
-        headers: notFoundResponse.headers,
-      });
-    }
+  if (response.status === 404 && acceptsHtml(request) && url.pathname !== "/404.html") {
+    const notFoundUrl = new URL(request.url);
+    notFoundUrl.pathname = "/404";
+    notFoundUrl.search = "";
+    const notFoundRequest = new Request(notFoundUrl, request);
+    const notFoundResponse = await env.ASSETS.fetch(notFoundRequest);
+    response = new Response(notFoundResponse.body, {
+      status: 404,
+      statusText: "Not Found",
+      headers: notFoundResponse.headers,
+    });
+  }
 
-    return withSiteHeaders(request, response);
+  return withSiteHeaders(request, response);
 }
 
-async function handleApiRequest(request, env) {
+async function handleApiRequest(request, env, ctx) {
   const url = new URL(request.url);
   const path = trimTrailingSlash(url.pathname);
 
@@ -159,7 +163,14 @@ async function handleApiRequest(request, env) {
   }
 
   if (path === "/api/public/ip-info" && request.method === "GET") {
-    return jsonResponse(await lookupVisitorNetworkInfo(request, env));
+    const allowed = await allowVisitorNetworkRequest(request, env);
+    if (!allowed) {
+      return jsonResponse(
+        { error: "查询过于频繁，请稍后重试。" },
+        { status: 429, headers: { "Retry-After": "60" } },
+      );
+    }
+    return jsonResponse(await lookupVisitorNetworkInfo(request, env, { ctx }));
   }
 
   if (path === "/api/public/posts" && request.method === "GET") {
@@ -191,10 +202,43 @@ async function handleApiRequest(request, env) {
   return jsonResponse({ error: "Not found" }, { status: 404 });
 }
 
-async function lookupVisitorNetworkInfo(request, env = {}, fetchImpl = fetch) {
-  const ip =
-    normalizeClientIp(request.headers.get("CF-Connecting-IPv6")) ||
-    normalizeClientIp(request.headers.get("CF-Connecting-IP"));
+async function allowVisitorNetworkRequest(request, env) {
+  const url = new URL(request.url);
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  const isSameOriginFetch = !fetchSite || fetchSite === "same-origin";
+  const hasExpectedHeader =
+    request.headers.get(VISITOR_NETWORK_HEADER) === VISITOR_NETWORK_HEADER_VALUE;
+  const acceptsJson = (request.headers.get("Accept") || "").includes("application/json");
+
+  if (!hasExpectedHeader || !acceptsJson || !isSameOriginFetch || url.search) {
+    throw new ServiceError("Forbidden.", 403);
+  }
+
+  const ip = visitorClientIp(request);
+  if (!ip) {
+    throw new ServiceError("Client IP is unavailable.", 503);
+  }
+
+  const clientLimiter = env.IP_INFO_CLIENT_RATE_LIMITER;
+  const ipLimiter = env.IP_INFO_IP_RATE_LIMITER;
+  if (typeof clientLimiter?.limit !== "function" || typeof ipLimiter?.limit !== "function") {
+    throw new ServiceError("Visitor network protection is unavailable.", 503);
+  }
+
+  const ipDigest = await sha256Hex(ip);
+  const userAgent = safeNetworkText(request.headers.get("User-Agent")) || "unknown";
+  const clientDigest = await sha256Hex(`${ipDigest}\n${userAgent}`);
+  const [clientLimit, ipLimit] = await Promise.all([
+    clientLimiter.limit({ key: `visitor-network:client:${clientDigest}` }),
+    ipLimiter.limit({ key: `visitor-network:ip:${ipDigest}` }),
+  ]);
+  return clientLimit.success && ipLimit.success;
+}
+
+async function lookupVisitorNetworkInfo(request, env = {}, dependencies = {}) {
+  const fetchImpl = dependencies.fetchImpl || fetch;
+  const cache = dependencies.cache === undefined ? defaultVisitorCache() : dependencies.cache;
+  const ip = visitorClientIp(request);
   if (!ip) {
     throw new ServiceError("Client IP is unavailable.", 503);
   }
@@ -204,43 +248,206 @@ async function lookupVisitorNetworkInfo(request, env = {}, fetchImpl = fetch) {
     return unattributedNetworkInfo(ip);
   }
 
-  const headers = new Headers({
-    Accept: "application/json",
-  });
-  const encodedIp = encodeURIComponent(ip);
-  let endpoint = `https://ipinfo.io/${encodedIp}/json`;
-
-  if (typeof env.IPINFO_TOKEN === "string" && env.IPINFO_TOKEN.trim()) {
-    endpoint = `https://api.ipinfo.io/lite/${encodedIp}`;
-    headers.set("Authorization", `Bearer ${env.IPINFO_TOKEN.trim()}`);
+  const cacheKey = cache ? await visitorNetworkCacheKey(request, ip) : null;
+  if (cache && cacheKey) {
+    const cached = await readVisitorNetworkCache(cache, cacheKey, ip);
+    if (cached) {
+      return cached;
+    }
   }
 
-  try {
-    const response = await fetchImpl(endpoint, {
-      method: "GET",
-      headers,
-      cache: "no-store",
-      signal: AbortSignal.timeout(IPINFO_TIMEOUT_MS),
-    });
+  const providers = visitorNetworkProviders(ip, env);
+  for (const provider of providers) {
+    const network = await queryVisitorNetworkProvider(provider, fetchImpl, fallback);
+    if (network) {
+      if (cache && cacheKey) {
+        await storeVisitorNetworkCache(cache, cacheKey, network, dependencies.ctx);
+      }
+      return network;
+    }
+  }
 
-    if (!response.ok) {
-      throw new Error(`IPinfo returned ${response.status}.`);
+  return fallback;
+}
+
+function visitorClientIp(request) {
+  return (
+    normalizeClientIp(request.headers.get("CF-Connecting-IPv6")) ||
+    normalizeClientIp(request.headers.get("CF-Connecting-IP"))
+  );
+}
+
+function defaultVisitorCache() {
+  return typeof caches === "undefined" ? null : caches.default;
+}
+
+async function visitorNetworkCacheKey(request, ip) {
+  const digest = await sha256Hex(ip);
+  return new Request(
+    new URL(`/__internal/visitor-network-cache/v2/${digest}`, request.url),
+    { method: "GET" },
+  );
+}
+
+async function readVisitorNetworkCache(cache, cacheKey, ip) {
+  try {
+    const response = await cache.match(cacheKey);
+    if (!response) {
+      return null;
     }
 
     const body = await response.json();
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new Error("IPinfo returned an invalid response.");
+    const source = safeNetworkText(body?.source);
+    if (!body || typeof body !== "object" || !CACHEABLE_NETWORK_SOURCES.includes(source)) {
+      return null;
     }
 
-    return mergeIpinfoNetworkInfo(body, fallback);
+    const network = {
+      ip,
+      city: safeNetworkText(body.city),
+      region: safeNetworkText(body.region),
+      country: safeNetworkText(body.country),
+      countryCode: safeNetworkText(body.countryCode),
+      asn: normalizeAsn(body.asn),
+      organization: safeNetworkText(body.organization),
+      source,
+      cached: true,
+    };
+    return hasNetworkAttribution(network) ? network : null;
   } catch (error) {
-    console.warn(JSON.stringify({
-      level: "warn",
-      event: "ipinfo_lookup_failed",
-      message: error instanceof Error ? error.message : "Unknown IPinfo error",
-    }));
-    return fallback;
+    logVisitorNetworkWarning("ip_cache_read_failed", { message: errorMessage(error) });
+    return null;
   }
+}
+
+async function storeVisitorNetworkCache(cache, cacheKey, network, ctx) {
+  const body = {
+    city: network.city,
+    region: network.region,
+    country: network.country,
+    countryCode: network.countryCode,
+    asn: network.asn,
+    organization: network.organization,
+    source: network.source,
+  };
+  const response = new Response(JSON.stringify(body), {
+    headers: {
+      "Cache-Control": `public, max-age=${IP_CACHE_TTL_SECONDS}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+  });
+  const write = cache.put(cacheKey, response).catch((error) => {
+    logVisitorNetworkWarning("ip_cache_write_failed", { message: errorMessage(error) });
+  });
+
+  if (typeof ctx?.waitUntil === "function") {
+    ctx.waitUntil(write);
+  } else {
+    await write;
+  }
+}
+
+function visitorNetworkProviders(ip, env) {
+  const encodedIp = encodeURIComponent(ip);
+  const ipinfoHeaders = new Headers({ Accept: "application/json" });
+  let ipinfoEndpoint = `https://ipinfo.io/${encodedIp}/json`;
+
+  if (typeof env.IPINFO_TOKEN === "string" && env.IPINFO_TOKEN.trim()) {
+    ipinfoEndpoint = `https://api.ipinfo.io/lite/${encodedIp}`;
+    ipinfoHeaders.set("Authorization", `Bearer ${env.IPINFO_TOKEN.trim()}`);
+  }
+
+  return [
+    {
+      name: "ipinfo",
+      endpoint: ipinfoEndpoint,
+      headers: ipinfoHeaders,
+      accepts: hasIpinfoAttribution,
+      normalize: mergeIpinfoNetworkInfo,
+    },
+    {
+      name: "ipwhois",
+      endpoint:
+        `https://ipwho.is/${encodedIp}` +
+        "?fields=success,country,country_code,region,city,connection",
+      headers: new Headers({ Accept: "application/json" }),
+      accepts: hasIpwhoisAttribution,
+      normalize: mergeIpwhoisNetworkInfo,
+    },
+    {
+      name: "geojs",
+      endpoint: `https://get.geojs.io/v1/ip/geo/${encodedIp}.json`,
+      headers: new Headers({ Accept: "application/json" }),
+      accepts: hasGeoJsAttribution,
+      normalize: mergeGeoJsNetworkInfo,
+    },
+  ];
+}
+
+async function queryVisitorNetworkProvider(provider, fetchImpl, fallback) {
+  try {
+    const response = await fetchImpl(provider.endpoint, {
+      method: "GET",
+      headers: provider.headers,
+      cache: "no-store",
+      signal: AbortSignal.timeout(IP_PROVIDER_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      throw new Error(`${provider.name} returned ${response.status}.`);
+    }
+
+    const body = await response.json();
+    if (!body || typeof body !== "object" || Array.isArray(body) || !provider.accepts(body)) {
+      throw new Error(`${provider.name} returned no usable attribution.`);
+    }
+
+    return provider.normalize(body, fallback);
+  } catch (error) {
+    logVisitorNetworkWarning("ip_provider_failed", {
+      provider: provider.name,
+      message: errorMessage(error),
+    });
+    return null;
+  }
+}
+
+function hasIpinfoAttribution(body) {
+  const nestedAsn = body.asn && typeof body.asn === "object" ? body.asn : {};
+  return !body.error && [
+    body.city,
+    body.region,
+    body.country,
+    body.country_code,
+    body.org,
+    body.as_name,
+    typeof body.asn === "string" ? body.asn : nestedAsn.asn,
+  ].some(Boolean);
+}
+
+function hasIpwhoisAttribution(body) {
+  const connection = body.connection && typeof body.connection === "object" ? body.connection : {};
+  return body.success !== false && [
+    body.city,
+    body.region,
+    body.country,
+    body.country_code,
+    connection.asn,
+    connection.org,
+    connection.isp,
+  ].some(Boolean);
+}
+
+function hasGeoJsAttribution(body) {
+  return !body.error && [
+    body.city,
+    body.region,
+    body.country,
+    body.country_code,
+    body.asn,
+    body.organization_name,
+    body.organization,
+  ].some(Boolean);
 }
 
 function normalizeClientIp(value) {
@@ -321,6 +528,7 @@ function cloudflareNetworkInfo(request, ip) {
     asn,
     organization: safeNetworkText(cf.asOrganization),
     source: "cloudflare",
+    cached: false,
   };
 }
 
@@ -334,6 +542,7 @@ function unattributedNetworkInfo(ip) {
     asn: "",
     organization: "",
     source: "cloudflare",
+    cached: false,
   };
 }
 
@@ -358,6 +567,43 @@ function mergeIpinfoNetworkInfo(body, fallback) {
       legacyOrganization.organization ||
       fallback.organization,
     source: "ipinfo",
+    cached: false,
+  };
+}
+
+function mergeIpwhoisNetworkInfo(body, fallback) {
+  const connection = body.connection && typeof body.connection === "object" ? body.connection : {};
+  return {
+    ip: fallback.ip,
+    city: safeNetworkText(body.city) || fallback.city,
+    region: safeNetworkText(body.region) || fallback.region,
+    country: safeNetworkText(body.country) || fallback.country,
+    countryCode: safeNetworkText(body.country_code) || fallback.countryCode,
+    asn: normalizeAsn(connection.asn) || fallback.asn,
+    organization:
+      safeNetworkText(connection.org) ||
+      safeNetworkText(connection.isp) ||
+      fallback.organization,
+    source: "ipwhois",
+    cached: false,
+  };
+}
+
+function mergeGeoJsNetworkInfo(body, fallback) {
+  const legacyOrganization = parseLegacyOrganization(body.organization);
+  return {
+    ip: fallback.ip,
+    city: safeNetworkText(body.city) || fallback.city,
+    region: safeNetworkText(body.region) || fallback.region,
+    country: safeNetworkText(body.country) || fallback.country,
+    countryCode: safeNetworkText(body.country_code) || fallback.countryCode,
+    asn: normalizeAsn(body.asn) || legacyOrganization.asn || fallback.asn,
+    organization:
+      safeNetworkText(body.organization_name) ||
+      legacyOrganization.organization ||
+      fallback.organization,
+    source: "geojs",
+    cached: false,
   };
 }
 
@@ -371,6 +617,41 @@ function parseLegacyOrganization(value) {
 
 function safeNetworkText(value) {
   return typeof value === "string" ? value.trim().slice(0, 160) : "";
+}
+
+function normalizeAsn(value) {
+  if (Number.isInteger(value) && value > 0) {
+    return `AS${value}`;
+  }
+  const asn = safeNetworkText(value).toUpperCase();
+  if (/^AS\d+$/.test(asn)) {
+    return asn;
+  }
+  return /^\d+$/.test(asn) ? `AS${asn}` : "";
+}
+
+function hasNetworkAttribution(network) {
+  return [
+    network.city,
+    network.region,
+    network.country,
+    network.countryCode,
+    network.asn,
+    network.organization,
+  ].some(Boolean);
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function logVisitorNetworkWarning(event, details) {
+  console.warn(JSON.stringify({ level: "warn", event, ...details }));
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : "Unknown visitor network error";
 }
 
 async function handleLogin(request, env) {
