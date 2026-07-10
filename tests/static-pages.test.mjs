@@ -4,6 +4,11 @@ import test from "node:test";
 
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
+const passwordHtml = await readFile(new URL("../public/password/index.html", import.meta.url), "utf8");
+const passwordJs = await readFile(
+  new URL("../public/assets/password-tool.20260710.js", import.meta.url),
+  "utf8",
+);
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
 const adminCss = await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8");
 const adminJs = await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8");
@@ -14,6 +19,11 @@ test("home page links to the JSON tool without embedding the formatter", () => {
   assert.doesNotMatch(indexHtml, /data-json-tool/);
   assert.doesNotMatch(indexHtml, /json-tool\.20260706\.js/);
   assert.doesNotMatch(indexHtml, /styles\.20260706-json\.css/);
+});
+
+test("home page links to the standalone password generator", () => {
+  assert.match(indexHtml, /<a href="\/password\/">Password<\/a>/);
+  assert.doesNotMatch(indexHtml, /data-password-tool/);
 });
 
 test("JSON formatter is served from a standalone page", () => {
@@ -47,6 +57,25 @@ test("standalone JSON page includes a right click context menu for selected tree
 
 test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
+});
+
+test("password generator includes secure local controls and history", () => {
+  assert.match(passwordHtml, /<main class="password-shell" data-password-tool>/);
+  assert.match(passwordHtml, /href="https:\/\/superstar1014\.qzz\.io\/password\/"/);
+  assert.match(passwordHtml, /data-character="lowercase"/);
+  assert.match(passwordHtml, /data-character="symbols"/);
+  assert.match(passwordHtml, /data-password-excluded/);
+  assert.match(passwordHtml, /data-password-length/);
+  assert.match(passwordHtml, /data-password-count/);
+  assert.match(passwordHtml, /data-password-history-enabled/);
+  assert.match(passwordHtml, /data-password-history/);
+  assert.match(passwordHtml, /src="\/assets\/password-tool\.20260710\.js"/);
+  assert.match(passwordJs, /generatePasswords/);
+  assert.match(passwordJs, /localStorage/);
+});
+
+test("sitemap includes the standalone password generator URL", () => {
+  assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/password\/<\/loc>/);
 });
 
 test("admin console is served from a standalone page with private article defaults", () => {

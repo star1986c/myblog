@@ -9,6 +9,7 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
 - Vendors Three.js locally to avoid a third-party CDN request on first load.
 - Adds `favicon.svg`, `sitemap.xml`, and a robots file with AI crawler signals.
 - Adds a standalone JSON formatter at `/json/`.
+- Adds a standalone secure password generator at `/password/` with optional local-only history.
 - Adds a standalone blog admin console at `/admin/`, public blog pages under `/blog/`,
   D1-backed content storage, and manually entered media URL records.
 - Keeps the Worker name as `wispy-cloud-0978`, matching the current Cloudflare custom domain binding.
