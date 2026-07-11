@@ -312,6 +312,81 @@ a {
   opacity: 0.45;
 }
 
+.mobile-controls {
+  display: none;
+  border-top: 1px solid var(--line);
+  padding: 14px;
+  background: rgba(3, 8, 14, 0.72);
+}
+
+.mobile-controls-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.mobile-controls-heading strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.mobile-controls-heading span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.mobile-control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mobile-control-grid button {
+  display: grid;
+  min-width: 0;
+  min-height: 58px;
+  place-items: center;
+  gap: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 7px 5px;
+  color: var(--muted-strong);
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.mobile-control-grid button:active,
+.mobile-control-grid button.is-pressed {
+  border-color: rgba(125, 226, 184, 0.48);
+  color: var(--accent);
+  background: rgba(125, 226, 184, 0.13);
+}
+
+.mobile-control-grid svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.mobile-control-grid span {
+  overflow: hidden;
+  max-width: 100%;
+  font-size: 10px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .next-piece {
   display: grid;
   min-height: 210px;
@@ -531,12 +606,24 @@ kbd {
   }
 
   .board-frame {
-    width: min(100% - 28px, 360px);
-    margin: 14px auto;
+    width: min(100% - 52px, 260px, calc((100svh - 280px) / 2));
+    min-width: 190px;
+    margin: 10px auto;
   }
 
   .game-actions {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 10px;
+  }
+
+  .game-button {
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
+  .mobile-controls {
+    display: block;
+    padding: 10px;
   }
 
   .next-piece {
@@ -548,10 +635,17 @@ kbd {
   }
 }
 
+@media (hover: none) and (pointer: coarse) {
+  .mobile-controls {
+    display: block;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .board-overlay,
   .game-button,
-  .audio-toggle {
+  .audio-toggle,
+  .mobile-control-grid button {
     transition-duration: 0.01ms !important;
   }
 

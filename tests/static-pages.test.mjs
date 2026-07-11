@@ -167,6 +167,22 @@ test("Tetris includes optional synthesized music and sound effects", () => {
   assert.doesNotMatch(tetrisAudioJs, /fetch\(/);
 });
 
+test("Tetris includes touch controls for mobile gameplay", () => {
+  assert.match(tetrisHtml, /data-mobile-controls/);
+  assert.match(tetrisHtml, /data-touch-action="left"/);
+  assert.match(tetrisHtml, /data-touch-action="right"/);
+  assert.match(tetrisHtml, /data-touch-action="softDrop"/);
+  assert.match(tetrisHtml, /data-touch-action="rotateLeft"/);
+  assert.match(tetrisHtml, /data-touch-action="rotateRight"/);
+  assert.match(tetrisHtml, /data-touch-action="hardDrop"/);
+  assert.match(tetrisJs, /pointerdown/);
+  assert.match(tetrisJs, /setInterval\(\(\) => performPlayerAction\(action\), 75\)/);
+  assert.match(tetrisJs, /const next = togglePause\(state\)/);
+  assert.match(tetrisCss, /\.mobile-control-grid/);
+  assert.match(tetrisCss, /min-height:\s*58px/);
+  assert.match(tetrisCss, /touch-action:\s*none/);
+});
+
 test("all standalone tool pages link to Tetris", () => {
   assert.match(jsonHtml, /href="\/tetris\/"/);
   assert.match(passwordHtml, /href="\/tetris\/"/);

@@ -37,12 +37,16 @@ if (app) {
   const pauseButton = app.querySelector('[data-game-action="pause"]');
   const restartButton = app.querySelector('[data-game-action="restart"]');
   const audioButtons = app.querySelectorAll("[data-audio-toggle]");
+  const touchButtons = app.querySelectorAll("[data-touch-action]");
   const announcement = app.querySelector("[data-tetris-announcement]");
   const formatter = new Intl.NumberFormat("zh-CN");
   const audio = createTetrisAudio();
   let state = createGameState();
   let bestScore = readBestScore();
   let previousTime = performance.now();
+  let touchRepeatDelay = null;
+  let touchRepeatTimer = null;
+  let activeTouchButton = null;
 
   function readBestScore() {
     try {
@@ -166,10 +170,10 @@ if (app) {
   }
 
   function statusContent(status) {
-    if (status === "running") return { label: "游戏进行中", kicker: "Playing", title: "游戏进行中", message: "使用键盘控制方块。" };
+    if (status === "running") return { label: "游戏进行中", kicker: "Playing", title: "游戏进行中", message: "使用键盘或触屏按键控制方块。" };
     if (status === "paused") return { label: "已暂停", kicker: "Paused", title: "游戏已暂停", message: "按 P 或点击继续游戏。" };
     if (status === "gameover") return { label: "游戏结束", kicker: "Game over", title: "游戏结束", message: "点击重新开始，再挑战一次。" };
-    return { label: "等待开始", kicker: "Ready", title: "准备开始", message: "点击下方按钮，然后使用键盘控制方块。" };
+    return { label: "等待开始", kicker: "Ready", title: "准备开始", message: "点击下方按钮，然后使用键盘或触屏按键控制方块。" };
   }
 
   function syncBestScore() {
@@ -284,39 +288,116 @@ if (app) {
     });
   });
 
-  window.addEventListener("keydown", (event) => {
-    if (event.target instanceof HTMLElement && event.target.closest("a, button, input, textarea, select")) return;
+  function performPlayerAction(action) {
     let next = state;
-    let handled = true;
     let effect = null;
 
-    switch (event.code) {
-      case "ArrowLeft":
+    switch (action) {
+      case "left":
         next = movePiece(state, -1);
         effect = "move";
         break;
-      case "ArrowRight":
+      case "right":
         next = movePiece(state, 1);
         effect = "move";
         break;
-      case "ArrowDown":
+      case "softDrop":
         next = softDrop(state);
         effect = "softDrop";
         break;
+      case "rotateRight":
+        next = rotatePiece(state, 1);
+        effect = "rotate";
+        break;
+      case "rotateLeft":
+        next = rotatePiece(state, -1);
+        effect = "rotate";
+        break;
+      case "hardDrop":
+        next = hardDrop(state);
+        break;
+      default:
+        return false;
+    }
+
+    if (next === state) return false;
+    applyState(next);
+    if (effect) audio.playEffect(effect);
+    return true;
+  }
+
+  function stopTouchRepeat() {
+    window.clearTimeout(touchRepeatDelay);
+    window.clearInterval(touchRepeatTimer);
+    touchRepeatDelay = null;
+    touchRepeatTimer = null;
+    activeTouchButton?.classList.remove("is-pressed");
+    activeTouchButton = null;
+  }
+
+  function startTouchAction(button, event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    stopTouchRepeat();
+    activeTouchButton = button;
+    button.classList.add("is-pressed");
+    const action = button.dataset.touchAction;
+    performPlayerAction(action);
+
+    if (["left", "right", "softDrop"].includes(action)) {
+      touchRepeatDelay = window.setTimeout(() => {
+        touchRepeatTimer = window.setInterval(() => performPlayerAction(action), 75);
+      }, 180);
+    }
+
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional; release handlers still stop repetition.
+    }
+  }
+
+  touchButtons.forEach((button) => {
+    button.addEventListener("pointerdown", (event) => startTouchAction(button, event));
+    button.addEventListener("pointerup", stopTouchRepeat);
+    button.addEventListener("pointercancel", stopTouchRepeat);
+    button.addEventListener("lostpointercapture", stopTouchRepeat);
+    button.addEventListener("click", (event) => {
+      if (event.detail === 0) performPlayerAction(button.dataset.touchAction);
+    });
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.target instanceof HTMLElement && event.target.closest("a, button, input, textarea, select")) return;
+    let action = null;
+    let handled = true;
+
+    switch (event.code) {
+      case "ArrowLeft":
+        action = "left";
+        break;
+      case "ArrowRight":
+        action = "right";
+        break;
+      case "ArrowDown":
+        action = "softDrop";
+        break;
       case "ArrowUp":
       case "KeyX":
-        if (!event.repeat) next = rotatePiece(state, 1);
-        effect = "rotate";
+        if (!event.repeat) action = "rotateRight";
         break;
       case "KeyZ":
-        if (!event.repeat) next = rotatePiece(state, -1);
-        effect = "rotate";
+        if (!event.repeat) action = "rotateLeft";
         break;
       case "Space":
-        if (!event.repeat) next = hardDrop(state);
+        if (!event.repeat) action = "hardDrop";
         break;
       case "KeyP":
-        if (!event.repeat) next = togglePause(state);
+        if (!event.repeat) {
+          const next = togglePause(state);
+          applyState(next, next.status === "paused" ? "游戏已暂停。" : "游戏继续。");
+          previousTime = performance.now();
+        }
         break;
       case "KeyR":
         if (!event.repeat) void restart();
@@ -327,13 +408,11 @@ if (app) {
 
     if (!handled) return;
     event.preventDefault();
-    if (event.code !== "KeyR" && next !== state) {
-      applyState(next);
-      if (effect) audio.playEffect(effect);
-    }
+    if (action) performPlayerAction(action);
   });
 
   document.addEventListener("visibilitychange", () => {
+    stopTouchRepeat();
     if (document.hidden && state.status === "running") {
       applyState(togglePause(state), "页面进入后台，游戏已自动暂停。");
     }
@@ -344,7 +423,10 @@ if (app) {
     window.requestAnimationFrame(render);
   });
 
-  window.addEventListener("pagehide", () => audio.destroy(), { once: true });
+  window.addEventListener("pagehide", () => {
+    stopTouchRepeat();
+    audio.destroy();
+  }, { once: true });
 
   function frame(time) {
     const elapsed = Math.min(Math.max(time - previousTime, 0), 250);

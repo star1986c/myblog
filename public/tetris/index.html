@@ -151,6 +151,44 @@
             <button class="game-button" type="button" data-game-action="pause" disabled>暂停</button>
             <button class="game-button" type="button" data-game-action="restart">重新开始</button>
           </div>
+          <div class="mobile-controls" data-mobile-controls aria-label="触屏操作">
+            <div class="mobile-controls-heading">
+              <strong>触屏操作</strong>
+              <span>长按方向键可连续移动</span>
+            </div>
+            <div class="mobile-control-grid">
+              <button type="button" data-touch-action="rotateLeft" aria-label="逆时针旋转">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 7H4V3M4.5 7A8 8 0 1 1 4 15" />
+                </svg>
+                <span>逆时针</span>
+              </button>
+              <button type="button" data-touch-action="rotateRight" aria-label="顺时针旋转">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M16 7h4V3m-.5 4A8 8 0 1 0 20 15" />
+                </svg>
+                <span>顺时针</span>
+              </button>
+              <button type="button" data-touch-action="hardDrop" aria-label="硬降">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3v12m-4-4 4 4 4-4M5 21h14" />
+                </svg>
+                <span>硬降</span>
+              </button>
+              <button type="button" data-touch-action="left" aria-label="向左移动">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
+                <span>左移</span>
+              </button>
+              <button type="button" data-touch-action="softDrop" aria-label="软降">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                <span>软降</span>
+              </button>
+              <button type="button" data-touch-action="right" aria-label="向右移动">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+                <span>右移</span>
+              </button>
+            </div>
+          </div>
         </section>
 
         <aside class="game-panel guide-panel" aria-labelledby="guide-title">
