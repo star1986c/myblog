@@ -5,6 +5,15 @@ import test from "node:test";
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
 const passwordHtml = await readFile(new URL("../public/password/index.html", import.meta.url), "utf8");
+const tetrisHtml = await readFile(new URL("../public/tetris/index.html", import.meta.url), "utf8");
+const tetrisJs = await readFile(
+  new URL("../public/assets/tetris-game.20260711.js", import.meta.url),
+  "utf8",
+);
+const tetrisCss = await readFile(
+  new URL("../public/assets/tetris-page.20260711.css", import.meta.url),
+  "utf8",
+);
 const passwordJs = await readFile(
   new URL("../public/assets/password-tool.20260710.js", import.meta.url),
   "utf8",
@@ -32,6 +41,12 @@ test("home page links to the JSON tool without embedding the formatter", () => {
 test("home page links to the standalone password generator", () => {
   assert.match(indexHtml, /href="\/password\/"/);
   assert.doesNotMatch(indexHtml, /data-password-tool/);
+});
+
+test("home page links to the standalone Tetris game", () => {
+  assert.match(indexHtml, /href="\/tetris\/"/);
+  assert.match(indexHtml, /<h3>俄罗斯方块<\/h3>/);
+  assert.doesNotMatch(indexHtml, /data-tetris-game/);
 });
 
 test("home page presents the site as personal developer tools and a technical blog", () => {
@@ -111,6 +126,38 @@ test("password generator includes secure local controls and history", () => {
 
 test("sitemap includes the standalone password generator URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/password\/<\/loc>/);
+});
+
+test("Tetris is served from a branded standalone page with keyboard controls", () => {
+  assert.match(tetrisHtml, /<main class="tetris-shell" data-tetris-game/);
+  assert.match(tetrisHtml, /href="https:\/\/superstar1014\.qzz\.io\/tetris\/"/);
+  assert.match(tetrisHtml, /href="\/assets\/tool-brand\.20260710\.css"/);
+  assert.match(tetrisHtml, /href="\/assets\/tetris-page\.20260711\.css"/);
+  assert.match(tetrisHtml, /src="\/assets\/tetris-game\.20260711\.js"/);
+  assert.match(tetrisHtml, /data-tetris-board/);
+  assert.match(tetrisHtml, /data-next-piece/);
+  assert.match(tetrisHtml, /<kbd>Space<\/kbd>/);
+  assert.match(tetrisHtml, /<kbd>P<\/kbd><kbd>R<\/kbd>/);
+  assert.match(tetrisCss, /aspect-ratio:\s*1\s*\/\s*2/);
+  assert.match(tetrisCss, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("Tetris keeps scores local and pauses when the page is hidden", () => {
+  assert.match(tetrisJs, /ai-build-lab\.tetris-best-score\.v1/);
+  assert.match(tetrisJs, /localStorage\.setItem/);
+  assert.match(tetrisJs, /requestAnimationFrame/);
+  assert.match(tetrisJs, /visibilitychange/);
+  assert.match(tetrisJs, /document\.hidden/);
+});
+
+test("all standalone tool pages link to Tetris", () => {
+  assert.match(jsonHtml, /href="\/tetris\/"/);
+  assert.match(passwordHtml, /href="\/tetris\/"/);
+  assert.match(tetrisHtml, /aria-current="page" href="\/tetris\/"/);
+});
+
+test("sitemap includes the standalone Tetris URL", () => {
+  assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/tetris\/<\/loc>/);
 });
 
 test("admin console is served from a standalone page with private article defaults", () => {

@@ -518,7 +518,7 @@ h1 em {
 
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
 
@@ -538,6 +538,12 @@ h1 em {
 .tool-card:nth-child(2) {
   background:
     linear-gradient(145deg, rgba(125, 226, 184, 0.065), transparent 38%),
+    var(--surface-solid);
+}
+
+.tool-card:nth-child(3) {
+  background:
+    linear-gradient(145deg, rgba(255, 204, 103, 0.07), transparent 38%),
     var(--surface-solid);
 }
 
@@ -575,6 +581,12 @@ h1 em {
   border-color: rgba(125, 226, 184, 0.24);
   color: var(--accent);
   background: rgba(125, 226, 184, 0.07);
+}
+
+.tool-card:nth-child(3) .tool-icon {
+  border-color: rgba(255, 204, 103, 0.24);
+  color: var(--sun);
+  background: rgba(255, 204, 103, 0.07);
 }
 
 .tool-icon svg {
@@ -835,6 +847,10 @@ footer {
 
   .section-heading > p {
     max-width: 620px;
+  }
+
+  .tool-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

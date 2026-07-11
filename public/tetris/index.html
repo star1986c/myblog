@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>俄罗斯方块 | AI Build Lab</title>
+    <meta
+      name="description"
+      content="在浏览器中游玩经典俄罗斯方块，支持键盘操作、等级加速、幽灵落点与本地最高分。"
+    />
+    <meta name="theme-color" content="#05070b" />
+    <meta name="robots" content="index,follow" />
+    <link rel="canonical" href="https://superstar1014.qzz.io/tetris/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="俄罗斯方块 | AI Build Lab" />
+    <meta
+      property="og:description"
+      content="无需安装，打开浏览器即可游玩的经典俄罗斯方块。"
+    />
+    <meta property="og:url" content="https://superstar1014.qzz.io/tetris/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="俄罗斯方块 | AI Build Lab" />
+    <meta
+      name="twitter:description"
+      content="无需安装，打开浏览器即可游玩的经典俄罗斯方块。"
+    />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
+    <link rel="preload" href="/assets/tetris-page.20260711.css" as="style" />
+    <link rel="modulepreload" href="/assets/tetris-core.20260711.js" />
+    <link rel="modulepreload" href="/assets/tetris-game.20260711.js" />
+    <link rel="stylesheet" href="/assets/tetris-page.20260711.css" />
+    <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#tetris-workbench">跳到俄罗斯方块游戏区</a>
+    <main class="tetris-shell" data-tetris-game data-state="ready">
+      <header class="tool-topbar">
+        <a class="brand" href="/" aria-label="返回 AI Build Lab 首页">
+          <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+            <rect width="48" height="48" rx="8" fill="#080D18" />
+            <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
+            <circle cx="24" cy="24" r="14.5" fill="none" stroke="#6ED6FF" stroke-width="2" />
+            <circle cx="36" cy="20" r="2.6" fill="#7DE2B8" />
+            <path
+              d="M12 30C19 38 31 38 38 30"
+              fill="none"
+              stroke="#FF7F5F"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span>
+            <strong>AI Build Lab</strong>
+            <small>个人开发实验室</small>
+          </span>
+        </a>
+        <nav class="tool-nav" aria-label="工具导航">
+          <a href="/">首页</a>
+          <a href="/json/">JSON 格式化</a>
+          <a href="/password/">密码生成</a>
+          <a aria-current="page" href="/tetris/">俄罗斯方块</a>
+        </nav>
+      </header>
+
+      <section class="tool-title" aria-labelledby="tetris-title">
+        <div class="title-copy">
+          <div class="eyebrow">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 4h6v6H4zM10 10h6v6h-6zM16 4h4v6h-4zM4 16h6v4H4zM16 16h4v4h-4z" />
+            </svg>
+            <span>Browser game</span>
+          </div>
+          <h1 id="tetris-title">俄罗斯方块</h1>
+          <p>移动、旋转并消除完整横行。等级越高，下落速度越快。</p>
+        </div>
+        <div class="privacy-note">
+          <span class="privacy-dot" aria-hidden="true"></span>
+          <div>
+            <strong>纯前端运行</strong>
+            <span>最高分仅保存在当前浏览器</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="tetris-workbench" id="tetris-workbench" aria-label="俄罗斯方块游戏">
+        <aside class="game-panel stats-panel" aria-labelledby="stats-title">
+          <div class="panel-heading">
+            <span>01</span>
+            <div>
+              <h2 id="stats-title">本局数据</h2>
+              <p>实时记录游戏进度</p>
+            </div>
+          </div>
+          <div class="game-status" data-game-status>
+            <span aria-hidden="true"></span>
+            <div>
+              <small>当前状态</small>
+              <strong data-status-label>等待开始</strong>
+            </div>
+          </div>
+          <dl class="stats-grid">
+            <div>
+              <dt>得分</dt>
+              <dd data-score>0</dd>
+            </div>
+            <div>
+              <dt>最高分</dt>
+              <dd data-best-score>0</dd>
+            </div>
+            <div>
+              <dt>等级</dt>
+              <dd data-level>1</dd>
+            </div>
+            <div>
+              <dt>消除行数</dt>
+              <dd data-lines>0</dd>
+            </div>
+          </dl>
+          <p class="score-note">单行 100 分，连续消除四行可得 800 分；得分会随等级倍增。</p>
+        </aside>
+
+        <section class="board-panel" aria-labelledby="board-title">
+          <div class="board-heading">
+            <div>
+              <span>02 / Playfield</span>
+              <h2 id="board-title">游戏棋盘</h2>
+            </div>
+            <span class="keyboard-badge">Keyboard</span>
+          </div>
+          <div class="board-frame" data-board-frame>
+            <canvas
+              data-tetris-board
+              width="320"
+              height="640"
+              tabindex="0"
+              role="img"
+              aria-label="俄罗斯方块棋盘，等待开始"
+            ></canvas>
+            <div class="board-overlay" data-board-overlay>
+              <span data-overlay-kicker>Ready</span>
+              <strong data-overlay-title>准备开始</strong>
+              <p data-overlay-message>点击下方按钮，然后使用键盘控制方块。</p>
+            </div>
+          </div>
+          <div class="game-actions" aria-label="游戏操作">
+            <button class="game-button primary" type="button" data-game-action="start">开始游戏</button>
+            <button class="game-button" type="button" data-game-action="pause" disabled>暂停</button>
+            <button class="game-button" type="button" data-game-action="restart">重新开始</button>
+          </div>
+        </section>
+
+        <aside class="game-panel guide-panel" aria-labelledby="guide-title">
+          <div class="panel-heading">
+            <span>03</span>
+            <div>
+              <h2 id="guide-title">下一块</h2>
+              <p>提前规划落点</p>
+            </div>
+          </div>
+          <div class="next-piece">
+            <canvas data-next-piece width="176" height="176" aria-label="下一块预览"></canvas>
+          </div>
+          <div class="controls-heading">
+            <strong>键盘操作</strong>
+            <span>桌面端优先</span>
+          </div>
+          <dl class="control-list">
+            <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>左右移动</dd></div>
+            <div><dt><kbd>↓</kbd></dt><dd>软降</dd></div>
+            <div><dt><kbd>↑</kbd><kbd>X</kbd></dt><dd>顺时针旋转</dd></div>
+            <div><dt><kbd>Z</kbd></dt><dd>逆时针旋转</dd></div>
+            <div><dt><kbd>Space</kbd></dt><dd>硬降</dd></div>
+            <div><dt><kbd>P</kbd><kbd>R</kbd></dt><dd>暂停 / 重开</dd></div>
+          </dl>
+        </aside>
+      </section>
+
+      <p class="screen-reader-status" data-tetris-announcement aria-live="polite"></p>
+    </main>
+    <script type="module" src="/assets/tetris-game.20260711.js"></script>
+  </body>
+</html>
