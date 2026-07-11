@@ -46,7 +46,7 @@ account so the site can be tested without R2 or credential secrets.
 Default administrator:
 
 - Username: `admin`
-- Password: generated during setup; change it immediately from the `账号` tab.
+- Password: generated during setup; change it immediately from the `Account` tab.
 
 `SESSION_SECRET` can still be set as an encrypted Worker secret to override the
 D1-seeded session secret:

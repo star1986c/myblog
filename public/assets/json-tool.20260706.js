@@ -155,7 +155,7 @@ function initializeJsonTool(root) {
     const result = parseJson(source);
     if (result.ok) {
       renderModel(result.value, elements, state);
-      setStatus(elements.status, "JSON 有效");
+      setStatus(elements.status, "Valid JSON");
       return;
     }
 
@@ -170,7 +170,7 @@ function applyFormat(elements, state) {
   }
 
   elements.input.value = result.value;
-  setStatus(elements.status, "已格式化并生成视图");
+  setStatus(elements.status, "Formatted and tree view updated");
 }
 
 function applyMinify(elements, state) {
@@ -180,18 +180,18 @@ function applyMinify(elements, state) {
   }
 
   elements.input.value = result.value;
-  setStatus(elements.status, "已压缩并生成视图");
+  setStatus(elements.status, "Minified and tree view updated");
 }
 
 function handleResult(result, elements, state) {
   if (!elements.input.value.trim()) {
-    setStatus(elements.status, "没有输入", true);
+    setStatus(elements.status, "No input", true);
     return false;
   }
 
   if (!result.ok) {
     setStatus(elements.status, invalidStatus(result), true);
-    elements.properties.replaceChildren(emptyPropertyRow("JSON 无效，无法显示属性。"));
+    elements.properties.replaceChildren(emptyPropertyRow("Invalid JSON. Properties are unavailable."));
     return false;
   }
 
@@ -276,7 +276,7 @@ function selectPath(path, elements, state) {
 function renderProperties(node, target) {
   const rows = getPropertyRows(node);
   if (!rows.length) {
-    target.replaceChildren(emptyPropertyRow("没有属性。"));
+    target.replaceChildren(emptyPropertyRow("No properties."));
     return;
   }
 
@@ -297,12 +297,12 @@ function runSearch(elements, state, direction) {
   markMatches(elements.tree, state.matches);
 
   if (!state.matches.length) {
-    setStatus(elements.status, "没有匹配项", true);
+    setStatus(elements.status, "No matches", true);
     return;
   }
 
   selectPath(state.matches[state.matchIndex], elements, state);
-  setStatus(elements.status, `找到 ${state.matches.length} 个匹配项`);
+  setStatus(elements.status, `Found ${state.matches.length} ${state.matches.length === 1 ? "match" : "matches"}`);
 }
 
 function moveMatch(elements, state, direction) {
@@ -313,7 +313,7 @@ function moveMatch(elements, state, direction) {
 
   state.matchIndex = (state.matchIndex + direction + state.matches.length) % state.matches.length;
   selectPath(state.matches[state.matchIndex], elements, state);
-  setStatus(elements.status, `匹配项 ${state.matchIndex + 1}/${state.matches.length}`);
+  setStatus(elements.status, `Match ${state.matchIndex + 1} of ${state.matches.length}`);
 }
 
 function markMatches(tree, paths) {
@@ -326,48 +326,48 @@ function markMatches(tree, paths) {
 async function handleContextMenuAction(action, elements, state) {
   const selected = state.nodeMap.get(state.selectedPath);
   if (!selected) {
-    setStatus(elements.status, "请先选择节点", true);
+    setStatus(elements.status, "Select a node first", true);
     return;
   }
 
   if (action === "copy-key") {
-    await copyText(getCopyPayload(selected, "key"), elements.status, "已复制 Key");
+    await copyText(getCopyPayload(selected, "key"), elements.status, "Key copied");
     return;
   }
 
   if (action === "copy-value") {
-    await copyText(getCopyPayload(selected, "value"), elements.status, "已复制 Value");
+    await copyText(getCopyPayload(selected, "value"), elements.status, "Value copied");
     return;
   }
 
   if (action === "copy-pair") {
-    await copyText(getCopyPayload(selected, "pair"), elements.status, "已复制 Key+Value");
+    await copyText(getCopyPayload(selected, "pair"), elements.status, "Key and value copied");
     return;
   }
 
   if (action === "expand-children") {
     setNodeSubtreeExpanded(elements.tree, selected.path, true);
-    setStatus(elements.status, "已展开当前节点子树");
+    setStatus(elements.status, "Child nodes expanded");
     return;
   }
 
   if (action === "collapse-children") {
     setNodeSubtreeExpanded(elements.tree, selected.path, false);
     openAncestors(elements.tree, selected.path);
-    setStatus(elements.status, "已收起当前节点子树");
+    setStatus(elements.status, "Child nodes collapsed");
     return;
   }
 
   if (action === "expand-all") {
     setTreeExpanded(elements.tree, true);
-    setStatus(elements.status, "已展开所有节点");
+    setStatus(elements.status, "All nodes expanded");
     return;
   }
 
   if (action === "collapse-all") {
     setTreeExpanded(elements.tree, false);
     openAncestors(elements.tree, selected.path);
-    setStatus(elements.status, "已收起所有节点");
+    setStatus(elements.status, "All nodes collapsed");
   }
 }
 
@@ -425,29 +425,29 @@ function clearViewer(elements, state) {
   state.selectedPath = "";
   state.matches = [];
   state.matchIndex = -1;
-  elements.tree.innerHTML = '<div class="empty-view">格式化或粘贴有效 JSON 后会显示树形结构。</div>';
-  elements.properties.replaceChildren(emptyPropertyRow("请选择左侧节点。"));
-  setStatus(elements.status, "等待输入");
+  elements.tree.innerHTML = '<div class="empty-view">Format or paste valid JSON to display its tree structure.</div>';
+  elements.properties.replaceChildren(emptyPropertyRow("Select a node from the tree."));
+  setStatus(elements.status, "Waiting for input");
 }
 
 async function copyInput(text, status) {
   const value = text.trim();
   if (!value) {
-    setStatus(status, "没有可复制内容", true);
+    setStatus(status, "Nothing to copy", true);
     return;
   }
 
   try {
     await writeClipboard(value);
-    setStatus(status, "已复制");
+    setStatus(status, "Copied");
   } catch {
-    setStatus(status, "浏览器阻止复制", true);
+    setStatus(status, "The browser blocked clipboard access", true);
   }
 }
 
 async function copyText(value, status, successMessage) {
   if (!value) {
-    setStatus(status, "没有可复制内容", true);
+    setStatus(status, "Nothing to copy", true);
     return;
   }
 
@@ -455,7 +455,7 @@ async function copyText(value, status, successMessage) {
     await writeClipboard(value);
     setStatus(status, successMessage);
   } catch {
-    setStatus(status, "浏览器阻止复制", true);
+    setStatus(status, "The browser blocked clipboard access", true);
   }
 }
 
@@ -477,8 +477,8 @@ function emptyPropertyRow(message) {
 }
 
 function invalidStatus(result) {
-  const location = result.line && result.column ? `，第 ${result.line} 行，第 ${result.column} 列` : "";
-  return `JSON 无效${location}`;
+  const location = result.line && result.column ? ` at line ${result.line}, column ${result.column}` : "";
+  return `Invalid JSON${location}`;
 }
 
 function iconFor(type) {

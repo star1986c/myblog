@@ -41,7 +41,7 @@ test("public visibility requires both published status and public visibility", (
 
 test("slugify creates stable URL slugs", () => {
   assert.equal(slugify("  Hello, Cloudflare Workers!  "), "hello-cloudflare-workers");
-  assert.equal(slugify("中文 标题"), "post");
+  assert.equal(slugify("Заголовок"), "post");
 });
 
 test("normalizes manually entered media URLs", () => {

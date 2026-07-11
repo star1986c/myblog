@@ -91,7 +91,7 @@ export function createSevenBag(random = Math.random) {
 
 export function spawnPiece(type) {
   if (!TETROMINO_TYPES.includes(type)) {
-    throw new Error(`未知方块类型：${type}`);
+    throw new Error(`Unknown tetromino type: ${type}`);
   }
   return { type, rotation: 0, x: 3, y: 0 };
 }

@@ -55,7 +55,7 @@ test("password pool validation rejects missing and emptied categories", () => {
     uppercase: false,
     numbers: false,
     symbols: false,
-  }), /至少选择一种字符类型/);
+  }), /Select at least one character type/);
 
   assert.throws(() => buildPasswordPools({
     lowercase: false,
@@ -63,14 +63,14 @@ test("password pool validation rejects missing and emptied categories", () => {
     numbers: true,
     symbols: false,
     excluded: PASSWORD_CHARSETS.numbers,
-  }), /移除全部数字/);
+  }), /removes all numbers/);
 });
 
 test("password generator validates length against selected categories", () => {
   assert.throws(() => generatePasswords({
     length: 3,
     count: 1,
-  }, sequenceRandom()), /4 到 128/);
+  }, sequenceRandom()), /between 4 and 128/);
 });
 
 test("secure random index retries samples outside the unbiased range", () => {

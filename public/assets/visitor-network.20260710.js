@@ -21,26 +21,26 @@ if (networkCard) {
       const body = await response.json();
 
       if (!response.ok || !body.ip) {
-        throw new Error(body.error || "查询失败");
+        throw new Error(body.error || "Lookup failed");
       }
 
       ipValue.textContent = body.ip;
       locationValue.textContent = formatLocation(body);
       organizationValue.textContent = formatOrganization(body);
       providerValue.textContent = body.source === "ipinfo"
-        ? "归属数据由 IPinfo 提供"
-        : "已显示 Cloudflare 获取的网络信息";
+        ? "Network data from IPinfo"
+        : "Network information from Cloudflare";
       result.hidden = false;
       trigger.setAttribute("aria-expanded", "true");
-      buttonLabel.textContent = "重新查询";
+      buttonLabel.textContent = "Check again";
       networkCard.dataset.state = "success";
-      status.textContent = "公网 IP 归属查询完成。";
+      status.textContent = "Public IP and network lookup complete.";
     } catch {
       result.hidden = true;
       trigger.setAttribute("aria-expanded", "false");
-      buttonLabel.textContent = "重试";
+      buttonLabel.textContent = "Retry";
       networkCard.dataset.state = "error";
-      status.textContent = "暂时无法查询，请稍后重试。";
+      status.textContent = "The lookup is temporarily unavailable. Try again later.";
     } finally {
       setLoading(false);
     }
@@ -50,8 +50,8 @@ if (networkCard) {
     trigger.disabled = loading;
     if (loading) {
       networkCard.dataset.state = "loading";
-      buttonLabel.textContent = "查询中";
-      status.textContent = "正在查询公网出口与归属信息…";
+      buttonLabel.textContent = "Checking";
+      status.textContent = "Looking up your public IP and network information…";
     }
   }
 }
@@ -63,12 +63,12 @@ function formatLocation(network) {
     ? `${network.country} (${network.countryCode})`
     : network.country || network.countryCode;
   const parts = [network.city, network.region, country].filter(Boolean);
-  return [...new Set(parts)].join(" · ") || "归属地区暂不可用";
+  return [...new Set(parts)].join(" · ") || "Location unavailable";
 }
 
 function formatOrganization(network) {
   if (network.asn && network.organization) {
     return `${network.asn} · ${network.organization}`;
   }
-  return network.organization || network.asn || "网络归属暂不可用";
+  return network.organization || network.asn || "Network owner unavailable";
 }

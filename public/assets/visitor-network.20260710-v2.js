@@ -24,7 +24,7 @@ if (networkCard) {
       const body = await response.json();
 
       if (!response.ok || !body.ip) {
-        const error = new Error(body.error || "查询失败");
+        const error = new Error(body.error || "Lookup failed");
         error.status = response.status;
         throw error;
       }
@@ -35,17 +35,17 @@ if (networkCard) {
       providerValue.textContent = formatProvider(body);
       result.hidden = false;
       trigger.setAttribute("aria-expanded", "true");
-      buttonLabel.textContent = "重新查询";
+      buttonLabel.textContent = "Check again";
       networkCard.dataset.state = "success";
-      status.textContent = "公网 IP 归属查询完成。";
+      status.textContent = "Public IP and network lookup complete.";
     } catch (error) {
       result.hidden = true;
       trigger.setAttribute("aria-expanded", "false");
-      buttonLabel.textContent = "重试";
+      buttonLabel.textContent = "Retry";
       networkCard.dataset.state = "error";
       status.textContent = error?.status === 429
-        ? "查询过于频繁，请一分钟后重试。"
-        : "暂时无法查询，请稍后重试。";
+        ? "Too many requests. Try again in one minute."
+        : "The lookup is temporarily unavailable. Try again later.";
     } finally {
       setLoading(false);
     }
@@ -55,8 +55,8 @@ if (networkCard) {
     trigger.disabled = loading;
     if (loading) {
       networkCard.dataset.state = "loading";
-      buttonLabel.textContent = "查询中";
-      status.textContent = "正在查询公网出口与归属信息…";
+      buttonLabel.textContent = "Checking";
+      status.textContent = "Looking up your public IP and network information…";
     }
   }
 }
@@ -68,14 +68,14 @@ function formatLocation(network) {
     ? `${network.country} (${network.countryCode})`
     : network.country || network.countryCode;
   const parts = [network.city, network.region, country].filter(Boolean);
-  return [...new Set(parts)].join(" · ") || "归属地区暂不可用";
+  return [...new Set(parts)].join(" · ") || "Location unavailable";
 }
 
 function formatOrganization(network) {
   if (network.asn && network.organization) {
     return `${network.asn} · ${network.organization}`;
   }
-  return network.organization || network.asn || "网络归属暂不可用";
+  return network.organization || network.asn || "Network owner unavailable";
 }
 
 function formatProvider(network) {
@@ -85,8 +85,8 @@ function formatProvider(network) {
     geojs: "GeoJS",
     cloudflare: "Cloudflare",
   };
-  const provider = providers[network.source] || "网络服务";
+  const provider = providers[network.source] || "network provider";
   return network.cached
-    ? `归属数据由 ${provider} 提供 · 已使用边缘缓存`
-    : `归属数据由 ${provider} 提供`;
+    ? `Network data from ${provider} · served from edge cache`
+    : `Network data from ${provider}`;
 }

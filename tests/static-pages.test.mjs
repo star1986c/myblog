@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
@@ -30,6 +30,10 @@ const visitorNetworkCss = await readFile(
   new URL("../public/assets/visitor-network.20260710.css", import.meta.url),
   "utf8",
 );
+const worldClockJs = await readFile(
+  new URL("../public/assets/world-clock.20260711.js", import.meta.url),
+  "utf8",
+);
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
 const adminCss = await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8");
 const adminJs = await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8");
@@ -49,12 +53,12 @@ test("home page links to the standalone password generator", () => {
 
 test("home page links to the standalone Tetris game", () => {
   assert.match(indexHtml, /href="\/tetris\/"/);
-  assert.match(indexHtml, /<h3>俄罗斯方块<\/h3>/);
+  assert.match(indexHtml, /<h3>Browser Tetris<\/h3>/);
   assert.doesNotMatch(indexHtml, /data-tetris-game/);
 });
 
 test("home page presents the site as personal developer tools and a technical blog", () => {
-  assert.match(indexHtml, /个人开发工具与技术博客/);
+  assert.match(indexHtml, /Free Developer Tools &amp; Technical Blog/);
   assert.match(indexHtml, /Personal developer lab/);
   assert.match(indexHtml, /href="\/blog\/"/);
   assert.match(indexHtml, /id="tools"/);
@@ -73,9 +77,44 @@ test("home page includes an on-demand visitor network lookup", () => {
   assert.match(visitorNetworkJs, /cache:\s*"no-store"/);
   assert.match(visitorNetworkJs, /IPWhois/);
   assert.match(visitorNetworkJs, /GeoJS/);
-  assert.match(visitorNetworkJs, /查询过于频繁/);
+  assert.match(visitorNetworkJs, /Too many requests/);
   assert.match(visitorNetworkCss, /\.network-button/);
   assert.match(visitorNetworkCss, /min-height:\s*44px/);
+});
+
+test("home page includes network-synchronized Beijing and Los Angeles clocks", () => {
+  assert.match(indexHtml, /data-world-clocks/);
+  assert.match(indexHtml, /data-clock-time="beijing"/);
+  assert.match(indexHtml, /data-clock-time="los-angeles"/);
+  assert.match(indexHtml, /src="\/assets\/world-clock\.20260711\.js"/);
+  assert.match(worldClockJs, /fetch\("\/api\/public\/time"/);
+  assert.match(worldClockJs, /"Asia\/Shanghai"/);
+  assert.match(worldClockJs, /"America\/Los_Angeles"/);
+  assert.match(worldClockJs, /performance\.now\(\)/);
+  assert.doesNotMatch(worldClockJs, /Date\.now\(\)/);
+});
+
+test("public pages use consistent English SEO metadata", async () => {
+  const pages = [indexHtml, jsonHtml, passwordHtml, tetrisHtml];
+  pages.forEach((html) => {
+    assert.match(html, /<html lang="en">/);
+    assert.match(html, /<meta\s+name="description"/);
+    assert.match(html, /<link rel="canonical" href="https:\/\/superstar1014\.qzz\.io\//);
+    assert.match(html, /<meta property="og:locale" content="en_US"/);
+    assert.match(html, /<meta property="og:site_name" content="AI Build Lab"/);
+    assert.match(html, /<script type="application\/ld\+json">/);
+    const structuredData = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+    assert.ok(structuredData);
+    assert.ok(JSON.parse(structuredData[1])["@type"]);
+  });
+
+  const publicRoot = new URL("../public/", import.meta.url);
+  const publicFiles = (await readdir(publicRoot, { recursive: true }))
+    .filter((path) => /\.(?:html|js|xml|txt)$/.test(path));
+  const publicText = await Promise.all(
+    publicFiles.map((path) => readFile(new URL(path, publicRoot), "utf8")),
+  );
+  publicText.forEach((text) => assert.doesNotMatch(text, /[\p{Script=Han}]/u));
 });
 
 test("JSON formatter is served from a standalone page", () => {
@@ -221,7 +260,7 @@ test("admin console presents a polished content workspace", () => {
   assert.match(adminHtml, /Content Studio/);
   assert.match(adminHtml, /data-section-description/);
   assert.match(adminHtml, /data-workspace-message/);
-  assert.match(adminHtml, /data-create-label="新建文章"/);
+  assert.match(adminHtml, /data-create-label="New post"/);
   assert.match(adminHtml, /class="form-section"/);
   assert.match(adminHtml, /class="list-column"/);
   assert.match(adminCss, /\.workspace-shell/);

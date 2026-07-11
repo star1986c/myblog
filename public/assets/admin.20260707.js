@@ -60,9 +60,9 @@ async function selectTab(tabName) {
   });
 
   sectionLabel.textContent = button.dataset.label || button.textContent.trim();
-  sectionTitle.textContent = button.dataset.title || "内容管理";
+  sectionTitle.textContent = button.dataset.title || "Content management";
   sectionDescription.textContent = button.dataset.description || "";
-  createButton.textContent = button.dataset.createLabel || "新建";
+  createButton.textContent = button.dataset.createLabel || "New item";
   createButton.hidden = tabName === "account";
   setWorkspaceMessage("");
   resetCurrentForm();
@@ -98,7 +98,7 @@ function bindForms() {
 
   createButton.addEventListener("click", () => {
     resetCurrentForm();
-    setWorkspaceMessage("正在创建新内容", "success");
+    setWorkspaceMessage("Creating new content", "success");
   });
   $("[data-post-form]").addEventListener("submit", savePost);
   $("[data-page-form]").addEventListener("submit", savePage);
@@ -238,7 +238,7 @@ async function saveMedia(event) {
     });
     resetCurrentForm();
     await loadAll();
-    setWorkspaceMessage("媒体地址已保存", "success");
+    setWorkspaceMessage("Media URL saved", "success");
   } catch (error) {
     setWorkspaceMessage(error.message, "error");
   }
@@ -250,7 +250,7 @@ async function saveAccount(event) {
   const form = event.currentTarget;
   const body = Object.fromEntries(new FormData(form));
   if (body.newPassword !== body.confirmPassword) {
-    accountMessage.textContent = "两次输入的新密码不一致";
+    accountMessage.textContent = "The new passwords do not match";
     return;
   }
   delete body.confirmPassword;
@@ -267,8 +267,8 @@ async function saveAccount(event) {
     form.elements.currentPassword.value = "";
     form.elements.newPassword.value = "";
     form.elements.confirmPassword.value = "";
-    accountMessage.textContent = "账号已更新";
-    setWorkspaceMessage("账号信息已更新", "success");
+    accountMessage.textContent = "Account updated";
+    setWorkspaceMessage("Account details updated", "success");
   } catch (error) {
     accountMessage.textContent = error.message;
   }
@@ -281,7 +281,7 @@ function renderAccount() {
   form.elements.newPassword.value = "";
   form.elements.confirmPassword.value = "";
   accountMessage.textContent = state.account?.mustChangePassword
-    ? "请先修改默认密码"
+    ? "Change the default password before continuing"
     : "";
 }
 
@@ -342,7 +342,7 @@ async function saveResource(collection, form) {
     });
     resetCurrentForm();
     await loadAll();
-    setWorkspaceMessage(`${collectionLabel(collection)}已保存`, "success");
+    setWorkspaceMessage(`${collectionLabel(collection)} saved`, "success");
   } catch (error) {
     setWorkspaceMessage(error.message, "error");
   }
@@ -351,10 +351,10 @@ async function saveResource(collection, form) {
 async function removeResource(collection, form) {
   const id = form.elements.id?.value;
   if (!id) {
-    setWorkspaceMessage("请先选择要删除的内容", "error");
+    setWorkspaceMessage("Select an item to delete", "error");
     return;
   }
-  if (!window.confirm(`确认删除这个${collectionLabel(collection)}？`)) {
+  if (!window.confirm(`Delete this ${collectionLabel(collection).toLowerCase()}?`)) {
     return;
   }
 
@@ -362,7 +362,7 @@ async function removeResource(collection, form) {
     await api(`/api/admin/${collection}/${encodeURIComponent(id)}`, { method: "DELETE" });
     resetCurrentForm();
     await loadAll();
-    setWorkspaceMessage(`${collectionLabel(collection)}已删除`, "success");
+    setWorkspaceMessage(`${collectionLabel(collection)} deleted`, "success");
   } catch (error) {
     setWorkspaceMessage(error.message, "error");
   }
@@ -404,12 +404,12 @@ function renderEmptyState(list, type) {
 
 function emptyStateCopy(type) {
   const copy = {
-    post: ["还没有文章", "点击新建文章后，内容会先保存为私有草稿。"],
-    page: ["还没有页面", "独立页面默认不会公开显示。"],
-    category: ["还没有分类", "分类创建后可以用于公开文章归档。"],
-    media: ["还没有媒体地址", "保存外部图片或媒体 URL 后会显示在这里。"],
+    post: ["No posts yet", "Create a post to save it as a private draft first."],
+    page: ["No pages yet", "Standalone pages are private by default."],
+    category: ["No categories yet", "Create categories to organize public post archives."],
+    media: ["No media URLs yet", "Saved external image and media URLs will appear here."],
   };
-  const [title, description] = copy[type] || ["暂无内容", "保存后会显示在这里。"];
+  const [title, description] = copy[type] || ["No content yet", "Saved items will appear here."];
   return { title, description };
 }
 
@@ -438,20 +438,20 @@ function setWorkspaceMessage(text, tone = "") {
 }
 
 function collectionLabel(collection) {
-  if (collection === "posts") return "文章";
-  if (collection === "pages") return "页面";
-  if (collection === "categories") return "分类";
-  return "内容";
+  if (collection === "posts") return "Post";
+  if (collection === "pages") return "Page";
+  if (collection === "categories") return "Category";
+  return "Content";
 }
 
 function statusLabel(status) {
-  if (status === "published") return "已发布";
-  return "草稿";
+  if (status === "published") return "Published";
+  return "Draft";
 }
 
 function visibilityLabel(visibility) {
-  if (visibility === "public") return "公开";
-  return "私有";
+  if (visibility === "public") return "Public";
+  return "Private";
 }
 
 function badgeClass(kind, value) {

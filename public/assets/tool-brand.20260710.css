@@ -257,6 +257,75 @@ body {
   background: #060a10;
 }
 
+.tool-seo {
+  display: grid;
+  gap: 28px;
+  border-top: 1px solid var(--line);
+  margin-top: 72px;
+  padding: 48px 4px 8px;
+}
+
+.tool-seo__intro {
+  display: grid;
+  max-width: 760px;
+  gap: 12px;
+}
+
+.tool-seo .section-index {
+  margin: 0;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 820;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.tool-seo h2,
+.tool-seo h3,
+.tool-seo p {
+  margin: 0;
+}
+
+.tool-seo h2 {
+  color: var(--ink);
+  font-size: clamp(28px, 4vw, 44px);
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.tool-seo__intro > p:last-child,
+.tool-seo article p {
+  color: var(--muted-strong);
+  line-height: 1.7;
+}
+
+.tool-seo__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tool-seo article {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 22px;
+  background: rgba(10, 16, 25, 0.74);
+}
+
+.tool-seo article h3 {
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.3;
+}
+
+.tool-seo article p {
+  font-size: 14px;
+}
+
 a:focus-visible,
 button:focus-visible,
 textarea:focus-visible,
@@ -306,6 +375,15 @@ summary:focus-visible {
     max-width: none;
     border-left: 0;
     padding: 0;
+  }
+
+  .tool-seo {
+    margin-top: 52px;
+    padding-top: 36px;
+  }
+
+  .tool-seo__grid {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -1,30 +1,48 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>随机密码生成器 | AI Build Lab</title>
+    <title>Secure Password Generator | AI Build Lab</title>
     <meta
       name="description"
-      content="在浏览器本地生成安全随机密码，可配置字符、排除易混淆字符、长度、数量和本地历史记录。"
+      content="Generate secure random passwords locally in your browser. Choose character sets, exclude ambiguous characters, set length and quantity, and enable optional local history."
     />
     <meta name="theme-color" content="#07111f" />
-    <meta name="robots" content="index,follow" />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     <link rel="canonical" href="https://superstar1014.qzz.io/password/" />
 
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="随机密码生成器 | AI Build Lab" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="AI Build Lab" />
+    <meta property="og:title" content="Secure Password Generator | AI Build Lab" />
     <meta
       property="og:description"
-      content="使用浏览器安全随机数生成密码，数据不会离开当前设备。"
+      content="Generate strong passwords with browser-secure randomness. Your settings and passwords stay on this device."
     />
     <meta property="og:url" content="https://superstar1014.qzz.io/password/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="随机密码生成器 | AI Build Lab" />
+    <meta name="twitter:title" content="Secure Password Generator | AI Build Lab" />
     <meta
       name="twitter:description"
-      content="使用浏览器安全随机数生成密码，数据不会离开当前设备。"
+      content="Generate strong passwords with browser-secure randomness. Your settings and passwords stay on this device."
     />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "AI Build Lab Password Generator",
+        "url": "https://superstar1014.qzz.io/password/",
+        "description": "A free secure random password generator with configurable rules and optional local history.",
+        "applicationCategory": "SecurityApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with the Web Crypto API.",
+        "isAccessibleForFree": true,
+        "inLanguage": "en",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
@@ -35,10 +53,10 @@
     <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
-    <a class="skip-link" href="#password-workbench">跳到密码生成工作区</a>
+    <a class="skip-link" href="#password-workbench">Skip to the password generator</a>
     <main class="password-shell" data-password-tool>
       <header class="tool-topbar">
-        <a class="brand" href="/" aria-label="返回 AI Build Lab 首页">
+        <a class="brand" href="/" aria-label="Back to AI Build Lab home">
           <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
             <rect width="48" height="48" rx="8" fill="#080D18" />
             <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
@@ -54,14 +72,14 @@
           </svg>
           <span>
             <strong>AI Build Lab</strong>
-            <small>个人开发实验室</small>
+            <small>Independent developer lab</small>
           </span>
         </a>
-        <nav class="tool-nav" aria-label="工具导航">
-          <a href="/">首页</a>
-          <a href="/json/">JSON 格式化</a>
-          <a aria-current="page" href="/password/">密码生成</a>
-          <a href="/tetris/">俄罗斯方块</a>
+        <nav class="tool-nav" aria-label="Tool navigation">
+          <a href="/">Home</a>
+          <a href="/json/">JSON Formatter</a>
+          <a aria-current="page" href="/password/">Password Generator</a>
+          <a href="/tetris/">Tetris</a>
         </nav>
       </header>
 
@@ -74,60 +92,60 @@
             </svg>
             <span>Secure utility</span>
           </div>
-          <h1 id="password-title">随机密码生成</h1>
-          <p>自定义字符范围、排除易混淆字符，并一次生成多个密码。</p>
+          <h1 id="password-title">Secure Password Generator</h1>
+          <p>Create one or more strong passwords with custom character sets, exclusions, length, and quantity.</p>
         </div>
         <div class="privacy-note">
           <span class="privacy-dot" aria-hidden="true"></span>
           <div>
-            <strong>仅在本地生成</strong>
-            <span>密码不会上传到服务器</span>
+            <strong>Generated locally</strong>
+            <span>Passwords are never uploaded</span>
           </div>
         </div>
       </section>
 
-      <section class="password-workbench" id="password-workbench" aria-label="随机密码生成器">
+      <section class="password-workbench" id="password-workbench" aria-label="Secure password generator">
         <form class="settings-card" data-password-form novalidate>
           <div class="card-heading">
             <div>
               <span class="step-number">01</span>
-              <h2>生成设置</h2>
+              <h2>Generator settings</h2>
             </div>
-            <span class="card-caption">选择密码规则</span>
+            <span class="card-caption">Choose password rules</span>
           </div>
 
           <fieldset class="setting-group">
-            <legend>所用字符</legend>
+            <legend>Character sets</legend>
             <div class="character-grid">
               <label class="choice-card">
                 <input type="checkbox" data-character="lowercase" checked />
                 <span class="choice-mark" aria-hidden="true"></span>
-                <span><strong>a–z</strong><small>小写字母</small></span>
+                <span><strong>a–z</strong><small>Lowercase letters</small></span>
               </label>
               <label class="choice-card">
                 <input type="checkbox" data-character="uppercase" checked />
                 <span class="choice-mark" aria-hidden="true"></span>
-                <span><strong>A–Z</strong><small>大写字母</small></span>
+                <span><strong>A–Z</strong><small>Uppercase letters</small></span>
               </label>
               <label class="choice-card">
                 <input type="checkbox" data-character="numbers" checked />
                 <span class="choice-mark" aria-hidden="true"></span>
-                <span><strong>0–9</strong><small>数字</small></span>
+                <span><strong>0–9</strong><small>Numbers</small></span>
               </label>
               <label class="choice-card">
                 <input type="checkbox" data-character="symbols" />
                 <span class="choice-mark" aria-hidden="true"></span>
-                <span><strong>!@#</strong><small>特殊字符</small></span>
+                <span><strong>!@#</strong><small>Symbols</small></span>
               </label>
             </div>
           </fieldset>
 
           <fieldset class="setting-group exclusion-group">
-            <legend>排除字符</legend>
+            <legend>Character exclusions</legend>
             <label class="switch-row" for="password-exclude-enabled">
               <span>
-                <strong>排除容易混淆的字符</strong>
-                <small>例如数字 1、0 与字母 l、O</small>
+                <strong>Exclude ambiguous characters</strong>
+                <small>For example, the numbers 1 and 0 and the letters l and O</small>
               </span>
               <input
                 id="password-exclude-enabled"
@@ -138,7 +156,7 @@
               <span class="switch" aria-hidden="true"></span>
             </label>
             <label class="text-field" for="password-excluded">
-              <span>要排除的字符</span>
+              <span>Characters to exclude</span>
               <input
                 id="password-excluded"
                 type="text"
@@ -152,30 +170,30 @@
 
           <div class="setting-meta">
             <label for="password-length">
-              <span>密码长度</span>
+              <span>Password length</span>
               <span class="select-wrap">
                 <select id="password-length" data-password-length>
-                  <option value="8">8 位</option>
-                  <option value="12">12 位</option>
-                  <option value="16" selected>16 位</option>
-                  <option value="20">20 位</option>
-                  <option value="24">24 位</option>
-                  <option value="32">32 位</option>
-                  <option value="48">48 位</option>
-                  <option value="64">64 位</option>
+                  <option value="8">8 characters</option>
+                  <option value="12">12 characters</option>
+                  <option value="16" selected>16 characters</option>
+                  <option value="20">20 characters</option>
+                  <option value="24">24 characters</option>
+                  <option value="32">32 characters</option>
+                  <option value="48">48 characters</option>
+                  <option value="64">64 characters</option>
                 </select>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5" /></svg>
               </span>
             </label>
             <label for="password-count">
-              <span>密码数量</span>
+              <span>Number of passwords</span>
               <span class="select-wrap">
                 <select id="password-count" data-password-count>
-                  <option value="1" selected>1 个</option>
-                  <option value="3">3 个</option>
-                  <option value="5">5 个</option>
-                  <option value="10">10 个</option>
-                  <option value="20">20 个</option>
+                  <option value="1" selected>1 password</option>
+                  <option value="3">3 passwords</option>
+                  <option value="5">5 passwords</option>
+                  <option value="10">10 passwords</option>
+                  <option value="20">20 passwords</option>
                 </select>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5" /></svg>
               </span>
@@ -183,10 +201,10 @@
           </div>
 
           <div class="strength-preview" data-password-strength>
-            <span>预计强度</span>
+            <span>Estimated strength</span>
             <div class="strength-track" aria-hidden="true"><span></span></div>
-            <strong>强</strong>
-            <small>约 95 bits</small>
+            <strong>Strong</strong>
+            <small>About 95 bits</small>
           </div>
 
           <p class="form-error" data-password-error role="alert" hidden></p>
@@ -195,7 +213,7 @@
               <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
               <circle cx="12" cy="12" r="3.2" />
             </svg>
-            生成密码
+            Generate passwords
           </button>
         </form>
 
@@ -203,9 +221,9 @@
           <div class="card-heading result-heading">
             <div>
               <span class="step-number">02</span>
-              <h2 id="results-title">生成结果</h2>
+              <h2 id="results-title">Generated passwords</h2>
             </div>
-            <button class="text-button" type="button" data-copy-all hidden>复制全部</button>
+            <button class="text-button" type="button" data-copy-all hidden>Copy all</button>
           </div>
 
           <div class="results-body" data-password-results>
@@ -215,8 +233,8 @@
                 <path d="M21 25v-7a11 11 0 0 1 22 0v7M32 37v7" />
                 <circle cx="32" cy="36" r="3" />
               </svg>
-              <h3>准备生成安全密码</h3>
-              <p>设置左侧规则，然后点击“生成密码”。</p>
+              <h3>Ready to generate secure passwords</h3>
+              <p>Choose your rules, then select Generate passwords.</p>
             </div>
           </div>
 
@@ -225,8 +243,8 @@
               <input type="checkbox" data-password-history-enabled />
               <span class="choice-mark" aria-hidden="true"></span>
               <span>
-                <strong>记录历史结果</strong>
-                <small>仅保存在当前浏览器；共享设备上请勿开启</small>
+                <strong>Save password history</strong>
+                <small>Stored only in this browser; do not enable on a shared device</small>
               </span>
             </label>
           </div>
@@ -239,21 +257,34 @@
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 2" />
             </svg>
-            <strong>查看历史记录</strong>
-            <small data-history-count>尚无记录</small>
+            <strong>Password history</strong>
+            <small data-history-count>No saved passwords</small>
           </span>
           <svg class="summary-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5" /></svg>
         </summary>
         <div class="history-content">
           <div class="history-toolbar">
-            <p>历史密码以明文保存在此浏览器的 localStorage 中。</p>
-            <button class="danger-button" type="button" data-clear-history disabled>清空历史</button>
+            <p>Saved passwords are stored as plain text in this browser's localStorage.</p>
+            <button class="danger-button" type="button" data-clear-history disabled>Clear history</button>
           </div>
           <div class="history-list" data-history-list>
-            <p class="history-empty">开启“记录历史结果”后，新生成的密码会显示在这里。</p>
+            <p class="history-empty">Enable password history to keep newly generated passwords here.</p>
           </div>
         </div>
       </details>
+
+      <section class="tool-seo" aria-labelledby="password-guide-title">
+        <div class="tool-seo__intro">
+          <p class="section-index">About this tool</p>
+          <h2 id="password-guide-title">Generate strong passwords on your device</h2>
+          <p>The generator uses the browser Web Crypto API for secure randomness. Passwords are created locally and are not sent to AI Build Lab or any third-party service.</p>
+        </div>
+        <div class="tool-seo__grid">
+          <article><h3>Custom password rules</h3><p>Choose lowercase letters, uppercase letters, numbers, and symbols, then set a length from 8 to 64 characters.</p></article>
+          <article><h3>Avoid ambiguous characters</h3><p>Exclude characters that are difficult to distinguish or provide a custom exclusion list for your own requirements.</p></article>
+          <article><h3>Optional local history</h3><p>Keep generated passwords in this browser only when needed, with a clear warning for shared devices.</p></article>
+        </div>
+      </section>
 
       <p class="sr-only" data-password-announcement aria-live="polite"></p>
     </main>

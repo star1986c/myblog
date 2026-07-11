@@ -13,7 +13,7 @@ function uniqueCharacters(value) {
 
 function defaultRandomUint32() {
   if (!globalThis.crypto?.getRandomValues) {
-    throw new Error("当前浏览器不支持安全随机数生成。");
+    throw new Error("This browser does not support secure random number generation.");
   }
 
   const buffer = new Uint32Array(1);
@@ -23,7 +23,7 @@ function defaultRandomUint32() {
 
 export function secureRandomIndex(max, randomUint32 = defaultRandomUint32) {
   if (!Number.isInteger(max) || max <= 0 || max > UINT32_RANGE) {
-    throw new RangeError("随机范围必须是有效的正整数。");
+    throw new RangeError("The random range must be a valid positive integer.");
   }
 
   const limit = Math.floor(UINT32_RANGE / max) * max;
@@ -51,18 +51,18 @@ export function buildPasswordPools(options = {}) {
     }));
 
   if (pools.length === 0) {
-    throw new Error("请至少选择一种字符类型。");
+    throw new Error("Select at least one character type.");
   }
 
   const emptyPool = pools.find((pool) => pool.characters.length === 0);
   if (emptyPool) {
     const labels = {
-      lowercase: "小写字母",
-      uppercase: "大写字母",
-      numbers: "数字",
-      symbols: "特殊字符",
+      lowercase: "lowercase letters",
+      uppercase: "uppercase letters",
+      numbers: "numbers",
+      symbols: "symbols",
     };
-    throw new Error(`排除字符已移除全部${labels[emptyPool.name]}，请调整设置。`);
+    throw new Error(`The exclusion list removes all ${labels[emptyPool.name]}. Adjust your settings.`);
   }
 
   return pools;
@@ -73,15 +73,15 @@ export function generatePasswords(options = {}, randomUint32 = defaultRandomUint
   const count = Number(options.count ?? 1);
 
   if (!Number.isInteger(length) || length < 4 || length > 128) {
-    throw new Error("密码长度必须在 4 到 128 位之间。");
+    throw new Error("Password length must be between 4 and 128 characters.");
   }
   if (!Number.isInteger(count) || count < 1 || count > 20) {
-    throw new Error("密码数量必须在 1 到 20 个之间。");
+    throw new Error("Password quantity must be between 1 and 20.");
   }
 
   const pools = buildPasswordPools(options);
   if (length < pools.length) {
-    throw new Error(`密码长度不能小于已选择的 ${pools.length} 种字符类型。`);
+    throw new Error(`Password length cannot be shorter than the ${pools.length} selected character types.`);
   }
 
   const combined = uniqueCharacters(pools.map((pool) => pool.characters).join(""));
@@ -108,8 +108,8 @@ export function estimatePasswordStrength(options = {}) {
   const alphabetSize = uniqueCharacters(pools.map((pool) => pool.characters).join("")).length;
   const bits = Math.round(Number(options.length ?? 16) * Math.log2(alphabetSize));
 
-  if (bits >= 100) return { bits, label: "很强", level: "excellent" };
-  if (bits >= 70) return { bits, label: "强", level: "strong" };
-  if (bits >= 50) return { bits, label: "中等", level: "medium" };
-  return { bits, label: "较弱", level: "weak" };
+  if (bits >= 100) return { bits, label: "Excellent", level: "excellent" };
+  if (bits >= 70) return { bits, label: "Strong", level: "strong" };
+  if (bits >= 50) return { bits, label: "Moderate", level: "medium" };
+  return { bits, label: "Weak", level: "weak" };
 }

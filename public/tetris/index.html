@@ -1,30 +1,49 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>俄罗斯方块 | AI Build Lab</title>
+    <title>Play Tetris Online Free | AI Build Lab</title>
     <meta
       name="description"
-      content="在浏览器中游玩经典俄罗斯方块，支持键盘操作、等级加速、幽灵落点与本地最高分。"
+      content="Play a free browser Tetris game with keyboard and touch controls, ghost pieces, level progression, optional music and sound effects, and a local high score."
     />
     <meta name="theme-color" content="#05070b" />
-    <meta name="robots" content="index,follow" />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     <link rel="canonical" href="https://superstar1014.qzz.io/tetris/" />
 
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="俄罗斯方块 | AI Build Lab" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="AI Build Lab" />
+    <meta property="og:title" content="Play Tetris Online Free | AI Build Lab" />
     <meta
       property="og:description"
-      content="无需安装，打开浏览器即可游玩的经典俄罗斯方块。"
+      content="Play a classic falling-block puzzle in your browser with keyboard or touch controls. No installation required."
     />
     <meta property="og:url" content="https://superstar1014.qzz.io/tetris/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="俄罗斯方块 | AI Build Lab" />
+    <meta name="twitter:title" content="Play Tetris Online Free | AI Build Lab" />
     <meta
       name="twitter:description"
-      content="无需安装，打开浏览器即可游玩的经典俄罗斯方块。"
+      content="Play a classic falling-block puzzle in your browser with keyboard or touch controls. No installation required."
     />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": ["VideoGame", "WebApplication"],
+        "name": "AI Build Lab Browser Tetris",
+        "url": "https://superstar1014.qzz.io/tetris/",
+        "description": "A free browser-based falling-block puzzle game with keyboard and touch controls.",
+        "applicationCategory": "GameApplication",
+        "gamePlatform": "Web browser",
+        "operatingSystem": "Any",
+        "playMode": "SinglePlayer",
+        "isAccessibleForFree": true,
+        "inLanguage": "en",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
@@ -36,10 +55,10 @@
     <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
-    <a class="skip-link" href="#tetris-workbench">跳到俄罗斯方块游戏区</a>
+    <a class="skip-link" href="#tetris-workbench">Skip to the Tetris game</a>
     <main class="tetris-shell" data-tetris-game data-state="ready">
       <header class="tool-topbar">
-        <a class="brand" href="/" aria-label="返回 AI Build Lab 首页">
+        <a class="brand" href="/" aria-label="Back to AI Build Lab home">
           <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
             <rect width="48" height="48" rx="8" fill="#080D18" />
             <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
@@ -55,14 +74,14 @@
           </svg>
           <span>
             <strong>AI Build Lab</strong>
-            <small>个人开发实验室</small>
+            <small>Independent developer lab</small>
           </span>
         </a>
-        <nav class="tool-nav" aria-label="工具导航">
-          <a href="/">首页</a>
-          <a href="/json/">JSON 格式化</a>
-          <a href="/password/">密码生成</a>
-          <a aria-current="page" href="/tetris/">俄罗斯方块</a>
+        <nav class="tool-nav" aria-label="Tool navigation">
+          <a href="/">Home</a>
+          <a href="/json/">JSON Formatter</a>
+          <a href="/password/">Password Generator</a>
+          <a aria-current="page" href="/tetris/">Tetris</a>
         </nav>
       </header>
 
@@ -74,60 +93,60 @@
             </svg>
             <span>Browser game</span>
           </div>
-          <h1 id="tetris-title">俄罗斯方块</h1>
-          <p>移动、旋转并消除完整横行。等级越高，下落速度越快。</p>
+          <h1 id="tetris-title">Browser Tetris</h1>
+          <p>Move and rotate falling pieces to clear complete lines. The game speeds up as your level increases.</p>
         </div>
         <div class="privacy-note">
           <span class="privacy-dot" aria-hidden="true"></span>
           <div>
-            <strong>纯前端运行</strong>
-            <span>最高分与声音偏好仅保存在当前浏览器</span>
+            <strong>Runs entirely in your browser</strong>
+            <span>Your high score and audio settings stay on this device</span>
           </div>
         </div>
       </section>
 
-      <section class="tetris-workbench" id="tetris-workbench" aria-label="俄罗斯方块游戏">
+      <section class="tetris-workbench" id="tetris-workbench" aria-label="Browser Tetris game">
         <aside class="game-panel stats-panel" aria-labelledby="stats-title">
           <div class="panel-heading">
             <span>01</span>
             <div>
-              <h2 id="stats-title">本局数据</h2>
-              <p>实时记录游戏进度</p>
+              <h2 id="stats-title">Game stats</h2>
+              <p>Live progress for this game</p>
             </div>
           </div>
           <div class="game-status" data-game-status>
             <span aria-hidden="true"></span>
             <div>
-              <small>当前状态</small>
-              <strong data-status-label>等待开始</strong>
+              <small>Current status</small>
+              <strong data-status-label>Ready</strong>
             </div>
           </div>
           <dl class="stats-grid">
             <div>
-              <dt>得分</dt>
+              <dt>Score</dt>
               <dd data-score>0</dd>
             </div>
             <div>
-              <dt>最高分</dt>
+              <dt>High score</dt>
               <dd data-best-score>0</dd>
             </div>
             <div>
-              <dt>等级</dt>
+              <dt>Level</dt>
               <dd data-level>1</dd>
             </div>
             <div>
-              <dt>消除行数</dt>
+              <dt>Lines cleared</dt>
               <dd data-lines>0</dd>
             </div>
           </dl>
-          <p class="score-note">单行 100 分，连续消除四行可得 800 分；得分会随等级倍增。</p>
+          <p class="score-note">Clear one line for 100 points or four lines for 800 points. Line-clear scores increase with your level.</p>
         </aside>
 
         <section class="board-panel" aria-labelledby="board-title">
           <div class="board-heading">
             <div>
               <span>02 / Playfield</span>
-              <h2 id="board-title">游戏棋盘</h2>
+              <h2 id="board-title">Game board</h2>
             </div>
             <span class="keyboard-badge">Keyboard</span>
           </div>
@@ -138,54 +157,54 @@
               height="640"
               tabindex="0"
               role="img"
-              aria-label="俄罗斯方块棋盘，等待开始"
+              aria-label="Tetris board, ready to start"
             ></canvas>
             <div class="board-overlay" data-board-overlay>
               <span data-overlay-kicker>Ready</span>
-              <strong data-overlay-title>准备开始</strong>
-              <p data-overlay-message>点击下方按钮，然后使用键盘控制方块。</p>
+              <strong data-overlay-title>Ready to play</strong>
+              <p data-overlay-message>Select Start game, then use the keyboard or touch controls.</p>
             </div>
           </div>
-          <div class="game-actions" aria-label="游戏操作">
-            <button class="game-button primary" type="button" data-game-action="start">开始游戏</button>
-            <button class="game-button" type="button" data-game-action="pause" disabled>暂停</button>
-            <button class="game-button" type="button" data-game-action="restart">重新开始</button>
+          <div class="game-actions" aria-label="Game actions">
+            <button class="game-button primary" type="button" data-game-action="start">Start game</button>
+            <button class="game-button" type="button" data-game-action="pause" disabled>Pause</button>
+            <button class="game-button" type="button" data-game-action="restart">Restart</button>
           </div>
-          <div class="mobile-controls" data-mobile-controls aria-label="触屏操作">
+          <div class="mobile-controls" data-mobile-controls aria-label="Touch controls">
             <div class="mobile-controls-heading">
-              <strong>触屏操作</strong>
-              <span>长按方向键可连续移动</span>
+              <strong>Touch controls</strong>
+              <span>Hold movement buttons to repeat</span>
             </div>
             <div class="mobile-control-grid">
-              <button type="button" data-touch-action="rotateLeft" aria-label="逆时针旋转">
+              <button type="button" data-touch-action="rotateLeft" aria-label="Rotate counterclockwise">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M8 7H4V3M4.5 7A8 8 0 1 1 4 15" />
                 </svg>
-                <span>逆时针</span>
+                <span>Rotate left</span>
               </button>
-              <button type="button" data-touch-action="rotateRight" aria-label="顺时针旋转">
+              <button type="button" data-touch-action="rotateRight" aria-label="Rotate clockwise">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M16 7h4V3m-.5 4A8 8 0 1 0 20 15" />
                 </svg>
-                <span>顺时针</span>
+                <span>Rotate right</span>
               </button>
-              <button type="button" data-touch-action="hardDrop" aria-label="硬降">
+              <button type="button" data-touch-action="hardDrop" aria-label="Hard drop">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v12m-4-4 4 4 4-4M5 21h14" />
                 </svg>
-                <span>硬降</span>
+                <span>Hard drop</span>
               </button>
-              <button type="button" data-touch-action="left" aria-label="向左移动">
+              <button type="button" data-touch-action="left" aria-label="Move left">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
-                <span>左移</span>
+                <span>Left</span>
               </button>
-              <button type="button" data-touch-action="softDrop" aria-label="软降">
+              <button type="button" data-touch-action="softDrop" aria-label="Soft drop">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
-                <span>软降</span>
+                <span>Soft drop</span>
               </button>
-              <button type="button" data-touch-action="right" aria-label="向右移动">
+              <button type="button" data-touch-action="right" aria-label="Move right">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
-                <span>右移</span>
+                <span>Right</span>
               </button>
             </div>
           </div>
@@ -195,46 +214,59 @@
           <div class="panel-heading">
             <span>03</span>
             <div>
-              <h2 id="guide-title">下一块</h2>
-              <p>提前规划落点</p>
+              <h2 id="guide-title">Next piece</h2>
+              <p>Plan your next placement</p>
             </div>
           </div>
           <div class="next-piece">
-            <canvas data-next-piece width="176" height="176" aria-label="下一块预览"></canvas>
+            <canvas data-next-piece width="176" height="176" aria-label="Next piece preview"></canvas>
           </div>
           <section class="audio-settings" aria-labelledby="audio-settings-title">
             <div class="audio-settings-heading">
-              <strong id="audio-settings-title">声音设置</strong>
-              <span>默认静音</span>
+              <strong id="audio-settings-title">Audio settings</strong>
+              <span>Muted by default</span>
             </div>
             <div class="audio-toggle-grid">
               <button class="audio-toggle" type="button" data-audio-toggle="music" aria-pressed="false">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M9 18V5l10-2v13M9 9l10-2M6 21c1.7 0 3-1 3-2.3S7.7 16.5 6 16.5s-3 1-3 2.2S4.3 21 6 21Zm10-2c1.7 0 3-1 3-2.3s-1.3-2.2-3-2.2-3 1-3 2.2 1.3 2.3 3 2.3Z" />
                 </svg>
-                <span><strong>音乐</strong><small data-audio-state>关闭</small></span>
+                <span><strong>Music</strong><small data-audio-state>Off</small></span>
               </button>
               <button class="audio-toggle" type="button" data-audio-toggle="effects" aria-pressed="false">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 9v6h4l5 4V5L9 9H5Zm12-1.5a6 6 0 0 1 0 9m2.5-11.5a9.5 9.5 0 0 1 0 14" />
                 </svg>
-                <span><strong>音效</strong><small data-audio-state>关闭</small></span>
+                <span><strong>Sound effects</strong><small data-audio-state>Off</small></span>
               </button>
             </div>
           </section>
           <div class="controls-heading">
-            <strong>键盘操作</strong>
-            <span>桌面端优先</span>
+            <strong>Keyboard controls</strong>
+            <span>Optimized for desktop</span>
           </div>
           <dl class="control-list">
-            <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>左右移动</dd></div>
-            <div><dt><kbd>↓</kbd></dt><dd>软降</dd></div>
-            <div><dt><kbd>↑</kbd><kbd>X</kbd></dt><dd>顺时针旋转</dd></div>
-            <div><dt><kbd>Z</kbd></dt><dd>逆时针旋转</dd></div>
-            <div><dt><kbd>Space</kbd></dt><dd>硬降</dd></div>
-            <div><dt><kbd>P</kbd><kbd>R</kbd></dt><dd>暂停 / 重开</dd></div>
+            <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Move left or right</dd></div>
+            <div><dt><kbd>↓</kbd></dt><dd>Soft drop</dd></div>
+            <div><dt><kbd>↑</kbd><kbd>X</kbd></dt><dd>Rotate clockwise</dd></div>
+            <div><dt><kbd>Z</kbd></dt><dd>Rotate counterclockwise</dd></div>
+            <div><dt><kbd>Space</kbd></dt><dd>Hard drop</dd></div>
+            <div><dt><kbd>P</kbd><kbd>R</kbd></dt><dd>Pause or restart</dd></div>
           </dl>
         </aside>
+      </section>
+
+      <section class="tool-seo" aria-labelledby="tetris-guide-title">
+        <div class="tool-seo__intro">
+          <p class="section-index">About this game</p>
+          <h2 id="tetris-guide-title">Play a classic falling-block puzzle online</h2>
+          <p>This free browser game includes the seven classic tetrominoes, ghost-piece placement, increasing gravity, line-clear scoring, and a high score saved only on this device.</p>
+        </div>
+        <div class="tool-seo__grid">
+          <article><h3>Keyboard and touch controls</h3><p>Play with arrow keys on desktop or use the six large touch buttons on phones and tablets.</p></article>
+          <article><h3>Classic level progression</h3><p>Advance one level for every ten cleared lines as gravity accelerates from one second to a 100 millisecond minimum.</p></article>
+          <article><h3>Optional browser audio</h3><p>Enable synthesized background music and sound effects when you want them. Audio starts muted by default.</p></article>
+        </div>
       </section>
 
       <p class="screen-reader-status" data-tetris-announcement aria-live="polite"></p>

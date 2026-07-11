@@ -1,3 +1,5 @@
+const SITE_URL = "https://superstar1014.qzz.io";
+
 function renderBlogIndex(posts) {
   const items = posts.length
     ? posts.map(renderPostCard).join("")
@@ -5,13 +7,21 @@ function renderBlogIndex(posts) {
 
   return renderDocument({
     title: "Blog | AI Build Lab",
-    description: "Notes and build logs from AI Build Lab.",
+    description: "Practical engineering notes, Cloudflare Workers guides, AI-assisted development workflows, and product build logs from AI Build Lab.",
+    canonicalPath: "/blog/",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "Blog",
+      "@id": `${SITE_URL}/blog/#blog`,
+      url: `${SITE_URL}/blog/`,
+      name: "AI Build Lab Blog",
+      description: "Practical engineering notes, AI-assisted development workflows, and product build logs.",
+      inLanguage: "en",
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+    },
     body: `
-      <header class="site-header">
-        <a class="brand" href="/">AI Build Lab</a>
-        <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
-      </header>
-      <main class="blog-shell">
+      ${renderSiteHeader("blog")}
+      <main class="blog-shell" id="main-content">
         ${renderBlogHero({
           eyebrow: "AI Build Lab Journal",
           title: "Build notes, release logs, and useful experiments.",
@@ -26,15 +36,30 @@ function renderBlogIndex(posts) {
 }
 
 function renderPost(post) {
+  const canonicalPath = `/blog/${encodeURIComponent(post.slug)}`;
+  const description = post.seoDescription || post.excerpt || "AI Build Lab technical article.";
   return renderDocument({
     title: `${post.seoTitle || post.title} | AI Build Lab`,
-    description: post.seoDescription || post.excerpt || "AI Build Lab blog post.",
+    description,
+    canonicalPath,
+    type: "article",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "BlogPosting",
+      headline: post.seoTitle || post.title,
+      description,
+      url: `${SITE_URL}${canonicalPath}`,
+      mainEntityOfPage: `${SITE_URL}${canonicalPath}`,
+      datePublished: post.publishedAt || post.createdAt,
+      dateModified: post.updatedAt || post.publishedAt || post.createdAt,
+      inLanguage: "en",
+      author: { "@type": "Organization", name: "AI Build Lab", url: `${SITE_URL}/` },
+      publisher: { "@type": "Organization", name: "AI Build Lab", url: `${SITE_URL}/` },
+      isPartOf: { "@id": `${SITE_URL}/blog/#blog` },
+    },
     body: `
-      <header class="site-header">
-        <a class="brand" href="/">AI Build Lab</a>
-        <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
-      </header>
-      <main class="article-shell">
+      ${renderSiteHeader("blog")}
+      <main class="article-shell" id="main-content">
         <a class="article-back" href="/blog/">Back to blog</a>
         <article class="article">
           <header class="article-header">
@@ -50,15 +75,26 @@ function renderPost(post) {
 }
 
 function renderStandalonePage(page) {
+  const canonicalPath = `/p/${encodeURIComponent(page.slug)}`;
+  const description = page.seoDescription || page.excerpt || "An AI Build Lab standalone page.";
   return renderDocument({
     title: `${page.seoTitle || page.title} | AI Build Lab`,
-    description: page.seoDescription || page.excerpt || "AI Build Lab page.",
+    description,
+    canonicalPath,
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "WebPage",
+      name: page.seoTitle || page.title,
+      description,
+      url: `${SITE_URL}${canonicalPath}`,
+      datePublished: page.publishedAt || page.createdAt,
+      dateModified: page.updatedAt || page.publishedAt || page.createdAt,
+      inLanguage: "en",
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+    },
     body: `
-      <header class="site-header">
-        <a class="brand" href="/">AI Build Lab</a>
-        <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
-      </header>
-      <main class="article-shell">
+      ${renderSiteHeader()}
+      <main class="article-shell" id="main-content">
         <article class="article article--page">
           <header class="article-header">
             <h1>${escapeHtml(page.title)}</h1>
@@ -79,12 +115,19 @@ function renderCategory(category, posts) {
   return renderDocument({
     title: `${category.name} | AI Build Lab`,
     description: category.description || `Posts in ${category.name}.`,
+    canonicalPath: `/category/${encodeURIComponent(category.slug)}`,
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: `${category.name} articles`,
+      description: category.description || `Public technical articles in ${category.name}.`,
+      url: `${SITE_URL}/category/${encodeURIComponent(category.slug)}`,
+      inLanguage: "en",
+      isPartOf: { "@id": `${SITE_URL}/blog/#blog` },
+    },
     body: `
-      <header class="site-header">
-        <a class="brand" href="/">AI Build Lab</a>
-        <nav><a href="/blog/">Blog</a><a href="/json/">JSON Tool</a></nav>
-      </header>
-      <main class="blog-shell">
+      ${renderSiteHeader("blog")}
+      <main class="blog-shell" id="main-content">
         ${renderBlogHero({
           eyebrow: "Category",
           title: category.name,
@@ -102,12 +145,11 @@ function renderBlogNotConfigured() {
   return renderDocument({
     title: "Blog | AI Build Lab",
     description: "Blog backend is being configured.",
+    canonicalPath: "/blog/",
+    robots: "noindex,follow",
     body: `
-      <header class="site-header">
-        <a class="brand" href="/">AI Build Lab</a>
-        <nav><a href="/json/">JSON Tool</a></nav>
-      </header>
-      <main class="blog-shell">
+      ${renderSiteHeader()}
+      <main class="blog-shell" id="main-content">
         <section class="blog-hero">
           <div class="blog-hero__copy">
           <p class="eyebrow">Blog</p>
@@ -164,7 +206,39 @@ function renderEmptyState(message) {
   `;
 }
 
-function renderDocument({ title, description, body }) {
+function renderSiteHeader(current = "") {
+  const navItems = [
+    ["home", "/", "Home"],
+    ["blog", "/blog/", "Blog"],
+    ["json", "/json/", "JSON Formatter"],
+    ["password", "/password/", "Password Generator"],
+    ["tetris", "/tetris/", "Tetris"],
+  ];
+  const links = navItems
+    .map(([key, href, label]) => `<a${key === current ? ' aria-current="page"' : ""} href="${href}">${label}</a>`)
+    .join("");
+  return `
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <header class="site-header">
+      <a class="brand" href="/">AI Build Lab</a>
+      <nav aria-label="Primary navigation">${links}</nav>
+    </header>
+  `;
+}
+
+function renderDocument({
+  title,
+  description,
+  body,
+  canonicalPath,
+  type = "website",
+  robots = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1",
+  structuredData,
+}) {
+  const canonicalUrl = `${SITE_URL}${canonicalPath}`;
+  const structuredDataMarkup = structuredData
+    ? `<script type="application/ld+json">${serializeStructuredData(structuredData)}</script>`
+    : "";
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -173,13 +247,30 @@ function renderDocument({ title, description, body }) {
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <meta name="theme-color" content="#050916" />
+    <meta name="robots" content="${escapeHtml(robots)}" />
+    <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+    <meta property="og:type" content="${escapeHtml(type)}" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="AI Build Lab" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:url" content="${escapeHtml(canonicalUrl)}" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    ${structuredDataMarkup}
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
     <link rel="stylesheet" href="/assets/blog.20260706.css" />
   </head>
   <body>
     ${body}
   </body>
 </html>`;
+}
+
+function serializeStructuredData(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
 function renderContent(content) {

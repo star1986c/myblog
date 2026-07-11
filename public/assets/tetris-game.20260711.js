@@ -166,14 +166,14 @@ if (app) {
     cells.forEach(({ x, y }) => {
       drawCell(context, (x - minX) + offsetX, (y - minY) + offsetY, cellSize, COLORS[type]);
     });
-    nextCanvas.setAttribute("aria-label", `下一块：${type}`);
+    nextCanvas.setAttribute("aria-label", `Next piece: ${type}`);
   }
 
   function statusContent(status) {
-    if (status === "running") return { label: "游戏进行中", kicker: "Playing", title: "游戏进行中", message: "使用键盘或触屏按键控制方块。" };
-    if (status === "paused") return { label: "已暂停", kicker: "Paused", title: "游戏已暂停", message: "按 P 或点击继续游戏。" };
-    if (status === "gameover") return { label: "游戏结束", kicker: "Game over", title: "游戏结束", message: "点击重新开始，再挑战一次。" };
-    return { label: "等待开始", kicker: "Ready", title: "准备开始", message: "点击下方按钮，然后使用键盘或触屏按键控制方块。" };
+    if (status === "running") return { label: "Playing", kicker: "Playing", title: "Game in progress", message: "Use the keyboard or touch controls to move the piece." };
+    if (status === "paused") return { label: "Paused", kicker: "Paused", title: "Game paused", message: "Press P or select Resume to continue." };
+    if (status === "gameover") return { label: "Game over", kicker: "Game over", title: "Game over", message: "Select Restart to play again." };
+    return { label: "Ready", kicker: "Ready", title: "Ready to play", message: "Select Start game, then use the keyboard or touch controls." };
   }
 
   function syncBestScore() {
@@ -187,7 +187,7 @@ if (app) {
     audioButtons.forEach((button) => {
       const enabled = settings[button.dataset.audioToggle] === true;
       button.setAttribute("aria-pressed", String(enabled));
-      button.querySelector("[data-audio-state]").textContent = enabled ? "开启" : "关闭";
+      button.querySelector("[data-audio-state]").textContent = enabled ? "On" : "Off";
     });
   }
 
@@ -213,10 +213,10 @@ if (app) {
     app.querySelector("[data-overlay-message]").textContent = content.message;
     startButton.disabled = state.status !== "ready";
     pauseButton.disabled = state.status !== "running" && state.status !== "paused";
-    pauseButton.textContent = state.status === "paused" ? "继续游戏" : "暂停";
+    pauseButton.textContent = state.status === "paused" ? "Resume" : "Pause";
     boardCanvas.setAttribute(
       "aria-label",
-      `俄罗斯方块棋盘，${content.label}，得分 ${state.score}，等级 ${state.level}，已消除 ${state.lines} 行`,
+      `Tetris board, ${content.label}, score ${state.score}, level ${state.level}, ${state.lines} lines cleared`,
     );
     drawBoard();
     drawNextPiece();
@@ -239,14 +239,14 @@ if (app) {
     }
 
     if (message) announce(message);
-    else if (state.status === "gameover" && previous.status !== "gameover") announce(`游戏结束，最终得分 ${state.score}。`);
-    else if (state.level > previous.level) announce(`升级到第 ${state.level} 级。`);
-    else if (state.lines > previous.lines) announce(`消除了 ${state.lines - previous.lines} 行，当前得分 ${state.score}。`);
+    else if (state.status === "gameover" && previous.status !== "gameover") announce(`Game over. Final score: ${state.score}.`);
+    else if (state.level > previous.level) announce(`Level ${state.level} reached.`);
+    else if (state.lines > previous.lines) announce(`${state.lines - previous.lines} lines cleared. Current score: ${state.score}.`);
   }
 
   async function restart() {
     await prepareAudio();
-    applyState(restartGame(), "新游戏已开始。");
+    applyState(restartGame(), "New game started.");
     audio.playEffect("start");
     previousTime = performance.now();
     boardCanvas.focus();
@@ -254,7 +254,7 @@ if (app) {
 
   startButton.addEventListener("click", async () => {
     await prepareAudio();
-    applyState(startGame(state), "游戏开始。");
+    applyState(startGame(state), "Game started.");
     audio.playEffect("start");
     previousTime = performance.now();
     boardCanvas.focus();
@@ -262,7 +262,7 @@ if (app) {
 
   pauseButton.addEventListener("click", () => {
     const next = togglePause(state);
-    applyState(next, next.status === "paused" ? "游戏已暂停。" : "游戏继续。");
+    applyState(next, next.status === "paused" ? "Game paused." : "Game resumed.");
     previousTime = performance.now();
     boardCanvas.focus();
   });
@@ -279,9 +279,9 @@ if (app) {
       if (enabled && !(await audio.unlock())) {
         if (setting === "music") audio.setMusicEnabled(false);
         else audio.setEffectsEnabled(false);
-        announce("当前浏览器无法启用音频。");
+        announce("Audio is unavailable in this browser.");
       } else {
-        announce(`${setting === "music" ? "背景音乐" : "操作音效"}已${enabled ? "开启" : "关闭"}。`);
+        announce(`${setting === "music" ? "Background music" : "Sound effects"} ${enabled ? "enabled" : "disabled"}.`);
       }
       renderAudioControls();
       if (state.status === "running") boardCanvas.focus();
@@ -395,7 +395,7 @@ if (app) {
       case "KeyP":
         if (!event.repeat) {
           const next = togglePause(state);
-          applyState(next, next.status === "paused" ? "游戏已暂停。" : "游戏继续。");
+          applyState(next, next.status === "paused" ? "Game paused." : "Game resumed.");
           previousTime = performance.now();
         }
         break;
@@ -414,7 +414,7 @@ if (app) {
   document.addEventListener("visibilitychange", () => {
     stopTouchRepeat();
     if (document.hidden && state.status === "running") {
-      applyState(togglePause(state), "页面进入后台，游戏已自动暂停。");
+      applyState(togglePause(state), "The page moved to the background, so the game was paused automatically.");
     }
     previousTime = performance.now();
   });

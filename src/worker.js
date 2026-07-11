@@ -46,6 +46,7 @@ const IP_PROVIDER_TIMEOUT_MS = 2200;
 const IP_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const VISITOR_NETWORK_HEADER = "X-AI-Build-Lab-Request";
 const VISITOR_NETWORK_HEADER_VALUE = "visitor-network";
+const WORLD_CLOCK_HEADER_VALUE = "world-clock";
 const CACHEABLE_NETWORK_SOURCES = ["ipinfo", "ipwhois", "geojs"];
 
 const SECURITY_HEADERS = {
@@ -97,6 +98,10 @@ async function handleRequest(request, env, ctx) {
         "Cache-Control": "no-store",
       },
     }));
+  }
+
+  if (url.pathname === "/sitemap.xml" && env.BLOG_DB) {
+    return withSiteHeaders(request, await renderSitemapResponse(env));
   }
 
   if (url.pathname === "/blog" || url.pathname === "/blog/") {
@@ -166,11 +171,24 @@ async function handleApiRequest(request, env, ctx) {
     const allowed = await allowVisitorNetworkRequest(request, env);
     if (!allowed) {
       return jsonResponse(
-        { error: "查询过于频繁，请稍后重试。" },
+        { error: "Too many requests. Try again later." },
         { status: 429, headers: { "Retry-After": "60" } },
       );
     }
     return jsonResponse(await lookupVisitorNetworkInfo(request, env, { ctx }));
+  }
+
+  if (path === "/api/public/time" && request.method === "GET") {
+    allowWorldClockRequest(request);
+    const now = new Date();
+    return jsonResponse(
+      {
+        epochMs: now.getTime(),
+        iso: now.toISOString(),
+        source: "cloudflare-edge",
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   if (path === "/api/public/posts" && request.method === "GET") {
@@ -233,6 +251,19 @@ async function allowVisitorNetworkRequest(request, env) {
     ipLimiter.limit({ key: `visitor-network:ip:${ipDigest}` }),
   ]);
   return clientLimit.success && ipLimit.success;
+}
+
+function allowWorldClockRequest(request) {
+  const url = new URL(request.url);
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  const isSameOriginFetch = !fetchSite || fetchSite === "same-origin";
+  const hasExpectedHeader =
+    request.headers.get(VISITOR_NETWORK_HEADER) === WORLD_CLOCK_HEADER_VALUE;
+  const acceptsJson = (request.headers.get("Accept") || "").includes("application/json");
+
+  if (!hasExpectedHeader || !acceptsJson || !isSameOriginFetch || url.search) {
+    throw new ServiceError("Forbidden.", 403);
+  }
 }
 
 async function lookupVisitorNetworkInfo(request, env = {}, dependencies = {}) {
@@ -799,6 +830,70 @@ async function renderBlogIndexResponse(request, env) {
   }
   const posts = await listPublicPosts(env.BLOG_DB);
   return htmlResponse(renderBlogIndex(posts));
+}
+
+async function renderSitemapResponse(env) {
+  const [posts, pages, categories] = await Promise.all([
+    listPublicPosts(env.BLOG_DB),
+    listPublicPages(env.BLOG_DB),
+    listCategories(env.BLOG_DB),
+  ]);
+  const staticLastModified = "2026-07-11";
+  const entries = [
+    { path: "/", lastModified: staticLastModified },
+    { path: "/json/", lastModified: staticLastModified },
+    { path: "/password/", lastModified: staticLastModified },
+    { path: "/tetris/", lastModified: staticLastModified },
+    {
+      path: "/blog/",
+      lastModified: latestSitemapDate(posts, staticLastModified),
+    },
+    ...posts.map((post) => ({
+      path: `/blog/${encodeURIComponent(post.slug)}`,
+      lastModified: sitemapDate(post.updatedAt || post.publishedAt || post.createdAt, staticLastModified),
+    })),
+    ...pages.map((page) => ({
+      path: `/p/${encodeURIComponent(page.slug)}`,
+      lastModified: sitemapDate(page.updatedAt || page.publishedAt || page.createdAt, staticLastModified),
+    })),
+    ...categories.map((category) => ({
+      path: `/category/${encodeURIComponent(category.slug)}`,
+      lastModified: sitemapDate(category.updatedAt || category.createdAt, staticLastModified),
+    })),
+  ];
+  const urls = entries.map(({ path, lastModified }) => `
+  <url>
+    <loc>${escapeXml(`https://superstar1014.qzz.io${path}`)}</loc>
+    <lastmod>${lastModified}</lastmod>
+  </url>`).join("");
+
+  return new Response(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}
+</urlset>`, {
+    headers: { "Content-Type": "application/xml; charset=utf-8" },
+  });
+}
+
+function latestSitemapDate(items, fallback) {
+  return items.reduce((latest, item) => {
+    const current = sitemapDate(item.updatedAt || item.publishedAt || item.createdAt, fallback);
+    return current > latest ? current : latest;
+  }, fallback);
+}
+
+function sitemapDate(value, fallback) {
+  if (!value) return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString().slice(0, 10);
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 async function renderPostResponse(request, env, url) {

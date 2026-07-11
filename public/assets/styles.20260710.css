@@ -14,6 +14,7 @@
   --accent-ink: #05281c;
   --ice: #79d9f8;
   --sun: #ffcc67;
+  --coral: #ff7f5f;
   --radius: 16px;
   --container: 1180px;
 }
@@ -479,6 +480,101 @@ h1 em {
   color: var(--accent);
   font-size: 9px;
   font-weight: 650;
+}
+
+.world-clocks {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding: 16px;
+  background: rgba(5, 9, 15, 0.54);
+}
+
+.world-clocks__heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.world-clocks__heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.world-clocks__heading span,
+.world-clocks article > span,
+.world-clocks article small {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-clocks__heading strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.world-clocks__sync {
+  color: var(--sun) !important;
+  white-space: nowrap;
+}
+
+.world-clocks[data-state="ready"] .world-clocks__sync {
+  color: var(--accent) !important;
+}
+
+.world-clocks[data-state="error"] .world-clocks__sync {
+  color: var(--coral) !important;
+}
+
+.world-clocks__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.world-clocks article {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.world-clocks article strong {
+  color: var(--ice);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(18px, 4vw, 25px);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.world-clocks time {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .section {
@@ -990,7 +1086,7 @@ footer {
 
 @media (max-width: 440px) {
   .brand strong {
-    max-width: 72px;
+    max-width: 96px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

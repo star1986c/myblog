@@ -1,30 +1,52 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>JSON Formatter | AI Build Lab</title>
+    <title>Free JSON Formatter &amp; Validator | AI Build Lab</title>
     <meta
       name="description"
-      content="A local JSON formatter, minifier, validator, and tree viewer for AI Build Lab."
+      content="Format, validate, minify, search, and inspect JSON in a tree view. This free JSON formatter processes all data locally in your browser."
     />
     <meta name="theme-color" content="#05070b" />
-    <meta name="robots" content="index,follow" />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     <link rel="canonical" href="https://superstar1014.qzz.io/json/" />
 
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="JSON Formatter | AI Build Lab" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="AI Build Lab" />
+    <meta property="og:title" content="Free JSON Formatter &amp; Validator | AI Build Lab" />
     <meta
       property="og:description"
       content="Format, minify, validate, and inspect JSON locally in your browser."
     />
     <meta property="og:url" content="https://superstar1014.qzz.io/json/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="JSON Formatter | AI Build Lab" />
+    <meta name="twitter:title" content="Free JSON Formatter &amp; Validator | AI Build Lab" />
     <meta
       name="twitter:description"
       content="Format, minify, validate, and inspect JSON locally in your browser."
     />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "AI Build Lab JSON Formatter",
+        "url": "https://superstar1014.qzz.io/json/",
+        "description": "A free local JSON formatter, validator, minifier, search tool, and interactive tree viewer.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern web browser with JavaScript enabled.",
+        "isAccessibleForFree": true,
+        "inLanguage": "en",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
@@ -35,7 +57,7 @@
     <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
-    <a class="skip-link" href="#json-workbench">跳到 JSON 工作区</a>
+    <a class="skip-link" href="#json-workbench">Skip to the JSON workspace</a>
     <main class="tool-shell" data-json-tool>
       <header class="tool-topbar">
         <a class="brand" href="/" aria-label="Back to AI Build Lab home">
@@ -54,14 +76,14 @@
           </svg>
           <span>
             <strong>AI Build Lab</strong>
-            <small>个人开发实验室</small>
+            <small>Independent developer lab</small>
           </span>
         </a>
         <nav class="tool-nav" aria-label="Tool navigation">
-          <a href="/">首页</a>
-          <a aria-current="page" href="/json/">JSON 格式化</a>
-          <a href="/password/">密码生成</a>
-          <a href="/tetris/">俄罗斯方块</a>
+          <a href="/">Home</a>
+          <a aria-current="page" href="/json/">JSON Formatter</a>
+          <a href="/password/">Password Generator</a>
+          <a href="/tetris/">Tetris</a>
         </nav>
       </header>
 
@@ -73,14 +95,14 @@
             </svg>
             <span>Developer utility</span>
           </div>
-          <h1 id="json-title">JSON 格式化工具</h1>
-          <p>粘贴 JSON 后可格式化、压缩、校验错误位置，并查看树形结构。数据只在当前浏览器处理。</p>
+          <h1 id="json-title">Free JSON Formatter &amp; Validator</h1>
+          <p>Paste JSON to format, minify, validate error locations, search nodes, and explore an interactive tree. Your data stays in this browser.</p>
         </div>
         <div class="privacy-note">
           <span class="privacy-dot" aria-hidden="true"></span>
           <div>
-            <strong>仅在本地处理</strong>
-            <span>输入内容不会上传到服务器</span>
+            <strong>Local processing only</strong>
+            <span>Your JSON is never uploaded</span>
           </div>
         </div>
       </section>
@@ -89,10 +111,10 @@
         <div class="json-panel editor-panel">
           <div class="panel-bar">
             <div>
-              <strong>输入</strong>
-              <span data-json-status>等待输入</span>
+              <strong>Input</strong>
+              <span data-json-status>Waiting for input</span>
             </div>
-            <button class="icon-button" type="button" data-json-action="sample" aria-label="载入示例 JSON">
+            <button class="icon-button" type="button" data-json-action="sample" aria-label="Load sample JSON">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 5h16M4 12h10M4 19h16" />
               </svg>
@@ -104,36 +126,36 @@
             spellcheck="false"
             placeholder='{"name":"AI Build Lab","tools":["format","minify","tree"]}'
           ></textarea>
-          <div class="tool-actions" aria-label="JSON 操作">
-            <button class="button primary" type="button" data-json-action="format">格式化</button>
-            <button class="button" type="button" data-json-action="minify">压缩</button>
-            <button class="button" type="button" data-json-action="clear">清空</button>
-            <button class="button" type="button" data-json-action="copy">复制</button>
+          <div class="tool-actions" aria-label="JSON actions">
+            <button class="button primary" type="button" data-json-action="format">Format</button>
+            <button class="button" type="button" data-json-action="minify">Minify</button>
+            <button class="button" type="button" data-json-action="clear">Clear</button>
+            <button class="button" type="button" data-json-action="copy">Copy</button>
           </div>
         </div>
 
         <div class="viewer-grid">
           <section class="viewer-panel" aria-label="JSON tree viewer">
-            <div class="viewer-title">视图</div>
+            <div class="viewer-title">Tree view</div>
             <div class="viewer-toolbar">
               <label class="search-label">
-                查找:
+                Search:
                 <input type="search" data-json-search autocomplete="off" />
               </label>
               <button type="button" data-json-action="search">GO!</button>
-              <button type="button" data-json-action="next">↓ 下一个</button>
-              <button type="button" data-json-action="previous">↑ 上一个</button>
-              <button type="button" data-json-action="expand">全部展开</button>
-              <button type="button" data-json-action="collapse">全部收缩</button>
-              <a href="/">回到首页</a>
+              <button type="button" data-json-action="next">↓ Next</button>
+              <button type="button" data-json-action="previous">↑ Previous</button>
+              <button type="button" data-json-action="expand">Expand all</button>
+              <button type="button" data-json-action="collapse">Collapse all</button>
+              <a href="/">Home</a>
             </div>
             <div class="json-tree" data-json-tree aria-label="JSON tree">
-              <div class="empty-view">格式化或粘贴有效 JSON 后会显示树形结构。</div>
+              <div class="empty-view">Format or paste valid JSON to display its tree structure.</div>
             </div>
           </section>
 
           <section class="property-panel" aria-label="Selected JSON node properties">
-            <div class="viewer-title">属性</div>
+            <div class="viewer-title">Properties</div>
             <table class="property-table">
               <thead>
                 <tr>
@@ -143,7 +165,7 @@
               </thead>
               <tbody data-json-properties>
                 <tr>
-                  <td colspan="2">请选择左侧节点。</td>
+                  <td colspan="2">Select a node from the tree.</td>
                 </tr>
               </tbody>
             </table>
@@ -151,14 +173,27 @@
         </div>
       </section>
 
+      <section class="tool-seo" aria-labelledby="json-guide-title">
+        <div class="tool-seo__intro">
+          <p class="section-index">About this tool</p>
+          <h2 id="json-guide-title">Format and inspect JSON without uploading data</h2>
+          <p>This browser-based JSON tool helps developers debug API responses, configuration files, and structured data while keeping sensitive content on the current device.</p>
+        </div>
+        <div class="tool-seo__grid">
+          <article><h3>Format and minify</h3><p>Switch between readable two-space formatting and compact JSON for storage or transport.</p></article>
+          <article><h3>Validate errors</h3><p>Find invalid JSON with clear line and column information, then correct it directly in the editor.</p></article>
+          <article><h3>Explore the tree</h3><p>Search keys and values, inspect node properties, and expand or collapse nested objects and arrays.</p></article>
+        </div>
+      </section>
+
       <div class="json-context-menu" data-json-context-menu hidden role="menu" aria-label="JSON node context menu">
-        <button type="button" data-json-menu-action="copy-key" role="menuitem">复制Key</button>
-        <button type="button" data-json-menu-action="copy-value" role="menuitem">复制Value</button>
-        <button type="button" data-json-menu-action="copy-pair" role="menuitem">复制Key+Value</button>
-        <button type="button" data-json-menu-action="expand-children" role="menuitem">展开所有子节点</button>
-        <button type="button" data-json-menu-action="expand-all" role="menuitem">展开所有节点</button>
-        <button type="button" data-json-menu-action="collapse-children" role="menuitem">收起所有子节点</button>
-        <button type="button" data-json-menu-action="collapse-all" role="menuitem">收起所有节点</button>
+        <button type="button" data-json-menu-action="copy-key" role="menuitem">Copy key</button>
+        <button type="button" data-json-menu-action="copy-value" role="menuitem">Copy value</button>
+        <button type="button" data-json-menu-action="copy-pair" role="menuitem">Copy key and value</button>
+        <button type="button" data-json-menu-action="expand-children" role="menuitem">Expand child nodes</button>
+        <button type="button" data-json-menu-action="expand-all" role="menuitem">Expand all nodes</button>
+        <button type="button" data-json-menu-action="collapse-children" role="menuitem">Collapse child nodes</button>
+        <button type="button" data-json-menu-action="collapse-all" role="menuitem">Collapse all nodes</button>
       </div>
     </main>
 

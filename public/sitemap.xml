@@ -2,26 +2,22 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://superstar1014.qzz.io/</loc>
-    <lastmod>2026-07-06</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>1.0</priority>
+    <lastmod>2026-07-11</lastmod>
   </url>
   <url>
     <loc>https://superstar1014.qzz.io/json/</loc>
-    <lastmod>2026-07-06</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
+    <lastmod>2026-07-11</lastmod>
   </url>
   <url>
     <loc>https://superstar1014.qzz.io/password/</loc>
-    <lastmod>2026-07-10</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
+    <lastmod>2026-07-11</lastmod>
   </url>
   <url>
     <loc>https://superstar1014.qzz.io/tetris/</loc>
     <lastmod>2026-07-11</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://superstar1014.qzz.io/blog/</loc>
+    <lastmod>2026-07-11</lastmod>
   </url>
 </urlset>

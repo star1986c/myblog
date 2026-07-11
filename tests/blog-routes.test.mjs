@@ -4,9 +4,10 @@ import worker, { lookupVisitorNetworkInfo } from "../src/worker.js";
 import { createPasswordHash, readSession, signSession, verifyPasswordHash } from "../src/auth.js";
 
 class FakeD1 {
-  constructor({ posts = [], pages = [], media = [], adminAccount = null, settings = {} } = {}) {
+  constructor({ posts = [], pages = [], categories = [], media = [], adminAccount = null, settings = {} } = {}) {
     this.posts = posts;
     this.pages = pages;
+    this.categories = categories;
     this.media = media;
     this.adminAccount = adminAccount;
     this.settings = {
@@ -46,6 +47,10 @@ class FakeStatement {
           (page) => page.status === "published" && page.visibility === "public",
         ),
       };
+    }
+
+    if (this.sql.includes("FROM categories")) {
+      return { results: this.db.categories };
     }
 
     if (this.sql.includes("FROM posts") && this.sql.includes("visibility = 'public'")) {
@@ -185,6 +190,15 @@ function makeVisitorRequest(ip, cf = {}) {
     value: cf,
   });
   return request;
+}
+
+function makeWorldClockRequest() {
+  return new Request("https://superstar1014.qzz.io/api/public/time", {
+    headers: {
+      Accept: "application/json",
+      "X-AI-Build-Lab-Request": "world-clock",
+    },
+  });
 }
 
 function makeMemoryCache() {
@@ -515,6 +529,65 @@ test("public visitor network API is never browser-cached and hashes rate-limit k
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("public time API returns uncached Cloudflare edge time", async () => {
+  const before = Date.now();
+  const response = await worker.fetch(makeWorldClockRequest(), makeEnv());
+  const after = Date.now();
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(body.source, "cloudflare-edge");
+  assert.ok(body.epochMs >= before && body.epochMs <= after);
+  assert.equal(new Date(body.iso).getTime(), body.epochMs);
+});
+
+test("public time API rejects requests without its same-origin widget header", async () => {
+  const request = makeWorldClockRequest();
+  request.headers.delete("X-AI-Build-Lab-Request");
+
+  const response = await worker.fetch(request, makeEnv());
+
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("dynamic sitemap includes public blog content and excludes private drafts", async () => {
+  const env = makeEnv({
+    BLOG_DB: new FakeD1({
+      posts: [
+        { slug: "draft", status: "draft", visibility: "private" },
+        {
+          slug: "edge-guide",
+          status: "published",
+          visibility: "public",
+          updatedAt: "2026-07-10T12:00:00.000Z",
+        },
+      ],
+      pages: [{
+        slug: "about",
+        status: "published",
+        visibility: "public",
+        updatedAt: "2026-07-09T12:00:00.000Z",
+      }],
+      categories: [{ slug: "cloudflare", updatedAt: "2026-07-08T12:00:00.000Z" }],
+    }),
+  });
+
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/sitemap.xml"),
+    env,
+  );
+  const xml = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type"), /application\/xml/);
+  assert.match(xml, /https:\/\/superstar1014\.qzz\.io\/blog\/edge-guide/);
+  assert.match(xml, /https:\/\/superstar1014\.qzz\.io\/p\/about/);
+  assert.match(xml, /https:\/\/superstar1014\.qzz\.io\/category\/cloudflare/);
+  assert.doesNotMatch(xml, /\/blog\/draft/);
 });
 
 test("public posts API only returns published and public articles", async () => {

@@ -52,7 +52,7 @@ if (app) {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
     } catch {
-      announce("浏览器无法保存历史记录，请检查存储权限。");
+      announce("The browser could not save password history. Check your storage permissions.");
     }
   }
 
@@ -63,7 +63,7 @@ if (app) {
     }, 20);
   }
 
-  function createCopyButton(password, label = "复制") {
+  function createCopyButton(password, label = "Copy") {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "copy-button";
@@ -71,8 +71,8 @@ if (app) {
     button.addEventListener("click", async () => {
       const copied = await copyText(password);
       const original = button.textContent;
-      button.textContent = copied ? "已复制" : "复制失败";
-      announce(copied ? "密码已复制到剪贴板。" : "复制失败，请手动选择密码。");
+      button.textContent = copied ? "Copied" : "Copy failed";
+      announce(copied ? "Password copied to the clipboard." : "Copy failed. Select the password manually.");
       window.setTimeout(() => {
         button.textContent = original;
       }, 1600);
@@ -124,13 +124,13 @@ if (app) {
       const estimate = estimatePasswordStrength(options);
       strength.dataset.level = estimate.level;
       strength.querySelector("strong").textContent = estimate.label;
-      strength.querySelector("small").textContent = `约 ${estimate.bits} bits`;
+      strength.querySelector("small").textContent = `About ${estimate.bits} bits`;
       strength.classList.remove("is-unavailable");
       errorMessage.hidden = true;
     } catch (error) {
       strength.dataset.level = "weak";
-      strength.querySelector("strong").textContent = "不可用";
-      strength.querySelector("small").textContent = "请调整字符设置";
+      strength.querySelector("strong").textContent = "Unavailable";
+      strength.querySelector("small").textContent = "Adjust the character settings";
       strength.classList.add("is-unavailable");
       errorMessage.textContent = error.message;
       errorMessage.hidden = false;
@@ -151,14 +151,14 @@ if (app) {
   function renderHistory() {
     const entries = readHistory();
     const passwordTotal = entries.reduce((total, entry) => total + entry.passwords.length, 0);
-    historyCount.textContent = passwordTotal ? `${passwordTotal} 个密码` : "尚无记录";
+    historyCount.textContent = passwordTotal ? `${passwordTotal} ${passwordTotal === 1 ? "password" : "passwords"}` : "No saved passwords";
     clearHistoryButton.disabled = entries.length === 0;
     historyList.replaceChildren();
 
     if (entries.length === 0) {
       const empty = document.createElement("p");
       empty.className = "history-empty";
-      empty.textContent = "开启“记录历史结果”后，新生成的密码会显示在这里。";
+      empty.textContent = "Enable password history to keep newly generated passwords here.";
       historyList.append(empty);
       return;
     }
@@ -179,7 +179,7 @@ if (app) {
         const item = document.createElement("li");
         const code = document.createElement("code");
         code.textContent = password;
-        item.append(code, createCopyButton(password, "复制"));
+        item.append(code, createCopyButton(password, "Copy"));
         list.append(item);
       });
 
@@ -205,7 +205,7 @@ if (app) {
       renderResults(currentPasswords);
       errorMessage.hidden = true;
       if (historyToggle.checked) recordPasswords(currentPasswords);
-      announce(`已生成 ${currentPasswords.length} 个密码。`);
+      announce(`Generated ${currentPasswords.length} ${currentPasswords.length === 1 ? "password" : "passwords"}.`);
     } catch (error) {
       currentPasswords = [];
       copyAllButton.hidden = true;
@@ -219,8 +219,8 @@ if (app) {
   copyAllButton.addEventListener("click", async () => {
     const copied = await copyText(currentPasswords.join("\n"));
     const original = copyAllButton.textContent;
-    copyAllButton.textContent = copied ? "已复制" : "复制失败";
-    announce(copied ? "所有密码已复制到剪贴板。" : "复制失败，请逐个复制密码。");
+    copyAllButton.textContent = copied ? "Copied" : "Copy failed";
+    announce(copied ? "All passwords copied to the clipboard." : "Copy failed. Copy each password individually.");
     window.setTimeout(() => {
       copyAllButton.textContent = original;
     }, 1600);
@@ -237,10 +237,10 @@ if (app) {
   clearHistoryButton.addEventListener("click", () => {
     if (clearHistoryButton.dataset.confirm !== "true") {
       clearHistoryButton.dataset.confirm = "true";
-      clearHistoryButton.textContent = "再次点击确认";
+      clearHistoryButton.textContent = "Select again to confirm";
       clearConfirmationTimer = window.setTimeout(() => {
         clearHistoryButton.dataset.confirm = "false";
-        clearHistoryButton.textContent = "清空历史";
+        clearHistoryButton.textContent = "Clear history";
       }, 3000);
       return;
     }
@@ -248,9 +248,9 @@ if (app) {
     window.clearTimeout(clearConfirmationTimer);
     localStorage.removeItem(HISTORY_KEY);
     clearHistoryButton.dataset.confirm = "false";
-    clearHistoryButton.textContent = "清空历史";
+    clearHistoryButton.textContent = "Clear history";
     renderHistory();
-    announce("历史记录已清空。");
+    announce("Password history cleared.");
   });
 
   renderStrength();
