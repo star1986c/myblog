@@ -10,6 +10,10 @@ const tetrisJs = await readFile(
   new URL("../public/assets/tetris-game.20260711.js", import.meta.url),
   "utf8",
 );
+const tetrisAudioJs = await readFile(
+  new URL("../public/assets/tetris-audio.20260711.js", import.meta.url),
+  "utf8",
+);
 const tetrisCss = await readFile(
   new URL("../public/assets/tetris-page.20260711.css", import.meta.url),
   "utf8",
@@ -148,6 +152,19 @@ test("Tetris keeps scores local and pauses when the page is hidden", () => {
   assert.match(tetrisJs, /requestAnimationFrame/);
   assert.match(tetrisJs, /visibilitychange/);
   assert.match(tetrisJs, /document\.hidden/);
+});
+
+test("Tetris includes optional synthesized music and sound effects", () => {
+  assert.match(tetrisHtml, /href="\/assets\/tetris-audio\.20260711\.js"/);
+  assert.match(tetrisHtml, /data-audio-toggle="music"/);
+  assert.match(tetrisHtml, /data-audio-toggle="effects"/);
+  assert.match(tetrisHtml, /aria-pressed="false"/);
+  assert.match(tetrisJs, /createTetrisAudio/);
+  assert.match(tetrisJs, /playEffect\("lineClear"/);
+  assert.match(tetrisJs, /setGameRunning/);
+  assert.match(tetrisAudioJs, /ai-build-lab\.tetris-audio\.v1/);
+  assert.match(tetrisAudioJs, /createOscillator/);
+  assert.doesNotMatch(tetrisAudioJs, /fetch\(/);
 });
 
 test("all standalone tool pages link to Tetris", () => {

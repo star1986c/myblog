@@ -15,6 +15,7 @@ import {
   tick,
   togglePause,
 } from "./tetris-core.20260711.js";
+import { createTetrisAudio } from "./tetris-audio.20260711.js";
 
 const BEST_SCORE_KEY = "ai-build-lab.tetris-best-score.v1";
 const COLORS = Object.freeze({
@@ -35,8 +36,10 @@ if (app) {
   const startButton = app.querySelector('[data-game-action="start"]');
   const pauseButton = app.querySelector('[data-game-action="pause"]');
   const restartButton = app.querySelector('[data-game-action="restart"]');
+  const audioButtons = app.querySelectorAll("[data-audio-toggle]");
   const announcement = app.querySelector("[data-tetris-announcement]");
   const formatter = new Intl.NumberFormat("zh-CN");
+  const audio = createTetrisAudio();
   let state = createGameState();
   let bestScore = readBestScore();
   let previousTime = performance.now();
@@ -175,8 +178,24 @@ if (app) {
     writeBestScore(bestScore);
   }
 
+  function renderAudioControls() {
+    const settings = audio.settings;
+    audioButtons.forEach((button) => {
+      const enabled = settings[button.dataset.audioToggle] === true;
+      button.setAttribute("aria-pressed", String(enabled));
+      button.querySelector("[data-audio-state]").textContent = enabled ? "开启" : "关闭";
+    });
+  }
+
+  async function prepareAudio() {
+    const settings = audio.settings;
+    if (!settings.music && !settings.effects) return true;
+    return await audio.unlock();
+  }
+
   function render() {
     syncBestScore();
+    audio.setGameRunning(state.status === "running");
     app.dataset.state = state.status;
     app.querySelector("[data-score]").textContent = formatter.format(state.score);
     app.querySelector("[data-best-score]").textContent = formatter.format(bestScore);
@@ -197,6 +216,7 @@ if (app) {
     );
     drawBoard();
     drawNextPiece();
+    renderAudioControls();
   }
 
   function applyState(next, message) {
@@ -204,20 +224,34 @@ if (app) {
     state = next;
     render();
 
+    if (state.status === "gameover" && previous.status !== "gameover") {
+      audio.playEffect("gameOver");
+    } else if (state.level > previous.level) {
+      audio.playEffect("levelUp");
+    } else if (state.lines > previous.lines) {
+      audio.playEffect("lineClear", state.lines - previous.lines);
+    } else if (state.board !== previous.board) {
+      audio.playEffect("lock");
+    }
+
     if (message) announce(message);
     else if (state.status === "gameover" && previous.status !== "gameover") announce(`游戏结束，最终得分 ${state.score}。`);
     else if (state.level > previous.level) announce(`升级到第 ${state.level} 级。`);
     else if (state.lines > previous.lines) announce(`消除了 ${state.lines - previous.lines} 行，当前得分 ${state.score}。`);
   }
 
-  function restart() {
+  async function restart() {
+    await prepareAudio();
     applyState(restartGame(), "新游戏已开始。");
+    audio.playEffect("start");
     previousTime = performance.now();
     boardCanvas.focus();
   }
 
-  startButton.addEventListener("click", () => {
+  startButton.addEventListener("click", async () => {
+    await prepareAudio();
     applyState(startGame(state), "游戏开始。");
+    audio.playEffect("start");
     previousTime = performance.now();
     boardCanvas.focus();
   });
@@ -231,27 +265,52 @@ if (app) {
 
   restartButton.addEventListener("click", restart);
 
+  audioButtons.forEach((button) => {
+    button.addEventListener("click", async () => {
+      const setting = button.dataset.audioToggle;
+      const enabled = audio.settings[setting] !== true;
+      if (setting === "music") audio.setMusicEnabled(enabled);
+      else audio.setEffectsEnabled(enabled);
+
+      if (enabled && !(await audio.unlock())) {
+        if (setting === "music") audio.setMusicEnabled(false);
+        else audio.setEffectsEnabled(false);
+        announce("当前浏览器无法启用音频。");
+      } else {
+        announce(`${setting === "music" ? "背景音乐" : "操作音效"}已${enabled ? "开启" : "关闭"}。`);
+      }
+      renderAudioControls();
+      if (state.status === "running") boardCanvas.focus();
+    });
+  });
+
   window.addEventListener("keydown", (event) => {
     if (event.target instanceof HTMLElement && event.target.closest("a, button, input, textarea, select")) return;
     let next = state;
     let handled = true;
+    let effect = null;
 
     switch (event.code) {
       case "ArrowLeft":
         next = movePiece(state, -1);
+        effect = "move";
         break;
       case "ArrowRight":
         next = movePiece(state, 1);
+        effect = "move";
         break;
       case "ArrowDown":
         next = softDrop(state);
+        effect = "softDrop";
         break;
       case "ArrowUp":
       case "KeyX":
         if (!event.repeat) next = rotatePiece(state, 1);
+        effect = "rotate";
         break;
       case "KeyZ":
         if (!event.repeat) next = rotatePiece(state, -1);
+        effect = "rotate";
         break;
       case "Space":
         if (!event.repeat) next = hardDrop(state);
@@ -260,7 +319,7 @@ if (app) {
         if (!event.repeat) next = togglePause(state);
         break;
       case "KeyR":
-        if (!event.repeat) restart();
+        if (!event.repeat) void restart();
         break;
       default:
         handled = false;
@@ -268,7 +327,10 @@ if (app) {
 
     if (!handled) return;
     event.preventDefault();
-    if (event.code !== "KeyR" && next !== state) applyState(next);
+    if (event.code !== "KeyR" && next !== state) {
+      applyState(next);
+      if (effect) audio.playEffect(effect);
+    }
   });
 
   document.addEventListener("visibilitychange", () => {
@@ -281,6 +343,8 @@ if (app) {
   window.addEventListener("resize", () => {
     window.requestAnimationFrame(render);
   });
+
+  window.addEventListener("pagehide", () => audio.destroy(), { once: true });
 
   function frame(time) {
     const elapsed = Math.min(Math.max(time - previousTime, 0), 250);
