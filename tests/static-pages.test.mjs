@@ -31,7 +31,7 @@ const visitorNetworkCss = await readFile(
   "utf8",
 );
 const worldClockJs = await readFile(
-  new URL("../public/assets/world-clock.20260711.js", import.meta.url),
+  new URL("../public/assets/world-clock.20260711-v2.js", import.meta.url),
   "utf8",
 );
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
@@ -86,7 +86,7 @@ test("home page includes network-synchronized Beijing and Los Angeles clocks", (
   assert.match(indexHtml, /data-world-clocks/);
   assert.match(indexHtml, /data-clock-time="beijing"/);
   assert.match(indexHtml, /data-clock-time="los-angeles"/);
-  assert.match(indexHtml, /src="\/assets\/world-clock\.20260711\.js"/);
+  assert.match(indexHtml, /src="\/assets\/world-clock\.20260711-v2\.js"/);
   assert.match(worldClockJs, /fetch\("\/api\/public\/time"/);
   assert.match(worldClockJs, /"Asia\/Shanghai"/);
   assert.match(worldClockJs, /"America\/Los_Angeles"/);

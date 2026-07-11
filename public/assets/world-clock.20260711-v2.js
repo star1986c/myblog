@@ -1,4 +1,5 @@
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_LATENCY_COMPENSATION_MS = 500;
 
 const CLOCKS = {
   beijing: {
@@ -16,7 +17,8 @@ function estimateSynchronizedEpoch(serverEpochMs, requestStarted, responseReceiv
   if (![epoch, started, received].every(Number.isFinite) || received < started) {
     throw new TypeError("Invalid network time synchronization values.");
   }
-  return epoch + ((received - started) / 2);
+  const estimatedOneWayLatency = (received - started) / 2;
+  return epoch + Math.min(estimatedOneWayLatency, MAX_LATENCY_COMPENSATION_MS);
 }
 
 const root = globalThis.document?.querySelector("[data-world-clocks]");
