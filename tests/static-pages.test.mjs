@@ -6,15 +6,21 @@ const indexHtml = await readFile(new URL("../public/index.html", import.meta.url
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
 const passwordHtml = await readFile(new URL("../public/password/index.html", import.meta.url), "utf8");
 const tetrisHtml = await readFile(new URL("../public/tetris/index.html", import.meta.url), "utf8");
-const tetrisJs = await readFile(
+const tetrisAutoJs = await readFile(
+  new URL("../public/assets/tetris-auto.20260712-v2.js", import.meta.url),
+  "utf8",
+);
+const tetrisLegacyJs = await readFile(
   new URL("../public/assets/tetris-game.20260712.js", import.meta.url),
   "utf8",
 );
+const tetrisJs = `${tetrisAutoJs}\n${tetrisLegacyJs}`;
 const tetrisAudioJs = await readFile(
   new URL("../public/assets/tetris-audio.20260712.js", import.meta.url),
   "utf8",
 );
 const tetrisCss = [
+  await readFile(new URL("../public/assets/tetris-page.20260712-v2.css", import.meta.url), "utf8"),
   await readFile(new URL("../public/assets/tetris-page.20260712.css", import.meta.url), "utf8"),
   await readFile(new URL("../public/assets/tetris-page.20260711.css", import.meta.url), "utf8"),
 ].join("\n");
@@ -175,13 +181,13 @@ test("Tetris is served from a branded standalone page with keyboard controls", (
   assert.match(tetrisHtml, /<main class="tetris-shell" data-tetris-game/);
   assert.match(tetrisHtml, /href="https:\/\/superstar1014\.qzz\.io\/tetris\/"/);
   assert.match(tetrisHtml, /href="\/assets\/tool-brand\.20260710\.css"/);
-  assert.match(tetrisHtml, /href="\/assets\/tetris-page\.20260712\.css"/);
-  assert.match(tetrisHtml, /src="\/assets\/tetris-game\.20260712\.js"/);
+  assert.match(tetrisHtml, /href="\/assets\/tetris-page\.20260712-v2\.css"/);
+  assert.match(tetrisHtml, /src="\/assets\/tetris-auto\.20260712-v2\.js"/);
   assert.match(tetrisHtml, /data-tetris-board/);
   assert.match(tetrisHtml, /data-next-piece/);
   assert.match(tetrisHtml, /<kbd>Space<\/kbd>/);
   assert.match(tetrisHtml, /<kbd>P<\/kbd><kbd>R<\/kbd>/);
-  assert.match(tetrisCss, /@import url\("\.\/tetris-page\.20260711\.css"\)/);
+  assert.match(tetrisCss, /@import url\("\.\/tetris-page\.20260712\.css"\)/);
   assert.match(tetrisCss, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
@@ -206,18 +212,20 @@ test("Tetris includes optional synthesized music and sound effects", () => {
   assert.doesNotMatch(tetrisAudioJs, /fetch\(/);
 });
 
-test("Tetris includes a separate charged power-up mode", () => {
+test("Tetris automatically triggers random power-ups and shows the current effect", () => {
   assert.match(tetrisHtml, /data-game-mode="classic"/);
   assert.match(tetrisHtml, /data-game-mode="powerup"/);
-  assert.match(tetrisHtml, /data-power-up="rowBlast"/);
-  assert.match(tetrisHtml, /data-power-up="queueShift"/);
-  assert.match(tetrisHtml, /data-power-up="slowTime"/);
-  assert.match(tetrisHtml, /<kbd>1<\/kbd><kbd>2<\/kbd><kbd>3<\/kbd>/);
+  assert.match(tetrisHtml, /data-random-power-panel/);
+  assert.match(tetrisHtml, /data-current-power-status/);
+  assert.match(tetrisHtml, /Triggers automatically/);
+  assert.match(tetrisHtml, /automatic-power-engine[^>]*hidden[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(tetrisHtml, /<kbd>1<\/kbd>|<kbd>2<\/kbd>|<kbd>3<\/kbd>/);
   assert.match(tetrisJs, /ai-build-lab\.tetris-best-score\.powerup\.v1/);
-  assert.match(tetrisJs, /Digit1/);
-  assert.match(tetrisJs, /usePowerUp/);
-  assert.match(tetrisCss, /\.power-up-grid/);
-  assert.match(tetrisCss, /min-height:\s*82px/);
+  assert.match(tetrisAutoJs, /chooseRandomPowerUp/);
+  assert.match(tetrisAutoJs, /stopImmediatePropagation/);
+  assert.match(tetrisAutoJs, /INSTANT_EFFECT_VISIBLE_MS = 2500/);
+  assert.match(tetrisCss, /\.current-power-status/);
+  assert.match(tetrisCss, /\.automatic-power-engine/);
   assert.match(tetrisCss, /transition-duration:\s*0\.01ms/);
 });
 
