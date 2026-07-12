@@ -6,7 +6,7 @@ import {
   createTetrisAudio,
   readTetrisAudioSettings,
   writeTetrisAudioSettings,
-} from "../public/assets/tetris-audio.20260711.js";
+} from "../public/assets/tetris-audio.20260712.js";
 
 function createStorage(initialValue = null) {
   const values = new Map();
@@ -105,4 +105,21 @@ test("effects are synthesized only when enabled", async () => {
   audio.setEffectsEnabled(true);
   assert.equal(audio.playEffect("rotate"), true);
   assert.equal(context.oscillatorCount, 1);
+});
+
+test("power-up effects use synthesized audio when effects are enabled", async () => {
+  const context = createFakeAudioContext();
+  const audio = createTetrisAudio({
+    storage: createStorage(),
+    audioContextFactory: () => context,
+    setInterval: () => 1,
+    clearInterval() {},
+  });
+  await audio.unlock();
+  audio.setEffectsEnabled(true);
+
+  assert.equal(audio.playEffect("rowBlast"), true);
+  assert.equal(audio.playEffect("queueShift"), true);
+  assert.equal(audio.playEffect("slowTime"), true);
+  assert.equal(context.oscillatorCount, 6);
 });

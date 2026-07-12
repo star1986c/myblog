@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Play Tetris Online Free | AI Build Lab</title>
+    <title>Play Classic & Power-up Tetris Online | AI Build Lab</title>
     <meta
       name="description"
-      content="Play a free browser Tetris game with keyboard and touch controls, ghost pieces, level progression, optional music and sound effects, and a local high score."
+      content="Play classic Tetris or a tactical power-up mode with keyboard and touch controls, local high scores, optional music, and no installation."
     />
     <meta name="theme-color" content="#05070b" />
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
@@ -15,17 +15,17 @@
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:site_name" content="AI Build Lab" />
-    <meta property="og:title" content="Play Tetris Online Free | AI Build Lab" />
+    <meta property="og:title" content="Play Classic & Power-up Tetris Online | AI Build Lab" />
     <meta
       property="og:description"
-      content="Play a classic falling-block puzzle in your browser with keyboard or touch controls. No installation required."
+      content="Choose classic play or earn tactical power-ups by clearing lines in this free browser falling-block puzzle."
     />
     <meta property="og:url" content="https://superstar1014.qzz.io/tetris/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Play Tetris Online Free | AI Build Lab" />
+    <meta name="twitter:title" content="Play Classic & Power-up Tetris Online | AI Build Lab" />
     <meta
       name="twitter:description"
-      content="Play a classic falling-block puzzle in your browser with keyboard or touch controls. No installation required."
+      content="Choose classic play or earn tactical power-ups by clearing lines in this free browser falling-block puzzle."
     />
 
     <script type="application/ld+json">
@@ -34,7 +34,7 @@
         "@type": ["VideoGame", "WebApplication"],
         "name": "AI Build Lab Browser Tetris",
         "url": "https://superstar1014.qzz.io/tetris/",
-        "description": "A free browser-based falling-block puzzle game with keyboard and touch controls.",
+        "description": "A free browser-based falling-block puzzle with separate classic and tactical power-up modes.",
         "applicationCategory": "GameApplication",
         "gamePlatform": "Web browser",
         "operatingSystem": "Any",
@@ -47,11 +47,11 @@
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
-    <link rel="preload" href="/assets/tetris-page.20260711.css" as="style" />
-    <link rel="modulepreload" href="/assets/tetris-core.20260711.js" />
-    <link rel="modulepreload" href="/assets/tetris-audio.20260711.js" />
-    <link rel="modulepreload" href="/assets/tetris-game.20260711.js" />
-    <link rel="stylesheet" href="/assets/tetris-page.20260711.css" />
+    <link rel="preload" href="/assets/tetris-page.20260712.css" as="style" />
+    <link rel="modulepreload" href="/assets/tetris-core.20260712.js" />
+    <link rel="modulepreload" href="/assets/tetris-audio.20260712.js" />
+    <link rel="modulepreload" href="/assets/tetris-game.20260712.js" />
+    <link rel="stylesheet" href="/assets/tetris-page.20260712.css" />
     <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
@@ -94,7 +94,7 @@
             <span>Browser game</span>
           </div>
           <h1 id="tetris-title">Browser Tetris</h1>
-          <p>Move and rotate falling pieces to clear complete lines. The game speeds up as your level increases.</p>
+          <p>Play the original falling-block challenge or earn tactical power-ups by clearing complete lines.</p>
         </div>
         <div class="privacy-note">
           <span class="privacy-dot" aria-hidden="true"></span>
@@ -121,6 +121,22 @@
               <strong data-status-label>Ready</strong>
             </div>
           </div>
+          <section class="mode-selector" aria-labelledby="mode-selector-title">
+            <div class="mode-selector-heading">
+              <strong id="mode-selector-title">Game mode</strong>
+              <span>Choose before playing</span>
+            </div>
+            <div class="mode-selector-grid">
+              <button type="button" data-game-mode="classic" aria-pressed="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h6v6H5zM13 5h6v6h-6zM5 13h6v6H5zM13 13h6v6h-6z" /></svg>
+                <span><strong>Classic</strong><small>Original rules</small></span>
+              </button>
+              <button type="button" data-game-mode="powerup" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-8 12h6l-1 8 9-13h-6z" /></svg>
+                <span><strong>Power-up</strong><small>Charge and rescue</small></span>
+              </button>
+            </div>
+          </section>
           <dl class="stats-grid">
             <div>
               <dt>Score</dt>
@@ -170,6 +186,39 @@
             <button class="game-button" type="button" data-game-action="pause" disabled>Pause</button>
             <button class="game-button" type="button" data-game-action="restart">Restart</button>
           </div>
+          <section class="power-up-panel" data-power-up-panel aria-labelledby="power-up-title" hidden>
+            <div class="power-up-heading">
+              <div>
+                <strong id="power-up-title">Power-up energy</strong>
+                <span data-charge-label>0 / 4 lines</span>
+              </div>
+              <output data-energy aria-label="Available power-up energy">0 / 3</output>
+            </div>
+            <div class="charge-track" aria-hidden="true">
+              <span data-charge-segment></span>
+              <span data-charge-segment></span>
+              <span data-charge-segment></span>
+              <span data-charge-segment></span>
+            </div>
+            <div class="power-up-grid">
+              <button type="button" data-power-up="rowBlast" disabled>
+                <kbd>1</kbd>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17h16M6 7h12M8 12h8M7 20h10" /></svg>
+                <span><strong>Row blast</strong><small>Clear bottom row</small></span>
+              </button>
+              <button type="button" data-power-up="queueShift" disabled>
+                <kbd>2</kbd>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h11l-3-3m3 3-3 3M19 17H8l3 3m-3-3 3-3" /></svg>
+                <span><strong>Shift next</strong><small>Send next to back</small></span>
+              </button>
+              <button type="button" data-power-up="slowTime" disabled>
+                <kbd>3</kbd>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l3 2M9 3h6" /></svg>
+                <span><strong>Slow time</strong><small data-power-state>10 seconds</small></span>
+              </button>
+            </div>
+            <p class="power-up-feedback" data-power-feedback>Clear four natural lines to earn one energy.</p>
+          </section>
           <div class="mobile-controls" data-mobile-controls aria-label="Touch controls">
             <div class="mobile-controls-heading">
               <strong>Touch controls</strong>
@@ -251,6 +300,7 @@
             <div><dt><kbd>↑</kbd><kbd>X</kbd></dt><dd>Rotate clockwise</dd></div>
             <div><dt><kbd>Z</kbd></dt><dd>Rotate counterclockwise</dd></div>
             <div><dt><kbd>Space</kbd></dt><dd>Hard drop</dd></div>
+            <div><dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></dt><dd>Use power-ups</dd></div>
             <div><dt><kbd>P</kbd><kbd>R</kbd></dt><dd>Pause or restart</dd></div>
           </dl>
         </aside>
@@ -260,17 +310,17 @@
         <div class="tool-seo__intro">
           <p class="section-index">About this game</p>
           <h2 id="tetris-guide-title">Play a classic falling-block puzzle online</h2>
-          <p>This free browser game includes the seven classic tetrominoes, ghost-piece placement, increasing gravity, line-clear scoring, and a high score saved only on this device.</p>
+          <p>This free browser game includes the seven classic tetrominoes, separate classic and power-up modes, increasing gravity, line-clear scoring, and local high scores.</p>
         </div>
         <div class="tool-seo__grid">
           <article><h3>Keyboard and touch controls</h3><p>Play with arrow keys on desktop or use the six large touch buttons on phones and tablets.</p></article>
-          <article><h3>Classic level progression</h3><p>Advance one level for every ten cleared lines as gravity accelerates from one second to a 100 millisecond minimum.</p></article>
+          <article><h3>Classic or tactical play</h3><p>Keep the original rules or earn one energy for every four natural line clears and spend it on three rescue tools.</p></article>
           <article><h3>Optional browser audio</h3><p>Enable synthesized background music and sound effects when you want them. Audio starts muted by default.</p></article>
         </div>
       </section>
 
       <p class="screen-reader-status" data-tetris-announcement aria-live="polite"></p>
     </main>
-    <script type="module" src="/assets/tetris-game.20260711.js"></script>
+    <script type="module" src="/assets/tetris-game.20260712.js"></script>
   </body>
 </html>
