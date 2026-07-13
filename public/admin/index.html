@@ -7,7 +7,7 @@
     <meta name="robots" content="noindex,nofollow" />
     <meta name="theme-color" content="#08111c" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/assets/admin.20260707.css" />
+    <link rel="stylesheet" href="/assets/admin.20260713.css" />
   </head>
   <body>
     <main class="admin-shell" data-admin-app>
@@ -38,6 +38,18 @@
           >
             <span>Posts</span>
             <small>Posts</small>
+          </button>
+          <button
+            class="tab"
+            type="button"
+            data-tab="vault"
+            data-label="Vault"
+            data-title="Encrypted password vault"
+            data-description="Decrypt passwords locally with a separate master password. D1 stores ciphertext only."
+            data-create-label=""
+          >
+            <span>Vault</span>
+            <small>Passwords</small>
           </button>
           <button
             class="tab"
@@ -399,10 +411,211 @@
               <p class="message" data-account-message></p>
             </form>
           </section>
+
+          <section class="panel" data-panel="vault" data-password-vault>
+            <p class="vault-message" data-vault-message role="status" aria-live="polite"></p>
+
+            <section class="vault-gate" data-vault-setup hidden>
+              <div class="vault-gate-copy">
+                <p>First-time setup</p>
+                <h2>Create your vault master password</h2>
+                <span>
+                  Encryption and decryption happen in this browser. The master password cannot be
+                  recovered by the server, so keep an offline copy in a safe place.
+                </span>
+              </div>
+              <form class="vault-gate-form" data-vault-setup-form>
+                <label>
+                  Master password
+                  <input
+                    name="masterPassword"
+                    type="password"
+                    minlength="14"
+                    maxlength="256"
+                    autocomplete="new-password"
+                    required
+                  />
+                </label>
+                <label>
+                  Confirm master password
+                  <input
+                    name="confirmMasterPassword"
+                    type="password"
+                    minlength="14"
+                    maxlength="256"
+                    autocomplete="new-password"
+                    required
+                  />
+                </label>
+                <button class="primary" type="submit">Create encrypted vault</button>
+              </form>
+            </section>
+
+            <section class="vault-gate" data-vault-locked hidden>
+              <div class="vault-gate-copy">
+                <p>Vault locked</p>
+                <h2>Unlock passwords on this device</h2>
+                <span>
+                  Your master password is used only in browser memory. It is never sent to the
+                  Worker, written to D1, or saved in browser storage.
+                </span>
+              </div>
+              <form class="vault-gate-form" data-vault-unlock-form>
+                <label>
+                  Master password
+                  <input
+                    name="masterPassword"
+                    type="password"
+                    maxlength="256"
+                    autocomplete="current-password"
+                    required
+                    autofocus
+                  />
+                </label>
+                <button class="primary" type="submit">Unlock vault</button>
+              </form>
+            </section>
+
+            <section class="vault-workspace" data-vault-unlocked hidden>
+              <div class="vault-toolbar">
+                <label class="vault-search">
+                  <span>Search decrypted entries</span>
+                  <input
+                    type="search"
+                    data-vault-search
+                    autocomplete="off"
+                    placeholder="Site, username, or URL"
+                  />
+                </label>
+                <div class="vault-toolbar-actions">
+                  <button type="button" data-vault-export>Export encrypted backup</button>
+                  <button type="button" data-vault-lock>Lock now</button>
+                </div>
+              </div>
+
+              <div class="vault-security-note">
+                <strong>Zero-knowledge storage</strong>
+                <span>
+                  Only encrypted envelopes leave this page. The vault auto-locks after five minutes
+                  of inactivity or one minute in the background.
+                </span>
+              </div>
+
+              <div class="vault-layout">
+                <aside class="vault-list-column">
+                  <div class="list-header vault-list-header">
+                    <strong>Password entries</strong>
+                    <span data-vault-entry-count>0 of 0</span>
+                  </div>
+                  <div class="vault-list" data-vault-entry-list></div>
+                  <button class="vault-new" type="button" data-vault-new>New password entry</button>
+                </aside>
+
+                <form class="editor vault-entry-editor" data-vault-entry-form autocomplete="off">
+                  <div class="editor-heading">
+                    <div>
+                      <p>Encrypted entry</p>
+                      <h2>Account details</h2>
+                    </div>
+                    <span>AES-256-GCM</span>
+                  </div>
+                  <input name="id" type="hidden" />
+                  <section class="form-section">
+                    <h3>Login</h3>
+                    <label>
+                      Name
+                      <input name="title" maxlength="200" placeholder="GitHub, email, server…" required />
+                    </label>
+                    <label>
+                      Username or email
+                      <input name="username" maxlength="320" autocomplete="off" />
+                    </label>
+                    <label>
+                      Password
+                      <span class="field-with-actions">
+                        <input
+                          name="password"
+                          type="password"
+                          maxlength="1024"
+                          autocomplete="new-password"
+                          required
+                        />
+                        <button type="button" data-vault-reveal-password aria-pressed="false">Show</button>
+                        <button type="button" data-vault-copy-password>Copy</button>
+                      </span>
+                    </label>
+                    <button class="vault-generate" type="button" data-vault-generate>
+                      Generate a 24-character password locally
+                    </button>
+                  </section>
+                  <section class="form-section">
+                    <h3>Reference</h3>
+                    <label>
+                      URL
+                      <input name="url" maxlength="2048" inputmode="url" placeholder="https:// or ssh://" />
+                    </label>
+                    <label>
+                      Notes
+                      <textarea name="notes" rows="5" maxlength="5000"></textarea>
+                    </label>
+                  </section>
+                  <div class="actions">
+                    <button class="primary" type="submit">Encrypt and save</button>
+                    <button class="danger" type="button" data-vault-delete disabled>Delete</button>
+                  </div>
+                </form>
+              </div>
+
+              <details class="vault-key-settings">
+                <summary>Change vault master password</summary>
+                <form data-vault-change-form>
+                  <p>
+                    This re-encrypts the random vault key; individual password entries do not need
+                    to be uploaded again.
+                  </p>
+                  <div class="row">
+                    <label>
+                      Current master password
+                      <input
+                        name="currentMasterPassword"
+                        type="password"
+                        maxlength="256"
+                        autocomplete="current-password"
+                        required
+                      />
+                    </label>
+                    <label>
+                      New master password
+                      <input
+                        name="newMasterPassword"
+                        type="password"
+                        minlength="14"
+                        maxlength="256"
+                        autocomplete="new-password"
+                        required
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    Confirm new master password
+                    <input
+                      name="confirmMasterPassword"
+                      type="password"
+                      minlength="14"
+                      maxlength="256"
+                      autocomplete="new-password"
+                      required
+                    />
+                  </label>
+                  <button class="primary" type="submit">Change master password</button>
+                </form>
+              </details>
+            </section>
+          </section>
         </section>
       </section>
     </main>
 
-    <script type="module" src="/assets/admin.20260707.js"></script>
+    <script type="module" src="/assets/admin.20260713.js"></script>
   </body>
 </html>

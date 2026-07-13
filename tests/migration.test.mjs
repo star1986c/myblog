@@ -11,6 +11,10 @@ const defaultAdminMigration = await readFile(
   new URL("../migrations/0003_default_admin_account.sql", import.meta.url),
   "utf8",
 );
+const passwordVaultMigration = await readFile(
+  new URL("../migrations/0004_password_vault.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -36,4 +40,16 @@ test("default admin migration seeds a D1-backed login account", () => {
   assert.match(defaultAdminMigration, /INSERT INTO admin_accounts/);
   assert.match(defaultAdminMigration, /must_change_password/);
   assert.match(defaultAdminMigration, /session_secret/);
+});
+
+test("password vault migration stores only versioned encrypted payloads", () => {
+  assert.match(passwordVaultMigration, /CREATE TABLE IF NOT EXISTS password_vaults/);
+  assert.match(passwordVaultMigration, /CREATE TABLE IF NOT EXISTS password_vault_entries/);
+  assert.match(passwordVaultMigration, /wrapped_key TEXT NOT NULL/);
+  assert.match(passwordVaultMigration, /ciphertext TEXT NOT NULL/);
+  assert.match(passwordVaultMigration, /nonce TEXT NOT NULL/);
+  assert.match(passwordVaultMigration, /PBKDF2-SHA-256/);
+  assert.match(passwordVaultMigration, /DELETE FROM admin_settings WHERE key = 'session_secret'/);
+  assert.doesNotMatch(passwordVaultMigration, /(?:^|\s)(?:username|url|notes)\s+TEXT/im);
+  assert.doesNotMatch(passwordVaultMigration, /(?:^|\s)password\s+TEXT/im);
 });

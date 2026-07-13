@@ -2,14 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { lookupVisitorNetworkInfo } from "../src/worker.js";
 import { createPasswordHash, readSession, signSession, verifyPasswordHash } from "../src/auth.js";
+import { bytesToBase64Url } from "../public/assets/password-vault-core.20260713.js";
 
 class FakeD1 {
-  constructor({ posts = [], pages = [], categories = [], media = [], adminAccount = null, settings = {} } = {}) {
+  constructor({
+    posts = [],
+    pages = [],
+    categories = [],
+    media = [],
+    adminAccount = null,
+    settings = {},
+    passwordVault = null,
+    passwordVaultEntries = [],
+  } = {}) {
     this.posts = posts;
     this.pages = pages;
     this.categories = categories;
     this.media = media;
     this.adminAccount = adminAccount;
+    this.passwordVault = passwordVault;
+    this.passwordVaultEntries = passwordVaultEntries;
     this.settings = {
       session_secret: "test-session-secret",
       ...settings,
@@ -37,6 +49,10 @@ class FakeStatement {
   }
 
   async all() {
+    if (this.sql.includes("FROM password_vault_entries")) {
+      return { results: this.db.passwordVaultEntries };
+    }
+
     if (this.sql.includes("FROM media_assets")) {
       return { results: this.db.media };
     }
@@ -69,6 +85,10 @@ class FakeStatement {
   }
 
   async first() {
+    if (this.sql.includes("FROM password_vaults")) {
+      return this.db.passwordVault;
+    }
+
     if (this.sql.includes("FROM admin_accounts")) {
       return this.db.adminAccount;
     }
@@ -92,6 +112,60 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.includes("INSERT INTO password_vaults")) {
+      const [id, version, kdf, iterations, salt, wrappedKey, wrapNonce, createdAt, updatedAt] = this.params;
+      this.db.passwordVault = {
+        id,
+        version,
+        kdf,
+        iterations,
+        salt,
+        wrappedKey,
+        wrapNonce,
+        createdAt,
+        updatedAt,
+      };
+    }
+
+    if (this.sql.includes("UPDATE password_vaults")) {
+      const [version, kdf, iterations, salt, wrappedKey, wrapNonce, updatedAt, id] = this.params;
+      this.db.passwordVault = {
+        ...this.db.passwordVault,
+        id,
+        version,
+        kdf,
+        iterations,
+        salt,
+        wrappedKey,
+        wrapNonce,
+        updatedAt,
+      };
+    }
+
+    if (this.sql.includes("INSERT INTO password_vault_entries")) {
+      const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
+      this.db.passwordVaultEntries.unshift({
+        id,
+        version,
+        ciphertext,
+        nonce,
+        createdAt,
+        updatedAt,
+      });
+    }
+
+    if (this.sql.includes("UPDATE password_vault_entries")) {
+      const [version, ciphertext, nonce, updatedAt, id] = this.params;
+      this.db.passwordVaultEntries = this.db.passwordVaultEntries.map((entry) => (
+        entry.id === id ? { ...entry, version, ciphertext, nonce, updatedAt } : entry
+      ));
+    }
+
+    if (this.sql.includes("DELETE FROM password_vault_entries")) {
+      const [id] = this.params;
+      this.db.passwordVaultEntries = this.db.passwordVaultEntries.filter((entry) => entry.id !== id);
+    }
+
     if (this.sql.includes("UPDATE admin_accounts")) {
       const [username, passwordHash, mustChangePassword, updatedAt, id] = this.params;
       this.db.updatedAdminAccount = {
@@ -172,6 +246,11 @@ function makeEnv(overrides = {}) {
         return { success: true };
       },
     },
+    AUTH_LOGIN_RATE_LIMITER: {
+      async limit() {
+        return { success: true };
+      },
+    },
     ...overrides,
   };
 }
@@ -199,6 +278,27 @@ function makeWorldClockRequest() {
       "X-AI-Build-Lab-Request": "world-clock",
     },
   });
+}
+
+function makeEncryptedVault(seed = 7) {
+  return {
+    id: "default",
+    version: 1,
+    kdf: "PBKDF2-SHA-256",
+    iterations: 600_000,
+    salt: bytesToBase64Url(new Uint8Array(16).fill(seed)),
+    wrappedKey: bytesToBase64Url(new Uint8Array(48).fill(seed + 1)),
+    wrapNonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 2)),
+  };
+}
+
+function makeEncryptedEntry(id = "entry_12345678", seed = 10) {
+  return {
+    id,
+    version: 1,
+    ciphertext: bytesToBase64Url(new Uint8Array(48).fill(seed)),
+    nonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 1)),
+  };
 }
 
 function makeMemoryCache() {
@@ -632,7 +732,7 @@ test("admin post list requires a valid session", async () => {
   assert.equal(response.status, 401);
 });
 
-test("admin login uses the D1 default account without credential secrets", async () => {
+test("admin login uses the D1 account with a Worker session secret", async () => {
   const passwordHash = await createPasswordHash("default-password", {
     iterations: 1000,
     salt: new Uint8Array(16).fill(3),
@@ -644,14 +744,11 @@ test("admin login uses the D1 default account without credential secrets", async
       passwordHash,
       mustChangePassword: 1,
     },
-    settings: {
-      session_secret: "db-session-secret",
-    },
   });
   const env = makeEnv({
     ADMIN_USERNAME: undefined,
     ADMIN_PASSWORD_HASH: undefined,
-    SESSION_SECRET: undefined,
+    SESSION_SECRET: "worker-session-secret",
     BLOG_DB: db,
   });
 
@@ -675,10 +772,68 @@ test("admin login uses the D1 default account without credential secrets", async
   assert.equal(body.user.mustChangePassword, true);
   const session = await readSession({
     cookieHeader: response.headers.get("Set-Cookie"),
-    secret: "db-session-secret",
+    secret: "worker-session-secret",
     now: Date.now(),
   });
   assert.equal(session.username, "admin");
+});
+
+test("admin login fails closed when the Worker session secret is missing", async () => {
+  const passwordHash = await createPasswordHash("default-password", {
+    iterations: 1000,
+    salt: new Uint8Array(16).fill(4),
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: "default-password" }),
+    }),
+    makeEnv({
+      ADMIN_USERNAME: undefined,
+      ADMIN_PASSWORD_HASH: undefined,
+      SESSION_SECRET: undefined,
+      BLOG_DB: new FakeD1({
+        adminAccount: { id: "default", username: "admin", passwordHash, mustChangePassword: 0 },
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 503);
+});
+
+test("admin login is rate limited without exposing the username or IP in the limiter key", async () => {
+  const passwordHash = await createPasswordHash("default-password", {
+    iterations: 1000,
+    salt: new Uint8Array(16).fill(6),
+  });
+  let limiterKey = "";
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/login", {
+      method: "POST",
+      headers: {
+        "CF-Connecting-IP": "203.0.113.8",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ username: "admin", password: "default-password" }),
+    }),
+    makeEnv({
+      BLOG_DB: new FakeD1({
+        adminAccount: { id: "default", username: "admin", passwordHash, mustChangePassword: 0 },
+      }),
+      AUTH_LOGIN_RATE_LIMITER: {
+        async limit({ key }) {
+          limiterKey = key;
+          return { success: false };
+        },
+      },
+    }),
+  );
+
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Retry-After"), "60");
+  assert.match(limiterKey, /^admin-login:[0-9a-f]{64}$/);
+  assert.doesNotMatch(limiterKey, /203\.0\.113\.8/);
 });
 
 test("public pages API only returns published and public pages", async () => {
@@ -822,4 +977,123 @@ test("admin media records use a manually entered URL without R2", async () => {
   assert.equal(db.insertedMedia[0].url, "https://cdn.example.com/hero.png");
   assert.equal(db.insertedMedia[0].objectKey, "https://cdn.example.com/hero.png");
   assert.equal(db.insertedMedia[0].filename, "hero.png");
+});
+
+test("password vault API requires an authenticated administrator session", async () => {
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/password-vault"),
+    makeEnv(),
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("administrator can create, read, update, and delete encrypted password vault data", async () => {
+  const db = new FakeD1();
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "vault-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const writeHeaders = {
+    "Content-Type": "application/json",
+    Cookie: cookie,
+    "X-CSRF-Token": "vault-csrf-token",
+  };
+  const vault = makeEncryptedVault();
+  const entry = makeEncryptedEntry();
+
+  const createVaultResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/password-vault", {
+      method: "POST",
+      headers: writeHeaders,
+      body: JSON.stringify(vault),
+    }),
+    env,
+  );
+  assert.equal(createVaultResponse.status, 201);
+
+  const createEntryResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/password-vault/entries", {
+      method: "POST",
+      headers: writeHeaders,
+      body: JSON.stringify(entry),
+    }),
+    env,
+  );
+  assert.equal(createEntryResponse.status, 201);
+
+  const readResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/password-vault", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  const readBody = await readResponse.json();
+  assert.equal(readResponse.status, 200);
+  assert.equal(readBody.vault.kdf, "PBKDF2-SHA-256");
+  assert.deepEqual(readBody.entries.map((item) => item.id), [entry.id]);
+  assert.doesNotMatch(JSON.stringify(readBody), /password|username|example\.com/i);
+
+  const changedEntry = makeEncryptedEntry(entry.id, 22);
+  const updateResponse = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/password-vault/entries/${entry.id}`, {
+      method: "PUT",
+      headers: writeHeaders,
+      body: JSON.stringify(changedEntry),
+    }),
+    env,
+  );
+  assert.equal(updateResponse.status, 200);
+  assert.equal(db.passwordVaultEntries[0].ciphertext, changedEntry.ciphertext);
+
+  const deleteResponse = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/password-vault/entries/${entry.id}`, {
+      method: "DELETE",
+      headers: writeHeaders,
+    }),
+    env,
+  );
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(db.passwordVaultEntries.length, 0);
+});
+
+test("password vault API rejects plaintext secret fields and missing CSRF tokens", async () => {
+  const db = new FakeD1({ passwordVault: makeEncryptedVault() });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "vault-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const entry = makeEncryptedEntry();
+
+  const csrfResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/password-vault/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(entry),
+    }),
+    env,
+  );
+  assert.equal(csrfResponse.status, 403);
+
+  const plaintextResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/password-vault/entries", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "vault-csrf-token",
+      },
+      body: JSON.stringify({ ...entry, password: "must-never-reach-d1" }),
+    }),
+    env,
+  );
+  assert.equal(plaintextResponse.status, 400);
+  assert.equal(db.passwordVaultEntries.length, 0);
 });

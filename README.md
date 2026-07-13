@@ -9,7 +9,9 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
 - Vendors Three.js locally to avoid a third-party CDN request on first load.
 - Adds `favicon.svg`, `sitemap.xml`, and a robots file with AI crawler signals.
 - Adds a standalone JSON formatter at `/json/`.
-- Adds a standalone secure password generator at `/password/` with optional local-only history.
+- Adds a standalone secure password generator at `/password/` without browser password persistence.
+- Adds a private zero-knowledge password vault inside `/admin/`; the master password and plaintext
+  entries stay in browser memory while D1 stores only versioned AES-GCM ciphertext.
 - Adds a standalone blog admin console at `/admin/`, public blog pages under `/blog/`,
   D1-backed content storage, and manually entered media URL records.
 - Keeps the Worker name as `wispy-cloud-0978`, matching the current Cloudflare custom domain binding.
@@ -41,19 +43,23 @@ npx wrangler d1 migrations apply superstar1014-blog --remote
 ```
 
 Apply migrations before deployment. The migrations seed a D1-backed administrator
-account so the site can be tested without R2 or credential secrets.
+account and add encrypted password-vault storage.
 
 Default administrator:
 
 - Username: `admin`
 - Password: generated during setup; change it immediately from the `Account` tab.
 
-`SESSION_SECRET` can still be set as an encrypted Worker secret to override the
-D1-seeded session secret:
+`SESSION_SECRET` is required for administrator sessions and must be configured as
+an encrypted Worker secret before deployment:
 
 ```bash
 npx wrangler secret put SESSION_SECRET
 ```
+
+The password-vault migration removes the legacy D1 session-secret fallback. Losing
+`SESSION_SECRET` signs out existing sessions but does not affect encrypted vault data.
+The separate vault master password is never stored by the Worker and cannot be recovered.
 
 New articles and pages default to `draft` and `private`. A public page only shows
 content where `status = published` and `visibility = public`.

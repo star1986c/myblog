@@ -25,7 +25,11 @@ const tetrisCss = [
   await readFile(new URL("../public/assets/tetris-page.20260711.css", import.meta.url), "utf8"),
 ].join("\n");
 const passwordJs = await readFile(
-  new URL("../public/assets/password-tool.20260710.js", import.meta.url),
+  new URL("../public/assets/password-tool.20260713.js", import.meta.url),
+  "utf8",
+);
+const passwordVaultCoreJs = await readFile(
+  new URL("../public/assets/password-vault-core.20260713.js", import.meta.url),
   "utf8",
 );
 const visitorNetworkJs = await readFile(
@@ -41,8 +45,15 @@ const worldClockJs = await readFile(
   "utf8",
 );
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
-const adminCss = await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8");
-const adminJs = await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8");
+const adminCss = [
+  await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8"),
+  await readFile(new URL("../public/assets/admin.20260713.css", import.meta.url), "utf8"),
+].join("\n");
+const adminJs = [
+  await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8"),
+  await readFile(new URL("../public/assets/admin.20260713.js", import.meta.url), "utf8"),
+  await readFile(new URL("../public/assets/admin-vault.20260713.js", import.meta.url), "utf8"),
+].join("\n");
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
 test("home page links to the JSON tool without embedding the formatter", () => {
@@ -157,7 +168,7 @@ test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
 });
 
-test("password generator includes secure local controls and history", () => {
+test("password generator stays local and links to the encrypted private vault", () => {
   assert.match(passwordHtml, /<main class="password-shell" data-password-tool>/);
   assert.match(passwordHtml, /href="https:\/\/superstar1014\.qzz\.io\/password\/"/);
   assert.match(passwordHtml, /href="\/assets\/tool-brand\.20260710\.css"/);
@@ -166,11 +177,12 @@ test("password generator includes secure local controls and history", () => {
   assert.match(passwordHtml, /data-password-excluded/);
   assert.match(passwordHtml, /data-password-length/);
   assert.match(passwordHtml, /data-password-count/);
-  assert.match(passwordHtml, /data-password-history-enabled/);
-  assert.match(passwordHtml, /data-password-history/);
-  assert.match(passwordHtml, /src="\/assets\/password-tool\.20260710\.js"/);
+  assert.match(passwordHtml, /href="\/assets\/password-page\.20260713\.css"/);
+  assert.match(passwordHtml, /href="\/admin\/#vault"/);
+  assert.match(passwordHtml, /src="\/assets\/password-tool\.20260713\.js"/);
   assert.match(passwordJs, /generatePasswords/);
-  assert.match(passwordJs, /localStorage/);
+  assert.doesNotMatch(passwordHtml, /data-password-history|plain text in this browser/);
+  assert.doesNotMatch(passwordJs, /localStorage|sessionStorage|indexedDB/);
 });
 
 test("sitemap includes the standalone password generator URL", () => {
@@ -257,8 +269,8 @@ test("sitemap includes the standalone Tetris URL", () => {
 
 test("admin console is served from a standalone page with private article defaults", () => {
   assert.match(adminHtml, /data-admin-app/);
-  assert.match(adminHtml, /href="\/assets\/admin\.20260707\.css"/);
-  assert.match(adminHtml, /src="\/assets\/admin\.20260707\.js"/);
+  assert.match(adminHtml, /href="\/assets\/admin\.20260713\.css"/);
+  assert.match(adminHtml, /src="\/assets\/admin\.20260713\.js"/);
   assert.match(adminHtml, /name="visibility"/);
   assert.match(adminHtml, /value="private" selected/);
   assert.match(adminHtml, /name="status"/);
@@ -277,6 +289,25 @@ test("admin console includes an account password change panel", () => {
   assert.match(adminHtml, /data-account-form/);
   assert.match(adminHtml, /name="currentPassword"/);
   assert.match(adminHtml, /name="newPassword"/);
+});
+
+test("admin console includes a zero-knowledge encrypted password vault", () => {
+  assert.match(adminHtml, /data-tab="vault"/);
+  assert.match(adminHtml, /data-password-vault/);
+  assert.match(adminHtml, /data-vault-setup-form/);
+  assert.match(adminHtml, /data-vault-unlock-form/);
+  assert.match(adminHtml, /data-vault-entry-form/);
+  assert.match(adminHtml, /data-vault-change-form/);
+  assert.match(adminHtml, /data-vault-export/);
+  assert.match(adminJs, /encryptPasswordVaultEntry/);
+  assert.match(adminJs, /\/api\/admin\/password-vault/);
+  assert.match(adminJs, /IDLE_LOCK_MS = 5 \* 60 \* 1000/);
+  assert.match(adminJs, /HIDDEN_LOCK_MS = 60 \* 1000/);
+  assert.doesNotMatch(adminJs, /localStorage|sessionStorage|indexedDB/);
+  assert.match(passwordVaultCoreJs, /PBKDF2-SHA-256/);
+  assert.match(passwordVaultCoreJs, /name: "AES-GCM"/);
+  assert.match(passwordVaultCoreJs, /additionalData/);
+  assert.match(passwordVaultCoreJs, /600_000/);
 });
 
 test("admin console presents a polished content workspace", () => {
@@ -301,4 +332,6 @@ test("admin login form is forcibly hidden after authentication", () => {
   assert.match(adminCss, /\.sidebar\s+\.tabs/);
   assert.match(adminCss, /body\.is-authenticated\s+\.tabs/);
   assert.match(adminCss, /\.is-authenticated\s+\[data-console\]/);
+  assert.match(adminCss, /@media \(max-width: 760px\)/);
+  assert.match(adminCss, /\.vault-layout/);
 });

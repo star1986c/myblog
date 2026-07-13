@@ -49,7 +49,7 @@
     <link rel="preload" href="/assets/password-page.20260710.css" as="style" />
     <link rel="modulepreload" href="/assets/password-tool-core.20260710.js" />
     <link rel="modulepreload" href="/assets/password-tool.20260710.js" />
-    <link rel="stylesheet" href="/assets/password-page.20260710.css" />
+    <link rel="stylesheet" href="/assets/password-page.20260713.css" />
     <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
   </head>
   <body>
@@ -238,57 +238,32 @@
             </div>
           </div>
 
-          <div class="results-footer">
-            <label class="history-consent">
-              <input type="checkbox" data-password-history-enabled />
-              <span class="choice-mark" aria-hidden="true"></span>
-              <span>
-                <strong>Save password history</strong>
-                <small>Stored only in this browser; do not enable on a shared device</small>
-              </span>
-            </label>
+          <div class="results-footer vault-promo">
+            <span class="vault-promo-copy">
+              <strong>Need to keep a password?</strong>
+              <small>Open the private vault to encrypt it in your browser before saving to D1.</small>
+            </span>
+            <a class="vault-promo-link" href="/admin/#vault">Open encrypted vault</a>
           </div>
         </section>
       </section>
-
-      <details class="history-panel" data-password-history>
-        <summary>
-          <span>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 2" />
-            </svg>
-            <strong>Password history</strong>
-            <small data-history-count>No saved passwords</small>
-          </span>
-          <svg class="summary-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5" /></svg>
-        </summary>
-        <div class="history-content">
-          <div class="history-toolbar">
-            <p>Saved passwords are stored as plain text in this browser's localStorage.</p>
-            <button class="danger-button" type="button" data-clear-history disabled>Clear history</button>
-          </div>
-          <div class="history-list" data-history-list>
-            <p class="history-empty">Enable password history to keep newly generated passwords here.</p>
-          </div>
-        </div>
-      </details>
 
       <section class="tool-seo" aria-labelledby="password-guide-title">
         <div class="tool-seo__intro">
           <p class="section-index">About this tool</p>
           <h2 id="password-guide-title">Generate strong passwords on your device</h2>
-          <p>The generator uses the browser Web Crypto API for secure randomness. Passwords are created locally and are not sent to AI Build Lab or any third-party service.</p>
+          <p>The generator uses the browser Web Crypto API for secure randomness. Generated passwords remain on this page and are never stored automatically.</p>
         </div>
         <div class="tool-seo__grid">
           <article><h3>Custom password rules</h3><p>Choose lowercase letters, uppercase letters, numbers, and symbols, then set a length from 8 to 64 characters.</p></article>
           <article><h3>Avoid ambiguous characters</h3><p>Exclude characters that are difficult to distinguish or provide a custom exclusion list for your own requirements.</p></article>
-          <article><h3>Optional local history</h3><p>Keep generated passwords in this browser only when needed, with a clear warning for shared devices.</p></article>
+          <article><h3>Encrypted password vault</h3><p>Sign in to the private vault when you need encrypted D1 storage protected by a separate master password.</p></article>
         </div>
       </section>
 
       <p class="sr-only" data-password-announcement aria-live="polite"></p>
     </main>
 
-    <script type="module" src="/assets/password-tool.20260710.js"></script>
+    <script type="module" src="/assets/password-tool.20260713.js"></script>
   </body>
 </html>

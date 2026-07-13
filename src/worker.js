@@ -15,7 +15,6 @@ import {
   deletePage,
   deletePost,
   getAdminAccount,
-  getAdminSetting,
   getCategoryBySlug,
   getPublicPageBySlug,
   getPublicPostBySlug,
@@ -32,6 +31,14 @@ import {
   updatePage,
   updatePost,
 } from "./blog-repository.js";
+import {
+  createPasswordVault,
+  createPasswordVaultEntry,
+  deletePasswordVaultEntry,
+  readPasswordVault,
+  updatePasswordVault,
+  updatePasswordVaultEntry,
+} from "./password-vault-repository.js";
 import {
   renderBlogIndex,
   renderBlogNotConfigured,
@@ -689,7 +696,7 @@ async function handleLogin(request, env) {
   const db = requireDatabase(env);
   const account = await getAdminAccount(db);
   const credentials = account || legacyAdminAccount(env);
-  const sessionSecret = await resolveSessionSecret(env, db);
+  const sessionSecret = resolveSessionSecret(env);
 
   if (!credentials || !sessionSecret) {
     return jsonResponse({ error: "Authentication is not configured." }, { status: 503 });
@@ -698,6 +705,13 @@ async function handleLogin(request, env) {
   const body = await readJson(request);
   const username = typeof body.username === "string" ? body.username : "";
   const password = typeof body.password === "string" ? body.password : "";
+  const allowed = await allowAdminLoginRequest(request, env, username);
+  if (!allowed) {
+    return jsonResponse(
+      { error: "Too many sign-in attempts. Try again later." },
+      { status: 429, headers: { "Retry-After": "60" } },
+    );
+  }
   const passwordMatches = await verifyPasswordHash(password, credentials.passwordHash);
 
   if (username !== credentials.username || !passwordMatches) {
@@ -727,6 +741,17 @@ async function handleLogin(request, env) {
   );
 }
 
+async function allowAdminLoginRequest(request, env, username) {
+  const limiter = env.AUTH_LOGIN_RATE_LIMITER;
+  if (typeof limiter?.limit !== "function") {
+    throw new ServiceError("Authentication protection is unavailable.", 503);
+  }
+  const ip = visitorClientIp(request) || "unknown";
+  const key = await sha256Hex(`${ip}\n${String(username || "").trim().toLowerCase()}`);
+  const result = await limiter.limit({ key: `admin-login:${key}` });
+  return result.success;
+}
+
 async function handleAdminApi(request, env, path) {
   const session = await readAdminSession(request, env);
   if (!session) {
@@ -749,6 +774,39 @@ async function handleAdminApi(request, env, path) {
     }
     if (request.method === "PUT") {
       return await handleAccountUpdate(request, env, db);
+    }
+  }
+
+  if (path === "/api/admin/password-vault") {
+    if (request.method === "GET") {
+      return jsonResponse(await readPasswordVault(db));
+    }
+    if (request.method === "POST") {
+      return jsonResponse(
+        { vault: await createPasswordVault(db, await readJson(request)) },
+        { status: 201 },
+      );
+    }
+    if (request.method === "PUT") {
+      return jsonResponse({ vault: await updatePasswordVault(db, await readJson(request)) });
+    }
+  }
+
+  if (path === "/api/admin/password-vault/entries" && request.method === "POST") {
+    return jsonResponse(
+      { entry: await createPasswordVaultEntry(db, await readJson(request)) },
+      { status: 201 },
+    );
+  }
+
+  if (path.startsWith("/api/admin/password-vault/entries/")) {
+    const id = decodeURIComponent(path.slice("/api/admin/password-vault/entries/".length));
+    if (request.method === "PUT") {
+      return jsonResponse({ entry: await updatePasswordVaultEntry(db, id, await readJson(request)) });
+    }
+    if (request.method === "DELETE") {
+      await deletePasswordVaultEntry(db, id);
+      return jsonResponse({ ok: true });
     }
   }
 
@@ -999,18 +1057,15 @@ function isDynamicContentPath(pathname) {
 }
 
 async function readAdminSession(request, env) {
-  const sessionSecret = await resolveSessionSecret(env, env.BLOG_DB);
+  const sessionSecret = resolveSessionSecret(env);
   return await readSession({
     cookieHeader: request.headers.get("Cookie"),
     secret: sessionSecret,
   });
 }
 
-async function resolveSessionSecret(env, db) {
-  if (env.SESSION_SECRET) {
-    return env.SESSION_SECRET;
-  }
-  return db ? await getAdminSetting(db, "session_secret") : "";
+function resolveSessionSecret(env) {
+  return env.SESSION_SECRET || "";
 }
 
 function legacyAdminAccount(env) {
@@ -1051,7 +1106,7 @@ async function handleAccountUpdate(request, env, db) {
     passwordHash: await createPasswordHash(newPassword),
     mustChangePassword: 0,
   });
-  const sessionSecret = await resolveSessionSecret(env, db);
+  const sessionSecret = resolveSessionSecret(env);
   const cookie = await signSession({
     secret: sessionSecret,
     username: updated.username,
