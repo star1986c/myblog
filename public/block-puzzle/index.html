@@ -3,32 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Mobile Block Puzzle Game | AI Build Lab</title>
+    <title>Mobile Match-3 Puzzle Game | AI Build Lab</title>
     <meta
       name="description"
-      content="Play a free mobile-first 8x8 block puzzle with tap-to-place controls, combos, automatic rescue power-ups, and a local high score."
+      content="Play a free mobile-first match-3 puzzle with swipe and tap controls, cascading combos, automatic rockets, rainbow gems, blast gems, and a local high score."
     />
-    <meta name="theme-color" content="#05070b" />
+    <meta name="theme-color" content="#080817" />
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     <link rel="canonical" href="https://superstar1014.qzz.io/block-puzzle/" />
 
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:site_name" content="AI Build Lab" />
-    <meta property="og:title" content="Mobile Block Puzzle Game | AI Build Lab" />
-    <meta property="og:description" content="An 8x8 tap-to-place puzzle designed for comfortable phone play." />
+    <meta property="og:title" content="Mobile Match-3 Puzzle Game | AI Build Lab" />
+    <meta property="og:description" content="Swipe gems, build cascades, and create automatic power-ups in a 30-move mobile challenge." />
     <meta property="og:url" content="https://superstar1014.qzz.io/block-puzzle/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Mobile Block Puzzle Game | AI Build Lab" />
-    <meta name="twitter:description" content="Clear rows and columns, build combos, and trigger automatic rescue power-ups." />
+    <meta name="twitter:title" content="Mobile Match-3 Puzzle Game | AI Build Lab" />
+    <meta name="twitter:description" content="A colorful match-3 challenge designed for comfortable phone play." />
 
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": ["VideoGame", "WebApplication"],
-        "name": "AI Build Lab Mobile Block Puzzle",
+        "name": "AI Build Lab Mobile Match Three",
         "url": "https://superstar1014.qzz.io/block-puzzle/",
-        "description": "A free mobile-first 8x8 tap-to-place block puzzle with automatic rescue power-ups.",
+        "description": "A free mobile-first 8x8 match-three puzzle with cascading combos and automatic special gems.",
         "applicationCategory": "GameApplication",
         "gamePlatform": "Mobile web browser",
         "operatingSystem": "Any",
@@ -41,23 +41,22 @@
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
-    <link rel="preload" href="/assets/block-puzzle.20260716.css" as="style" />
-    <link rel="modulepreload" href="/assets/block-puzzle-core.20260716.js" />
-    <link rel="modulepreload" href="/assets/block-puzzle.20260716.js" />
-    <link rel="stylesheet" href="/assets/block-puzzle.20260716.css" />
+    <link rel="preload" href="/assets/match-three.20260716.css" as="style" />
+    <link rel="modulepreload" href="/assets/match-three-core.20260716.js" />
+    <link rel="modulepreload" href="/assets/match-three.20260716.js" />
+    <link rel="stylesheet" href="/assets/match-three.20260716.css" />
   </head>
   <body>
-    <a class="skip-link" href="#puzzle-game">Skip to the block puzzle</a>
-    <main class="puzzle-shell" data-block-puzzle data-state="ready">
-      <header class="puzzle-sitebar">
-        <a class="puzzle-brand" href="/" aria-label="Back to AI Build Lab home">
+    <a class="skip-link" href="#match-game">Skip to the match-three game</a>
+    <main class="match-shell" data-match-three data-state="ready">
+      <header class="match-sitebar">
+        <a class="match-brand" href="/" aria-label="Back to AI Build Lab home">
           <svg viewBox="0 0 48 48" aria-hidden="true">
-            <rect width="48" height="48" rx="10" fill="#05070B" />
-            <rect x="3.5" y="3.5" width="41" height="41" rx="8" fill="none" stroke="#172638" />
-            <path d="M15.5 16L9.5 24L15.5 32" fill="none" stroke="#79D9F8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M32.5 16L38.5 24L32.5 32" fill="none" stroke="#7DE2B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M24 10.5L27.8 20.2L37.5 24L27.8 27.8L24 37.5L20.2 27.8L10.5 24L20.2 20.2L24 10.5Z" fill="#FFCC67" />
-            <path d="M24 17.5L26 22L30.5 24L26 26L24 30.5L22 26L17.5 24L22 22L24 17.5Z" fill="#05070B" opacity="0.72" />
+            <rect width="48" height="48" rx="10" fill="#080817" />
+            <rect x="3.5" y="3.5" width="41" height="41" rx="8" fill="none" stroke="#302755" />
+            <circle cx="16" cy="16" r="6" fill="#F05EA8" />
+            <path d="M30 10l7 7-7 7-7-7 7-7Z" fill="#A78BFA" />
+            <path d="m17 27 4 4-4 7-7-7 7-4Z" fill="#6EE7B7" />
           </svg>
           <span><strong>AI Build Lab</strong><small>Mobile game lab</small></span>
         </a>
@@ -67,24 +66,25 @@
         </a>
       </header>
 
-      <section class="puzzle-intro" aria-labelledby="puzzle-title">
-        <p><span aria-hidden="true"></span> Mobile puzzle</p>
-        <h1 id="puzzle-title">Place blocks.<br /><em>Clear the grid.</em></h1>
-        <p>Choose one of three shapes, then tap a highlighted space. Complete rows and columns to build combos and charge automatic rescue power-ups.</p>
+      <section class="match-intro" aria-labelledby="match-title">
+        <p><span aria-hidden="true"></span> Mobile match three</p>
+        <h1 id="match-title">Swipe. Match.<br /><em>Build a cascade.</em></h1>
+        <p>Swap neighboring gems to match three or more. Create rockets, rainbow gems, and blast gems automatically while chasing the goal in 30 moves.</p>
         <ul aria-label="Game highlights">
-          <li>One-hand friendly</li>
-          <li>No timer</li>
+          <li>30 move challenge</li>
+          <li>Automatic power-ups</li>
           <li>Runs locally</li>
         </ul>
       </section>
 
-      <section class="puzzle-game" id="puzzle-game" aria-label="8 by 8 block puzzle game">
-        <header class="puzzle-hud">
+      <section class="match-game" id="match-game" aria-label="8 by 8 match-three puzzle game">
+        <header class="match-hud">
           <div class="hud-title">
-            <span>8×8 puzzle</span>
+            <span>Match 3</span>
             <strong data-status-label>Ready</strong>
           </div>
           <dl class="hud-stats">
+            <div><dt>Moves</dt><dd data-moves>30</dd></div>
             <div><dt>Score</dt><dd data-score>0</dd></div>
             <div><dt>Best</dt><dd data-best-score>0</dd></div>
           </dl>
@@ -98,13 +98,18 @@
           </div>
         </header>
 
-        <div class="puzzle-board-zone">
-          <div class="puzzle-board-frame" data-board-frame>
-            <div class="puzzle-board" data-puzzle-board role="grid" aria-label="8 by 8 puzzle board"></div>
-            <div class="puzzle-overlay" data-overlay>
-              <span data-overlay-kicker>Mobile-first</span>
-              <strong data-overlay-title>Ready to play?</strong>
-              <p data-overlay-message>Select a block, then tap a highlighted space on the grid.</p>
+        <section class="goal-status" aria-label="Score goal">
+          <div><span>Goal</span><strong data-goal-score>0 / 4,500</strong></div>
+          <div class="goal-track" data-goal-progress role="progressbar" aria-label="Goal progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+        </section>
+
+        <div class="match-board-zone">
+          <div class="match-board-frame" data-board-frame>
+            <div class="match-board" data-match-board role="grid" aria-label="8 by 8 gem board. Tap two neighboring gems or swipe one gem."></div>
+            <div class="match-overlay" data-overlay>
+              <span data-overlay-kicker>30 move challenge</span>
+              <strong data-overlay-title>Ready to match?</strong>
+              <p data-overlay-message>Tap two neighbors or swipe a gem. Match three or more to clear them.</p>
               <button type="button" data-overlay-primary>Start game</button>
               <button type="button" data-overlay-restart hidden>Restart game</button>
               <button type="button" data-overlay-exit hidden>Exit game</button>
@@ -113,37 +118,24 @@
         </div>
 
         <section class="power-status" data-power-status aria-labelledby="power-title">
+          <span class="power-icon" aria-hidden="true"><i></i></span>
           <div class="power-copy">
-            <span id="power-title" data-power-kicker>Automatic rescue</span>
-            <strong data-power-title>Charging power-up</strong>
-            <small data-power-message>Clear four rows or columns to trigger one.</small>
+            <span id="power-title" data-power-kicker>Automatic power-ups</span>
+            <strong data-power-title>Make a special match</strong>
+            <small data-power-message>Match 4, 5, or an L/T shape.</small>
           </div>
-          <div class="power-charge" aria-label="Power-up charge: 0 of 4">
-            <output data-charge-label>0 / 4</output>
-            <div aria-hidden="true">
-              <span data-charge-segment></span><span data-charge-segment></span>
-              <span data-charge-segment></span><span data-charge-segment></span>
-            </div>
-          </div>
-        </section>
-
-        <section class="puzzle-tray" aria-labelledby="tray-title">
-          <div class="tray-heading">
-            <div><span>Choose a block</span><strong id="tray-title">Your next three</strong></div>
-            <div class="combo-badge"><span>Combo</span><strong data-combo>×0</strong></div>
-          </div>
-          <div class="tray-grid" data-puzzle-tray></div>
+          <div class="combo-badge"><span>Chain</span><strong data-combo>×1</strong></div>
         </section>
       </section>
 
-      <section class="puzzle-guide" aria-labelledby="guide-title">
-        <div><span>01</span><p><strong id="guide-title">Choose</strong><small>Tap one shape below the grid.</small></p></div>
-        <div><span>02</span><p><strong>Place</strong><small>Tap any glowing valid position.</small></p></div>
-        <div><span>03</span><p><strong>Clear</strong><small>Complete rows and columns together.</small></p></div>
+      <section class="match-guide" aria-labelledby="guide-title">
+        <div><span>01</span><p><strong id="guide-title">Swap</strong><small>Tap two neighbors or swipe one gem.</small></p></div>
+        <div><span>02</span><p><strong>Match</strong><small>Connect three or more of one shape.</small></p></div>
+        <div><span>03</span><p><strong>Power up</strong><small>Match 4, 5, or an L/T shape.</small></p></div>
       </section>
 
       <p class="screen-reader-status" data-announcement aria-live="polite"></p>
     </main>
-    <script type="module" src="/assets/block-puzzle.20260716.js"></script>
+    <script type="module" src="/assets/match-three.20260716.js"></script>
   </body>
 </html>
