@@ -6,6 +6,19 @@ const indexHtml = await readFile(new URL("../public/index.html", import.meta.url
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
 const passwordHtml = await readFile(new URL("../public/password/index.html", import.meta.url), "utf8");
 const tetrisHtml = await readFile(new URL("../public/tetris/index.html", import.meta.url), "utf8");
+const blockPuzzleHtml = await readFile(new URL("../public/block-puzzle/index.html", import.meta.url), "utf8");
+const blockPuzzleJs = await readFile(
+  new URL("../public/assets/block-puzzle.20260716.js", import.meta.url),
+  "utf8",
+);
+const blockPuzzleCss = await readFile(
+  new URL("../public/assets/block-puzzle.20260716.css", import.meta.url),
+  "utf8",
+);
+const mobileGameEntryCss = await readFile(
+  new URL("../public/assets/mobile-game-entry.20260716.css", import.meta.url),
+  "utf8",
+);
 const tetrisAutoJs = await readFile(
   new URL("../public/assets/tetris-auto.20260712-v2.js", import.meta.url),
   "utf8",
@@ -74,6 +87,15 @@ test("home page links to the standalone Tetris game", () => {
   assert.doesNotMatch(indexHtml, /data-tetris-game/);
 });
 
+test("home page offers the separate block puzzle only through a mobile entry", () => {
+  assert.match(indexHtml, /href="\/block-puzzle\/"/);
+  assert.match(indexHtml, /class="mobile-game-entry"/);
+  assert.match(indexHtml, /href="\/assets\/mobile-game-entry\.20260716\.css"/);
+  assert.match(mobileGameEntryCss, /\.mobile-game-entry\s*\{\s*display:\s*none/);
+  assert.match(mobileGameEntryCss, /@media \(max-width:\s*700px\)/);
+  assert.match(mobileGameEntryCss, /min-height:\s*72px/);
+});
+
 test("home page presents the site as personal developer tools and a technical blog", () => {
   assert.match(indexHtml, /Free Developer Tools &amp; Technical Blog/);
   assert.match(indexHtml, /Personal developer lab/);
@@ -112,7 +134,7 @@ test("home page includes network-synchronized Beijing and Los Angeles clocks", (
 });
 
 test("public pages use consistent English SEO metadata", async () => {
-  const pages = [indexHtml, jsonHtml, passwordHtml, tetrisHtml];
+  const pages = [indexHtml, jsonHtml, passwordHtml, tetrisHtml, blockPuzzleHtml];
   pages.forEach((html) => {
     assert.match(html, /<html lang="en">/);
     assert.match(html, /<meta\s+name="description"/);
@@ -257,6 +279,40 @@ test("Tetris includes touch controls for mobile gameplay", () => {
   assert.match(tetrisCss, /touch-action:\s*none/);
 });
 
+test("desktop Tetris keeps its existing modes while phones get a separate puzzle link", () => {
+  assert.match(tetrisHtml, /data-game-mode="classic"/);
+  assert.match(tetrisHtml, /data-game-mode="powerup"/);
+  assert.match(tetrisHtml, /class="mobile-game-entry" href="\/block-puzzle\/"/);
+  assert.match(tetrisHtml, /href="\/assets\/mobile-game-entry\.20260716\.css"/);
+  assert.doesNotMatch(tetrisJs, /block-puzzle|blockpuzzle/);
+});
+
+test("mobile block puzzle is served from a separate fingerprinted page", () => {
+  assert.match(blockPuzzleHtml, /<main class="puzzle-shell" data-block-puzzle/);
+  assert.match(blockPuzzleHtml, /href="https:\/\/superstar1014\.qzz\.io\/block-puzzle\/"/);
+  assert.match(blockPuzzleHtml, /href="\/assets\/block-puzzle\.20260716\.css"/);
+  assert.match(blockPuzzleHtml, /src="\/assets\/block-puzzle\.20260716\.js"/);
+  assert.match(blockPuzzleHtml, /data-puzzle-board/);
+  assert.match(blockPuzzleHtml, /data-puzzle-tray/);
+  assert.match(blockPuzzleHtml, /data-power-status/);
+  assert.match(blockPuzzleHtml, /data-overlay-primary/);
+});
+
+test("mobile block puzzle uses accessible immersive tap controls and isolated persistence", () => {
+  assert.match(blockPuzzleJs, /ai-build-lab\.block-puzzle-best-score\.v1/);
+  assert.match(blockPuzzleJs, /localStorage\.setItem/);
+  assert.match(blockPuzzleJs, /visibilitychange/);
+  assert.match(blockPuzzleJs, /getValidPlacements/);
+  assert.match(blockPuzzleJs, /aria-label/);
+  assert.match(blockPuzzleCss, /height:\s*100dvh/);
+  assert.match(blockPuzzleCss, /env\(safe-area-inset-top\)/);
+  assert.match(blockPuzzleCss, /width:\s*44px/);
+  assert.match(blockPuzzleCss, /min-height:\s*88px/);
+  assert.match(blockPuzzleCss, /@media \(prefers-reduced-motion:\s*reduce\)/);
+  assert.doesNotMatch(blockPuzzleHtml, /http-equiv="refresh"/);
+  assert.doesNotMatch(blockPuzzleJs, /userAgent|location\.replace/);
+});
+
 test("all standalone tool pages link to Tetris", () => {
   assert.match(jsonHtml, /href="\/tetris\/"/);
   assert.match(passwordHtml, /href="\/tetris\/"/);
@@ -265,6 +321,10 @@ test("all standalone tool pages link to Tetris", () => {
 
 test("sitemap includes the standalone Tetris URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/tetris\/<\/loc>/);
+});
+
+test("sitemap includes the standalone mobile block puzzle URL", () => {
+  assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/block-puzzle\/<\/loc>/);
 });
 
 test("admin console is served from a standalone page with private article defaults", () => {

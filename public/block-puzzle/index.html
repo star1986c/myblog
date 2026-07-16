@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Mobile Block Puzzle Game | AI Build Lab</title>
+    <meta
+      name="description"
+      content="Play a free mobile-first 8x8 block puzzle with tap-to-place controls, combos, automatic rescue power-ups, and a local high score."
+    />
+    <meta name="theme-color" content="#05070b" />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+    <link rel="canonical" href="https://superstar1014.qzz.io/block-puzzle/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="AI Build Lab" />
+    <meta property="og:title" content="Mobile Block Puzzle Game | AI Build Lab" />
+    <meta property="og:description" content="An 8x8 tap-to-place puzzle designed for comfortable phone play." />
+    <meta property="og:url" content="https://superstar1014.qzz.io/block-puzzle/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Mobile Block Puzzle Game | AI Build Lab" />
+    <meta name="twitter:description" content="Clear rows and columns, build combos, and trigger automatic rescue power-ups." />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": ["VideoGame", "WebApplication"],
+        "name": "AI Build Lab Mobile Block Puzzle",
+        "url": "https://superstar1014.qzz.io/block-puzzle/",
+        "description": "A free mobile-first 8x8 tap-to-place block puzzle with automatic rescue power-ups.",
+        "applicationCategory": "GameApplication",
+        "gamePlatform": "Mobile web browser",
+        "operatingSystem": "Any",
+        "playMode": "SinglePlayer",
+        "isAccessibleForFree": true,
+        "inLanguage": "en",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
+    <link rel="preload" href="/assets/block-puzzle.20260716.css" as="style" />
+    <link rel="modulepreload" href="/assets/block-puzzle-core.20260716.js" />
+    <link rel="modulepreload" href="/assets/block-puzzle.20260716.js" />
+    <link rel="stylesheet" href="/assets/block-puzzle.20260716.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#puzzle-game">Skip to the block puzzle</a>
+    <main class="puzzle-shell" data-block-puzzle data-state="ready">
+      <header class="puzzle-sitebar">
+        <a class="puzzle-brand" href="/" aria-label="Back to AI Build Lab home">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <rect width="48" height="48" rx="9" fill="#080D18" />
+            <circle cx="24" cy="24" r="6.5" fill="#FFCC67" />
+            <circle cx="24" cy="24" r="14.5" fill="none" stroke="#6ED6FF" stroke-width="2" />
+            <circle cx="36" cy="20" r="2.6" fill="#7DE2B8" />
+            <path d="M12 30C19 38 31 38 38 30" fill="none" stroke="#FF7F5F" stroke-width="2.2" stroke-linecap="round" />
+          </svg>
+          <span><strong>AI Build Lab</strong><small>Mobile game lab</small></span>
+        </a>
+        <a class="desktop-game-link" href="/tetris/">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h6v6H5zM13 5h6v6h-6zM5 13h6v6H5zM13 13h6v6h-6z" /></svg>
+          PC Tetris
+        </a>
+      </header>
+
+      <section class="puzzle-intro" aria-labelledby="puzzle-title">
+        <p><span aria-hidden="true"></span> Mobile puzzle</p>
+        <h1 id="puzzle-title">Place blocks.<br /><em>Clear the grid.</em></h1>
+        <p>Choose one of three shapes, then tap a highlighted space. Complete rows and columns to build combos and charge automatic rescue power-ups.</p>
+        <ul aria-label="Game highlights">
+          <li>One-hand friendly</li>
+          <li>No timer</li>
+          <li>Runs locally</li>
+        </ul>
+      </section>
+
+      <section class="puzzle-game" id="puzzle-game" aria-label="8 by 8 block puzzle game">
+        <header class="puzzle-hud">
+          <div class="hud-title">
+            <span>8×8 puzzle</span>
+            <strong data-status-label>Ready</strong>
+          </div>
+          <dl class="hud-stats">
+            <div><dt>Score</dt><dd data-score>0</dd></div>
+            <div><dt>Best</dt><dd data-best-score>0</dd></div>
+          </dl>
+          <div class="hud-actions">
+            <button type="button" data-action="pause" aria-label="Pause game" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" /></svg>
+            </button>
+            <button type="button" data-action="exit" aria-label="Exit immersive game" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v14h4M13 8l4 4-4 4M17 12H8" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="puzzle-board-zone">
+          <div class="puzzle-board-frame" data-board-frame>
+            <div class="puzzle-board" data-puzzle-board role="grid" aria-label="8 by 8 puzzle board"></div>
+            <div class="puzzle-overlay" data-overlay>
+              <span data-overlay-kicker>Mobile-first</span>
+              <strong data-overlay-title>Ready to play?</strong>
+              <p data-overlay-message>Select a block, then tap a highlighted space on the grid.</p>
+              <button type="button" data-overlay-primary>Start game</button>
+              <button type="button" data-overlay-restart hidden>Restart game</button>
+              <button type="button" data-overlay-exit hidden>Exit game</button>
+            </div>
+          </div>
+        </div>
+
+        <section class="power-status" data-power-status aria-labelledby="power-title">
+          <div class="power-copy">
+            <span id="power-title" data-power-kicker>Automatic rescue</span>
+            <strong data-power-title>Charging power-up</strong>
+            <small data-power-message>Clear four rows or columns to trigger one.</small>
+          </div>
+          <div class="power-charge" aria-label="Power-up charge: 0 of 4">
+            <output data-charge-label>0 / 4</output>
+            <div aria-hidden="true">
+              <span data-charge-segment></span><span data-charge-segment></span>
+              <span data-charge-segment></span><span data-charge-segment></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="puzzle-tray" aria-labelledby="tray-title">
+          <div class="tray-heading">
+            <div><span>Choose a block</span><strong id="tray-title">Your next three</strong></div>
+            <div class="combo-badge"><span>Combo</span><strong data-combo>×0</strong></div>
+          </div>
+          <div class="tray-grid" data-puzzle-tray></div>
+        </section>
+      </section>
+
+      <section class="puzzle-guide" aria-labelledby="guide-title">
+        <div><span>01</span><p><strong id="guide-title">Choose</strong><small>Tap one shape below the grid.</small></p></div>
+        <div><span>02</span><p><strong>Place</strong><small>Tap any glowing valid position.</small></p></div>
+        <div><span>03</span><p><strong>Clear</strong><small>Complete rows and columns together.</small></p></div>
+      </section>
+
+      <p class="screen-reader-status" data-announcement aria-live="polite"></p>
+    </main>
+    <script type="module" src="/assets/block-puzzle.20260716.js"></script>
+  </body>
+</html>

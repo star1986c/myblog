@@ -2,7 +2,7 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://superstar1014.qzz.io/</loc>
-    <lastmod>2026-07-11</lastmod>
+    <lastmod>2026-07-16</lastmod>
   </url>
   <url>
     <loc>https://superstar1014.qzz.io/json/</loc>
@@ -14,7 +14,11 @@
   </url>
   <url>
     <loc>https://superstar1014.qzz.io/tetris/</loc>
-    <lastmod>2026-07-11</lastmod>
+    <lastmod>2026-07-16</lastmod>
+  </url>
+  <url>
+    <loc>https://superstar1014.qzz.io/block-puzzle/</loc>
+    <lastmod>2026-07-16</lastmod>
   </url>
   <url>
     <loc>https://superstar1014.qzz.io/blog/</loc>
