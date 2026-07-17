@@ -15,6 +15,14 @@ const matchThreeCss = await readFile(
   new URL("../public/assets/match-three.20260716.css", import.meta.url),
   "utf8",
 );
+const matchThreeMotionJs = await readFile(
+  new URL("../public/assets/match-three-motion.20260717.js", import.meta.url),
+  "utf8",
+);
+const matchThreeMotionCss = await readFile(
+  new URL("../public/assets/match-three-motion.20260717.css", import.meta.url),
+  "utf8",
+);
 const matchThreeCoreJs = await readFile(
   new URL("../public/assets/match-three-core.20260716.js", import.meta.url),
   "utf8",
@@ -299,6 +307,8 @@ test("mobile match-three is served from the existing route with new fingerprinte
   assert.match(matchThreeHtml, /href="\/assets\/match-three\.20260716\.css"/);
   assert.match(matchThreeHtml, /href="\/assets\/match-three-core\.20260716\.js"/);
   assert.match(matchThreeHtml, /src="\/assets\/match-three\.20260716\.js"/);
+  assert.match(matchThreeHtml, /src="\/assets\/match-three-motion\.20260717\.js"/);
+  assert.match(matchThreeHtml, /href="\/assets\/match-three-motion\.20260717\.css"/);
   assert.match(matchThreeHtml, /data-match-board/);
   assert.match(matchThreeHtml, /data-goal-progress/);
   assert.match(matchThreeHtml, /data-power-status/);
@@ -323,6 +333,23 @@ test("mobile match-three uses accessible tap and swipe controls with isolated pe
   assert.match(matchThreeCss, /width:\s*44px/);
   assert.match(matchThreeCss, /touch-action:\s*none/);
   assert.match(matchThreeCss, /@media \(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(matchThreeMotionJs, /MutationObserver/);
+  assert.match(matchThreeMotionJs, /attributeOldValue:\s*true/);
+  assert.match(matchThreeMotionJs, /prefers-reduced-motion:\s*reduce/);
+  assert.match(matchThreeMotionJs, /powerStatus\.dataset\.action === "triggered"/);
+  assert.match(matchThreeMotionJs, /collectMatchedIndices/);
+  assert.match(matchThreeMotionJs, /addEventListener\("pointerup"/);
+  assert.match(matchThreeMotionJs, /match-clear-burst/);
+  assert.match(matchThreeMotionJs, /match-power-fx/);
+  assert.match(matchThreeMotionCss, /@keyframes match-gem-dissolve/);
+  assert.match(matchThreeMotionCss, /@keyframes match-gem-arrive/);
+  assert.match(matchThreeMotionCss, /@keyframes match-clear-spark/);
+  assert.match(matchThreeMotionCss, /@keyframes match-row-beam/);
+  assert.match(matchThreeMotionCss, /@keyframes match-column-beam/);
+  assert.match(matchThreeMotionCss, /@keyframes match-rainbow-ring/);
+  assert.match(matchThreeMotionCss, /@keyframes match-bomb-wave/);
+  assert.match(matchThreeMotionCss, /@keyframes match-invalid-return/);
+  assert.match(matchThreeMotionCss, /@media \(prefers-reduced-motion:\s*reduce\)/);
   assert.doesNotMatch(matchThreeHtml, /http-equiv="refresh"/);
   assert.doesNotMatch(matchThreeJs, /userAgent|location\.replace/);
 });
