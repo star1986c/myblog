@@ -72,7 +72,7 @@ const worldClockJs = await readFile(
 const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
 const notesHtml = await readFile(new URL("../public/notes/index.html", import.meta.url), "utf8");
 const notesJs = await readFile(
-  new URL("../public/assets/notes.20260813.js", import.meta.url),
+  new URL("../public/assets/notes.20260813-v2.js", import.meta.url),
   "utf8",
 );
 const notesCss = await readFile(
@@ -192,7 +192,7 @@ test("private notes page encrypts all note fields locally and is excluded from i
   assert.match(notesHtml, /data-vault-unlock-form/);
   assert.match(notesHtml, /data-note-title/);
   assert.match(notesHtml, /data-note-content/);
-  assert.match(notesHtml, /src="\/assets\/notes\.20260813\.js\?v=2"/);
+  assert.match(notesHtml, /src="\/assets\/notes\.20260813-v2\.js"/);
   assert.match(notesJs, /encryptNote/);
   assert.match(notesJs, /decryptNote/);
   assert.match(notesJs, /\/api\/admin\/encrypted-notes/);

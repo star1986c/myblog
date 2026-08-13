@@ -3,7 +3,10 @@ import {
   createPasswordVault,
   unlockPasswordVault,
 } from "./password-vault-core.20260713.js";
-import { decryptNote, encryptNote } from "./encrypted-notes-core.20260813.js";
+import {
+  decryptNote,
+  encryptNote,
+} from "./encrypted-notes-core.20260813.js";
 
 const IDLE_LOCK_MS = 5 * 60 * 1000;
 const HIDDEN_LOCK_MS = 60 * 1000;
