@@ -14,6 +14,7 @@ class FakeD1 {
     settings = {},
     passwordVault = null,
     passwordVaultEntries = [],
+    encryptedNotes = [],
   } = {}) {
     this.posts = posts;
     this.pages = pages;
@@ -22,6 +23,7 @@ class FakeD1 {
     this.adminAccount = adminAccount;
     this.passwordVault = passwordVault;
     this.passwordVaultEntries = passwordVaultEntries;
+    this.encryptedNotes = encryptedNotes;
     this.settings = {
       session_secret: "test-session-secret",
       ...settings,
@@ -49,6 +51,10 @@ class FakeStatement {
   }
 
   async all() {
+    if (this.sql.includes("FROM encrypted_notes")) {
+      return { results: this.db.encryptedNotes };
+    }
+
     if (this.sql.includes("FROM password_vault_entries")) {
       return { results: this.db.passwordVaultEntries };
     }
@@ -112,6 +118,31 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.includes("INSERT INTO encrypted_notes")) {
+      const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
+      this.db.encryptedNotes.unshift({ id, version, ciphertext, nonce, createdAt, updatedAt });
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (this.sql.includes("UPDATE encrypted_notes")) {
+      const [version, ciphertext, nonce, updatedAt, id] = this.params;
+      const exists = this.db.encryptedNotes.some((note) => note.id === id);
+      this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
+        note.id === id ? { ...note, version, ciphertext, nonce, updatedAt } : note
+      ));
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
+    if (this.sql.includes("DELETE FROM encrypted_notes")) {
+      const [id] = this.params;
+      const previousLength = this.db.encryptedNotes.length;
+      this.db.encryptedNotes = this.db.encryptedNotes.filter((note) => note.id !== id);
+      return {
+        success: true,
+        meta: { changes: previousLength === this.db.encryptedNotes.length ? 0 : 1 },
+      };
+    }
+
     if (this.sql.includes("INSERT INTO password_vaults")) {
       const [id, version, kdf, iterations, salt, wrappedKey, wrapNonce, createdAt, updatedAt] = this.params;
       this.db.passwordVault = {
@@ -297,6 +328,15 @@ function makeEncryptedEntry(id = "entry_12345678", seed = 10) {
     id,
     version: 1,
     ciphertext: bytesToBase64Url(new Uint8Array(48).fill(seed)),
+    nonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 1)),
+  };
+}
+
+function makeEncryptedNote(id = "note_12345678", seed = 20) {
+  return {
+    id,
+    version: 1,
+    ciphertext: bytesToBase64Url(new Uint8Array(64).fill(seed)),
     nonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 1)),
   };
 }
@@ -654,7 +694,7 @@ test("public time API rejects requests without its same-origin widget header", a
   assert.equal(response.headers.get("Cache-Control"), "no-store");
 });
 
-test("dynamic sitemap includes public blog content and excludes private drafts", async () => {
+test("former public blog routes redirect to the private notes workspace", async () => {
   const env = makeEnv({
     BLOG_DB: new FakeD1({
       posts: [
@@ -676,21 +716,15 @@ test("dynamic sitemap includes public blog content and excludes private drafts",
     }),
   });
 
-  const response = await worker.fetch(
-    new Request("https://superstar1014.qzz.io/sitemap.xml"),
-    env,
-  );
-  const xml = await response.text();
-
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("Content-Type"), /application\/xml/);
-  assert.match(xml, /https:\/\/superstar1014\.qzz\.io\/blog\/edge-guide/);
-  assert.match(xml, /https:\/\/superstar1014\.qzz\.io\/p\/about/);
-  assert.match(xml, /https:\/\/superstar1014\.qzz\.io\/category\/cloudflare/);
-  assert.doesNotMatch(xml, /\/blog\/draft/);
+  for (const path of ["/blog/", "/blog/edge-guide", "/category/cloudflare", "/p/about"]) {
+    const response = await worker.fetch(new Request(`https://superstar1014.qzz.io${path}`), env);
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("Location"), "/notes/");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  }
 });
 
-test("public posts API only returns published and public articles", async () => {
+test("public posts API never returns stored article content", async () => {
   const env = makeEnv({
     BLOG_DB: new FakeD1({
       posts: [
@@ -718,9 +752,8 @@ test("public posts API only returns published and public articles", async () => 
     env,
   );
 
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.deepEqual(body.posts.map((post) => post.slug), ["visible"]);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "Not found" });
 });
 
 test("admin post list requires a valid session", async () => {
@@ -836,7 +869,7 @@ test("admin login is rate limited without exposing the username or IP in the lim
   assert.doesNotMatch(limiterKey, /203\.0\.113\.8/);
 });
 
-test("public pages API only returns published and public pages", async () => {
+test("public pages API never returns stored page content", async () => {
   const env = makeEnv({
     BLOG_DB: new FakeD1({
       pages: [
@@ -864,9 +897,8 @@ test("public pages API only returns published and public pages", async () => {
     env,
   );
 
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.deepEqual(body.pages.map((page) => page.slug), ["about"]);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "Not found" });
 });
 
 test("admin can change the default account password after login", async () => {
@@ -1096,4 +1128,108 @@ test("password vault API rejects plaintext secret fields and missing CSRF tokens
   );
   assert.equal(plaintextResponse.status, 400);
   assert.equal(db.passwordVaultEntries.length, 0);
+});
+
+test("administrator can create, read, update, and delete encrypted notes", async () => {
+  const db = new FakeD1({ passwordVault: makeEncryptedVault() });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "notes-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const writeHeaders = {
+    "Content-Type": "application/json",
+    Cookie: cookie,
+    "X-CSRF-Token": "notes-csrf-token",
+  };
+  const note = makeEncryptedNote();
+
+  const createResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      method: "POST",
+      headers: writeHeaders,
+      body: JSON.stringify(note),
+    }),
+    env,
+  );
+  assert.equal(createResponse.status, 201);
+  assert.equal(db.encryptedNotes.length, 1);
+
+  const readResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  const readBody = await readResponse.json();
+  assert.equal(readResponse.status, 200);
+  assert.deepEqual(readBody.notes.map((item) => item.id), [note.id]);
+  assert.doesNotMatch(JSON.stringify(readBody), /title|content|password|username/i);
+
+  const changedNote = makeEncryptedNote(note.id, 30);
+  const updateResponse = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "PUT",
+      headers: writeHeaders,
+      body: JSON.stringify(changedNote),
+    }),
+    env,
+  );
+  assert.equal(updateResponse.status, 200);
+  assert.equal(db.encryptedNotes[0].ciphertext, changedNote.ciphertext);
+
+  const deleteResponse = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "DELETE",
+      headers: writeHeaders,
+    }),
+    env,
+  );
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(db.encryptedNotes.length, 0);
+});
+
+test("encrypted notes API requires authentication, CSRF, and ciphertext-only payloads", async () => {
+  const db = new FakeD1({ passwordVault: makeEncryptedVault() });
+  const env = makeEnv({ BLOG_DB: db });
+  const note = makeEncryptedNote();
+
+  const unauthenticated = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes"),
+    env,
+  );
+  assert.equal(unauthenticated.status, 401);
+
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "notes-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const missingCsrf = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(note),
+    }),
+    env,
+  );
+  assert.equal(missingCsrf.status, 403);
+
+  const plaintext = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "notes-csrf-token",
+      },
+      body: JSON.stringify({ ...note, title: "must-never-reach-d1" }),
+    }),
+    env,
+  );
+  assert.equal(plaintext.status, 400);
+  assert.equal(db.encryptedNotes.length, 0);
 });

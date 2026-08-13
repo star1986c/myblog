@@ -15,22 +15,22 @@ import {
   deletePage,
   deletePost,
   getAdminAccount,
-  getCategoryBySlug,
-  getPublicPageBySlug,
-  getPublicPostBySlug,
   listAdminPages,
   listAdminPosts,
   listCategories,
   listMediaAssets,
-  listPublicPages,
-  listPublicPosts,
-  listPublicPostsByCategory,
   requireDatabase,
   updateAdminAccount,
   updateCategory,
   updatePage,
   updatePost,
 } from "./blog-repository.js";
+import {
+  createEncryptedNote,
+  deleteEncryptedNote,
+  listEncryptedNotes,
+  updateEncryptedNote,
+} from "./encrypted-note-repository.js";
 import {
   createPasswordVault,
   createPasswordVaultEntry,
@@ -39,13 +39,6 @@ import {
   updatePasswordVault,
   updatePasswordVaultEntry,
 } from "./password-vault-repository.js";
-import {
-  renderBlogIndex,
-  renderBlogNotConfigured,
-  renderCategory,
-  renderPost,
-  renderStandalonePage,
-} from "./blog-render.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
@@ -107,24 +100,18 @@ async function handleRequest(request, env, ctx) {
     }));
   }
 
-  if (url.pathname === "/sitemap.xml" && env.BLOG_DB) {
-    return withSiteHeaders(request, await renderSitemapResponse(env));
+  if (url.pathname === "/notes") {
+    return withSiteHeaders(request, redirectResponse("/notes/"));
   }
 
-  if (url.pathname === "/blog" || url.pathname === "/blog/") {
-    return withSiteHeaders(request, await renderBlogIndexResponse(request, env));
-  }
-
-  if (url.pathname.startsWith("/blog/")) {
-    return withSiteHeaders(request, await renderPostResponse(request, env, url));
-  }
-
-  if (url.pathname.startsWith("/category/")) {
-    return withSiteHeaders(request, await renderCategoryResponse(request, env, url));
-  }
-
-  if (url.pathname.startsWith("/p/")) {
-    return withSiteHeaders(request, await renderPageResponse(request, env, url));
+  if (
+    url.pathname === "/blog" ||
+    url.pathname === "/blog/" ||
+    url.pathname.startsWith("/blog/") ||
+    url.pathname.startsWith("/category/") ||
+    url.pathname.startsWith("/p/")
+  ) {
+    return withSiteHeaders(request, redirectResponse("/notes/"));
   }
 
   let response = await env.ASSETS.fetch(request);
@@ -198,26 +185,8 @@ async function handleApiRequest(request, env, ctx) {
     );
   }
 
-  if (path === "/api/public/posts" && request.method === "GET") {
-    const db = requireDatabase(env);
-    return jsonResponse({ posts: await listPublicPosts(db) });
-  }
-
-  if (path === "/api/public/pages" && request.method === "GET") {
-    const db = requireDatabase(env);
-    return jsonResponse({ pages: await listPublicPages(db) });
-  }
-
-  if (path.startsWith("/api/public/posts/") && request.method === "GET") {
-    const db = requireDatabase(env);
-    const post = await getPublicPostBySlug(db, decodeURIComponent(path.slice("/api/public/posts/".length)));
-    return post ? jsonResponse({ post }) : jsonResponse({ error: "Not found" }, { status: 404 });
-  }
-
-  if (path.startsWith("/api/public/pages/") && request.method === "GET") {
-    const db = requireDatabase(env);
-    const page = await getPublicPageBySlug(db, decodeURIComponent(path.slice("/api/public/pages/".length)));
-    return page ? jsonResponse({ page }) : jsonResponse({ error: "Not found" }, { status: 404 });
+  if (path.startsWith("/api/public/posts") || path.startsWith("/api/public/pages")) {
+    return jsonResponse({ error: "Not found" }, { status: 404 });
   }
 
   if (path.startsWith("/api/admin/")) {
@@ -767,6 +736,29 @@ async function handleAdminApi(request, env, path) {
 
   const db = requireDatabase(env);
 
+  if (path === "/api/admin/encrypted-notes") {
+    if (request.method === "GET") {
+      return jsonResponse({ notes: await listEncryptedNotes(db) });
+    }
+    if (request.method === "POST") {
+      return jsonResponse(
+        { note: await createEncryptedNote(db, await readJson(request)) },
+        { status: 201 },
+      );
+    }
+  }
+
+  if (path.startsWith("/api/admin/encrypted-notes/")) {
+    const id = decodeURIComponent(path.slice("/api/admin/encrypted-notes/".length));
+    if (request.method === "PUT") {
+      return jsonResponse({ note: await updateEncryptedNote(db, id, await readJson(request)) });
+    }
+    if (request.method === "DELETE") {
+      await deleteEncryptedNote(db, id);
+      return jsonResponse({ ok: true });
+    }
+  }
+
   if (path === "/api/admin/account") {
     if (request.method === "GET") {
       const account = await getAdminAccount(db);
@@ -882,122 +874,6 @@ async function handleAdminApi(request, env, path) {
   return jsonResponse({ error: "Not found" }, { status: 404 });
 }
 
-async function renderBlogIndexResponse(request, env) {
-  if (!env.BLOG_DB) {
-    return htmlResponse(renderBlogNotConfigured());
-  }
-  const posts = await listPublicPosts(env.BLOG_DB);
-  return htmlResponse(renderBlogIndex(posts));
-}
-
-async function renderSitemapResponse(env) {
-  const [posts, pages, categories] = await Promise.all([
-    listPublicPosts(env.BLOG_DB),
-    listPublicPages(env.BLOG_DB),
-    listCategories(env.BLOG_DB),
-  ]);
-  const staticLastModified = "2026-07-11";
-  const entries = [
-    { path: "/", lastModified: staticLastModified },
-    { path: "/json/", lastModified: staticLastModified },
-    { path: "/password/", lastModified: staticLastModified },
-    { path: "/tetris/", lastModified: staticLastModified },
-    {
-      path: "/blog/",
-      lastModified: latestSitemapDate(posts, staticLastModified),
-    },
-    ...posts.map((post) => ({
-      path: `/blog/${encodeURIComponent(post.slug)}`,
-      lastModified: sitemapDate(post.updatedAt || post.publishedAt || post.createdAt, staticLastModified),
-    })),
-    ...pages.map((page) => ({
-      path: `/p/${encodeURIComponent(page.slug)}`,
-      lastModified: sitemapDate(page.updatedAt || page.publishedAt || page.createdAt, staticLastModified),
-    })),
-    ...categories.map((category) => ({
-      path: `/category/${encodeURIComponent(category.slug)}`,
-      lastModified: sitemapDate(category.updatedAt || category.createdAt, staticLastModified),
-    })),
-  ];
-  const urls = entries.map(({ path, lastModified }) => `
-  <url>
-    <loc>${escapeXml(`https://superstar1014.qzz.io${path}`)}</loc>
-    <lastmod>${lastModified}</lastmod>
-  </url>`).join("");
-
-  return new Response(`<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}
-</urlset>`, {
-    headers: { "Content-Type": "application/xml; charset=utf-8" },
-  });
-}
-
-function latestSitemapDate(items, fallback) {
-  return items.reduce((latest, item) => {
-    const current = sitemapDate(item.updatedAt || item.publishedAt || item.createdAt, fallback);
-    return current > latest ? current : latest;
-  }, fallback);
-}
-
-function sitemapDate(value, fallback) {
-  if (!value) return fallback;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? fallback : date.toISOString().slice(0, 10);
-}
-
-function escapeXml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-async function renderPostResponse(request, env, url) {
-  if (!env.BLOG_DB) {
-    return htmlResponse(renderBlogNotConfigured());
-  }
-  const slug = decodeURIComponent(trimSlashes(url.pathname.slice("/blog/".length)));
-  const post = await getPublicPostBySlug(env.BLOG_DB, slug);
-  return post
-    ? htmlResponse(renderPost(post))
-    : new Response("Not Found", {
-      status: 404,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-}
-
-async function renderCategoryResponse(request, env, url) {
-  if (!env.BLOG_DB) {
-    return htmlResponse(renderBlogNotConfigured());
-  }
-  const slug = decodeURIComponent(trimSlashes(url.pathname.slice("/category/".length)));
-  const category = await getCategoryBySlug(env.BLOG_DB, slug);
-  if (!category) {
-    return new Response("Not Found", {
-      status: 404,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  }
-  const posts = await listPublicPostsByCategory(env.BLOG_DB, slug);
-  return htmlResponse(renderCategory(category, posts));
-}
-
-async function renderPageResponse(request, env, url) {
-  if (!env.BLOG_DB) {
-    return htmlResponse(renderBlogNotConfigured());
-  }
-  const slug = decodeURIComponent(trimSlashes(url.pathname.slice("/p/".length)));
-  const page = await getPublicPageBySlug(env.BLOG_DB, slug);
-  return page
-    ? htmlResponse(renderStandalonePage(page))
-    : new Response("Not Found", {
-      status: 404,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-}
-
 function acceptsHtml(request) {
   const accept = request.headers.get("Accept") || "";
   return accept.includes("text/html") || accept.includes("*/*");
@@ -1027,6 +903,15 @@ function cacheControlFor(pathname, contentType) {
     return "public, max-age=31536000, immutable";
   }
 
+  if (
+    pathname === "/notes" ||
+    pathname.startsWith("/notes/") ||
+    pathname === "/admin" ||
+    pathname.startsWith("/admin/")
+  ) {
+    return "no-store";
+  }
+
   if (isDynamicContentPath(pathname)) {
     return "public, max-age=60, s-maxage=60";
   }
@@ -1054,6 +939,16 @@ function isDynamicContentPath(pathname) {
     pathname.startsWith("/category/") ||
     pathname.startsWith("/p/")
   );
+}
+
+function redirectResponse(location, status = 302) {
+  return new Response(null, {
+    status,
+    headers: {
+      Location: location,
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 async function readAdminSession(request, env) {
@@ -1154,15 +1049,6 @@ function jsonResponse(body, options = {}) {
   });
 }
 
-function htmlResponse(body, options = {}) {
-  const headers = new Headers(options.headers);
-  headers.set("Content-Type", "text/html; charset=utf-8");
-  return new Response(body, {
-    status: options.status || 200,
-    headers,
-  });
-}
-
 function errorResponse(request, error) {
   const status = Number.isInteger(error?.status) ? error.status : 500;
   const message = status >= 500 ? "Internal Server Error" : error.message;
@@ -1188,10 +1074,6 @@ function errorResponse(request, error) {
 
 function trimTrailingSlash(path) {
   return path.length > 1 ? path.replace(/\/+$/, "") : path;
-}
-
-function trimSlashes(path) {
-  return path.replace(/^\/+|\/+$/g, "");
 }
 
 export { cacheControlFor, lookupVisitorNetworkInfo, withSiteHeaders };

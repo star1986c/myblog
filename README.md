@@ -12,8 +12,10 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
 - Adds a standalone secure password generator at `/password/` without browser password persistence.
 - Adds a private zero-knowledge password vault inside `/admin/`; the master password and plaintext
   entries stay in browser memory while D1 stores only versioned AES-GCM ciphertext.
-- Adds a standalone blog admin console at `/admin/`, public blog pages under `/blog/`,
-  D1-backed content storage, and manually entered media URL records.
+- Adds an encrypted private notes workspace at `/notes/`; note titles and content are encrypted in
+  the browser with the password-vault data key, while D1 stores only AES-GCM envelopes.
+- Redirects former public blog/article/page routes to the private notes workspace and removes all
+  blog content from public APIs and the sitemap.
 - Keeps the Worker name as `wispy-cloud-0978`, matching the current Cloudflare custom domain binding.
 
 ## Local commands
@@ -27,7 +29,7 @@ npm run dev
 
 `npm run dev` starts Wrangler on `http://localhost:8787`.
 
-## Blog backend setup
+## Private notes backend setup
 
 Create the Cloudflare D1 database before production deployment:
 
@@ -43,7 +45,7 @@ npx wrangler d1 migrations apply superstar1014-blog --remote
 ```
 
 Apply migrations before deployment. The migrations seed a D1-backed administrator
-account and add encrypted password-vault storage.
+account, encrypted password-vault storage, and encrypted note envelopes.
 
 Default administrator:
 
@@ -59,10 +61,13 @@ npx wrangler secret put SESSION_SECRET
 
 The password-vault migration removes the legacy D1 session-secret fallback. Losing
 `SESSION_SECRET` signs out existing sessions but does not affect encrypted vault data.
-The separate vault master password is never stored by the Worker and cannot be recovered.
+The separate vault master password is never stored by the Worker and cannot be recovered. Private
+notes reuse the vault's random data key, encrypt the full `{ title, content }` payload in the browser,
+and use a unique AES-GCM nonce plus record-bound authenticated data for every save.
 
-New articles and pages default to `draft` and `private`. A public page only shows
-content where `status = published` and `visibility = public`.
+Migration `0005_make_blog_private.sql` revokes any previous article/page publication flags and adds
+the ciphertext-only `encrypted_notes` table. Existing blog rows are retained as private drafts but
+are not automatically converted because the Worker never receives the vault master password.
 
 Media records use manually entered URLs, so R2 is not required for the blog
 admin or production deployment.
@@ -77,7 +82,8 @@ The deployment target is configured in `wrangler.jsonc`. The custom domain alrea
 
 ## Cache policy
 
-- HTML: `public, max-age=300, s-maxage=86400, stale-while-revalidate=604800`
+- Public HTML: `public, max-age=300, s-maxage=86400, stale-while-revalidate=604800`
+- `/notes/` and `/admin/` HTML shells plus all APIs: `no-store`
 - Fingerprinted static assets under `/assets/` and `/vendor/`: `public, max-age=31536000, immutable`
 - SEO metadata files: short browser cache, longer edge cache
 

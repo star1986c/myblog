@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI Build Lab | Free Developer Tools &amp; Technical Blog</title>
+    <title>AI Build Lab | Developer Tools &amp; Private Notes</title>
     <meta
       name="description"
-      content="Free browser-based developer tools, practical engineering notes, AI-assisted development experiments, and build logs maintained by an independent developer."
+      content="Free browser-based developer tools, small engineering experiments, and an encrypted private notes workspace maintained by an independent developer."
     />
     <meta name="theme-color" content="#05070b" />
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
@@ -15,17 +15,17 @@
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:site_name" content="AI Build Lab" />
-    <meta property="og:title" content="AI Build Lab | Free Developer Tools &amp; Technical Blog" />
+    <meta property="og:title" content="AI Build Lab | Developer Tools &amp; Private Notes" />
     <meta
       property="og:description"
-      content="Free developer tools, practical engineering notes, and honest build logs from an independent developer."
+      content="Free developer tools, engineering experiments, and an encrypted private notes workspace."
     />
     <meta property="og:url" content="https://superstar1014.qzz.io/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="AI Build Lab | Free Developer Tools &amp; Technical Blog" />
+    <meta name="twitter:title" content="AI Build Lab | Developer Tools &amp; Private Notes" />
     <meta
       name="twitter:description"
-      content="Free browser tools, technical articles, and engineering experiments maintained by an independent developer."
+      content="Free browser tools, engineering experiments, and an encrypted private notes workspace."
     />
 
     <script type="application/ld+json">
@@ -35,7 +35,7 @@
         "@id": "https://superstar1014.qzz.io/#website",
         "url": "https://superstar1014.qzz.io/",
         "name": "AI Build Lab",
-        "description": "Free developer tools, practical engineering notes, and AI-assisted development experiments.",
+        "description": "Free developer tools, engineering experiments, and an encrypted private notes workspace.",
         "inLanguage": "en"
       }
     </script>
@@ -78,7 +78,7 @@
           </a>
           <div class="links">
             <a href="#tools">Tools</a>
-            <a href="/blog/">Blog</a>
+            <a href="/notes/">Private Notes</a>
             <a href="#about">About</a>
           </div>
         </nav>
@@ -91,7 +91,7 @@
             <h1 id="hero-title">Useful developer tools, <em>with the build process documented.</em></h1>
             <p class="lead">
               AI Build Lab is an independent developer site with practical browser tools,
-              backend engineering notes, AI-assisted workflows, and honest product build logs.
+              small engineering experiments, AI-assisted workflows, and a private encrypted notebook.
             </p>
             <div class="actions">
               <a class="button primary" href="#tools">
@@ -100,7 +100,7 @@
                   <path d="M4 10h12M11 5l5 5-5 5" />
                 </svg>
               </a>
-              <a class="button" href="/blog/">Read technical articles</a>
+              <a class="button" href="/notes/">Open private notes</a>
             </div>
             <ul class="hero-facts" aria-label="Site highlights">
               <li><span></span>Free to use</li>
@@ -121,7 +121,7 @@
               <p><span class="prompt">$</span> cat focus.txt</p>
               <div class="focus-list">
                 <span>useful tools</span>
-                <span>technical notes</span>
+                <span>private notes</span>
                 <span>small experiments</span>
               </div>
             </div>
@@ -132,7 +132,7 @@
               </div>
               <div>
                 <dt>Content</dt>
-                <dd>Blog <span>open</span></dd>
+                <dd>Notes <span>private</span></dd>
               </div>
               <div>
                 <dt>Platform</dt>
@@ -319,42 +319,42 @@
         <section class="section notes-section" aria-labelledby="notes-title">
           <div class="container notes-grid">
             <div class="notes-copy">
-              <p class="section-index">02 / Technical blog</p>
-              <h2 id="notes-title">The outcome matters. So does the reasoning behind it.</h2>
+              <p class="section-index">02 / Private notes</p>
+              <h2 id="notes-title">Keep useful context close—and off the public web.</h2>
               <p>
-                The blog documents tradeoffs, implementation details, and lessons from real projects.
-                Each article focuses on reusable experience and better engineering decisions.
+                A simple personal notebook for ideas, account details, and working notes. Titles and
+                content are encrypted in the browser before they are stored.
               </p>
-              <a class="text-link" href="/blog/">
-                Browse all technical articles
+              <a class="text-link" href="/notes/">
+                Open private notes
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M11 5l5 5-5 5" /></svg>
               </a>
             </div>
 
-            <div class="topic-list" aria-label="Blog topics">
+            <div class="topic-list" aria-label="Private notes features">
               <article>
                 <span>01</span>
                 <div>
-                  <h3>Backend &amp; Architecture</h3>
-                  <p>API design, data modeling, service boundaries, and engineering practices.</p>
+                  <h3>Encrypted before upload</h3>
+                  <p>Note titles and content leave the browser only as authenticated ciphertext.</p>
                 </div>
-                <code>backend</code>
+                <code>aes-gcm</code>
               </article>
               <article>
                 <span>02</span>
                 <div>
-                  <h3>AI-assisted Development</h3>
-                  <p>AI coding workflows, tool collaboration, and honest productivity reviews.</p>
+                  <h3>Fast local search</h3>
+                  <p>Search runs only after unlocking, against plaintext held in browser memory.</p>
                 </div>
-                <code>ai-dev</code>
+                <code>local</code>
               </article>
               <article>
                 <span>03</span>
                 <div>
-                  <h3>Build Notes</h3>
-                  <p>Product build logs and technical decisions from idea to production.</p>
+                  <h3>Auto-save and lock</h3>
+                  <p>Edits save as fresh ciphertext and the workspace locks after inactivity.</p>
                 </div>
-                <code>shipping</code>
+                <code>private</code>
               </article>
             </div>
           </div>
@@ -369,11 +369,11 @@
             <div class="about-copy">
               <p>
                 This is a working developer lab, not a product showroom. The tools come from recurring
-                needs, and the articles come from tested practice. Features and notes continue to evolve.
+                needs, and the private notebook keeps sensitive working context out of public pages.
               </p>
               <dl class="principles">
                 <div><dt>01</dt><dd><strong>Utility first</strong><span>Solve the problem before adding polish.</span></dd></div>
-                <div><dt>02</dt><dd><strong>Open process</strong><span>Document tradeoffs as well as imperfections.</span></dd></div>
+                <div><dt>02</dt><dd><strong>Privacy by default</strong><span>Keep private material encrypted and unindexed.</span></dd></div>
                 <div><dt>03</dt><dd><strong>Long-term care</strong><span>Iterate in small steps and keep tools reliable.</span></dd></div>
               </dl>
             </div>
@@ -384,7 +384,7 @@
       <footer>
         <div class="container footer-inner">
           <a class="footer-brand" href="/">AI Build Lab</a>
-          <p>Developer tools · Technical articles · Engineering experiments</p>
+          <p>Developer tools · Private notes · Engineering experiments</p>
           <span>© 2026 Independent build</span>
         </div>
       </footer>

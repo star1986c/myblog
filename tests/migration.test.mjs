@@ -15,6 +15,10 @@ const passwordVaultMigration = await readFile(
   new URL("../migrations/0004_password_vault.sql", import.meta.url),
   "utf8",
 );
+const privateNotesMigration = await readFile(
+  new URL("../migrations/0005_make_blog_private.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -52,4 +56,15 @@ test("password vault migration stores only versioned encrypted payloads", () => 
   assert.match(passwordVaultMigration, /DELETE FROM admin_settings WHERE key = 'session_secret'/);
   assert.doesNotMatch(passwordVaultMigration, /(?:^|\s)(?:username|url|notes)\s+TEXT/im);
   assert.doesNotMatch(passwordVaultMigration, /(?:^|\s)password\s+TEXT/im);
+});
+
+test("private notes migration revokes publication and stores encrypted envelopes only", () => {
+  assert.match(privateNotesMigration, /UPDATE posts/);
+  assert.match(privateNotesMigration, /UPDATE pages/);
+  assert.match(privateNotesMigration, /visibility = 'private'/);
+  assert.match(privateNotesMigration, /CREATE TABLE IF NOT EXISTS encrypted_notes/);
+  assert.match(privateNotesMigration, /ciphertext TEXT NOT NULL/);
+  assert.match(privateNotesMigration, /nonce TEXT NOT NULL/);
+  assert.doesNotMatch(privateNotesMigration, /(?:^|\s)(?:title|content|password|username)\s+TEXT/im);
+  assert.doesNotMatch(privateNotesMigration, /published_at\s*=|updated_at\s*=/);
 });
