@@ -83,11 +83,13 @@ async function handleRequest(request, env, ctx) {
     return withSiteHeaders(request, redirectResponse("/notes/"));
   }
 
+  if (url.pathname === "/password") {
+    return withSiteHeaders(request, redirectResponse("/password/"));
+  }
+
   if (
     url.pathname === "/admin" ||
-    url.pathname === "/admin/" ||
-    url.pathname === "/password" ||
-    url.pathname === "/password/"
+    url.pathname === "/admin/"
   ) {
     return withSiteHeaders(request, redirectResponse("/notes/"));
   }

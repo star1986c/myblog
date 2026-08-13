@@ -693,8 +693,8 @@ test("admin post list requires a valid session", async () => {
   assert.equal(response.status, 401);
 });
 
-test("retired admin and password pages redirect to private notes", async () => {
-  for (const path of ["/admin", "/admin/", "/password", "/password/"]) {
+test("retired admin pages redirect to private notes", async () => {
+  for (const path of ["/admin", "/admin/"]) {
     const response = await worker.fetch(
       new Request(`https://superstar1014.qzz.io${path}`),
       makeEnv(),
@@ -703,6 +703,33 @@ test("retired admin and password pages redirect to private notes", async () => {
     assert.equal(response.headers.get("Location"), "/notes/", path);
     assert.equal(response.headers.get("Cache-Control"), "no-store", path);
   }
+});
+
+test("password generator uses its canonical trailing-slash route", async () => {
+  const redirect = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/password"),
+    makeEnv(),
+  );
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get("Location"), "/password/");
+
+  const page = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/password/"),
+    makeEnv({
+      ASSETS: {
+        async fetch(request) {
+          return new URL(request.url).pathname === "/password/"
+            ? new Response("password generator", {
+                status: 200,
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+              })
+            : new Response("missing", { status: 404 });
+        },
+      },
+    }),
+  );
+  assert.equal(page.status, 200);
+  assert.equal(await page.text(), "password generator");
 });
 
 test("admin login uses the D1 account with a Worker session secret", async () => {

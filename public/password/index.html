@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Secure Password Generator | AI Build Lab</title>
+    <meta
+      name="description"
+      content="Generate secure random passwords locally in your browser. Choose character sets, exclude ambiguous characters, length, and quantity without automatic storage."
+    />
+    <meta name="theme-color" content="#07111f" />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+    <link rel="canonical" href="https://superstar1014.qzz.io/password/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="AI Build Lab" />
+    <meta property="og:title" content="Secure Password Generator | AI Build Lab" />
+    <meta
+      property="og:description"
+      content="Generate strong passwords with browser-secure randomness. Your settings and passwords stay on this device."
+    />
+    <meta property="og:url" content="https://superstar1014.qzz.io/password/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Secure Password Generator | AI Build Lab" />
+    <meta
+      name="twitter:description"
+      content="Generate strong passwords with browser-secure randomness. Your settings and passwords stay on this device."
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "AI Build Lab Password Generator",
+        "url": "https://superstar1014.qzz.io/password/",
+        "description": "A free secure random password generator with configurable rules and no automatic password storage.",
+        "applicationCategory": "SecurityApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with the Web Crypto API.",
+        "isAccessibleForFree": true,
+        "inLanguage": "en",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap.xml" type="application/xml" />
+    <link rel="preload" href="/assets/password-page.20260710.css" as="style" />
+    <link rel="modulepreload" href="/assets/password-tool-core.20260710.js" />
+    <link rel="modulepreload" href="/assets/password-tool.20260713.js" />
+    <link rel="stylesheet" href="/assets/password-page.20260710.css" />
+    <link rel="stylesheet" href="/assets/tool-brand.20260710.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#password-workbench">Skip to the password generator</a>
+    <main class="password-shell" data-password-tool>
+      <header class="tool-topbar">
+        <a class="brand" href="/" aria-label="Back to AI Build Lab home">
+          <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+            <rect width="48" height="48" rx="10" fill="#05070B" />
+            <rect x="3.5" y="3.5" width="41" height="41" rx="8" fill="none" stroke="#172638" />
+            <path d="M15.5 16L9.5 24L15.5 32" fill="none" stroke="#79D9F8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M32.5 16L38.5 24L32.5 32" fill="none" stroke="#7DE2B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d="M24 10.5L27.8 20.2L37.5 24L27.8 27.8L24 37.5L20.2 27.8L10.5 24L20.2 20.2L24 10.5Z"
+              fill="#FFCC67"
+            />
+            <path d="M24 17.5L26 22L30.5 24L26 26L24 30.5L22 26L17.5 24L22 22L24 17.5Z" fill="#05070B" opacity="0.72" />
+          </svg>
+          <span>
+            <strong>AI Build Lab</strong>
+            <small>Independent developer lab</small>
+          </span>
+        </a>
+        <nav class="tool-nav" aria-label="Tool navigation">
+          <a href="/">Home</a>
+          <a href="/json/">JSON Formatter</a>
+          <a aria-current="page" href="/password/">Password Generator</a>
+          <a href="/notes/">Private Notes</a>
+          <a href="/tetris/">Tetris</a>
+        </nav>
+      </header>
+
+      <section class="tool-title" aria-labelledby="password-title">
+        <div class="title-copy">
+          <div class="eyebrow">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="5" y="10" width="14" height="10" rx="2" />
+              <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2" />
+            </svg>
+            <span>Secure utility</span>
+          </div>
+          <h1 id="password-title">Secure Password Generator</h1>
+          <p>Create one or more strong passwords with custom character sets, exclusions, length, and quantity.</p>
+        </div>
+        <div class="privacy-note">
+          <span class="privacy-dot" aria-hidden="true"></span>
+          <div>
+            <strong>Generated locally</strong>
+            <span>Passwords are never uploaded</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="password-workbench" id="password-workbench" aria-label="Secure password generator">
+        <form class="settings-card" data-password-form novalidate>
+          <div class="card-heading">
+            <div>
+              <span class="step-number">01</span>
+              <h2>Generator settings</h2>
+            </div>
+            <span class="card-caption">Choose password rules</span>
+          </div>
+
+          <fieldset class="setting-group">
+            <legend>Character sets</legend>
+            <div class="character-grid">
+              <label class="choice-card">
+                <input type="checkbox" data-character="lowercase" checked />
+                <span class="choice-mark" aria-hidden="true"></span>
+                <span><strong>a–z</strong><small>Lowercase letters</small></span>
+              </label>
+              <label class="choice-card">
+                <input type="checkbox" data-character="uppercase" checked />
+                <span class="choice-mark" aria-hidden="true"></span>
+                <span><strong>A–Z</strong><small>Uppercase letters</small></span>
+              </label>
+              <label class="choice-card">
+                <input type="checkbox" data-character="numbers" checked />
+                <span class="choice-mark" aria-hidden="true"></span>
+                <span><strong>0–9</strong><small>Numbers</small></span>
+              </label>
+              <label class="choice-card">
+                <input type="checkbox" data-character="symbols" />
+                <span class="choice-mark" aria-hidden="true"></span>
+                <span><strong>!@#</strong><small>Symbols</small></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="setting-group exclusion-group">
+            <legend>Character exclusions</legend>
+            <label class="switch-row" for="password-exclude-enabled">
+              <span>
+                <strong>Exclude ambiguous characters</strong>
+                <small>For example, the numbers 1 and 0 and the letters l and O</small>
+              </span>
+              <input
+                id="password-exclude-enabled"
+                type="checkbox"
+                data-password-exclude-enabled
+                checked
+              />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="text-field" for="password-excluded">
+              <span>Characters to exclude</span>
+              <input
+                id="password-excluded"
+                type="text"
+                value="il1oO0"
+                spellcheck="false"
+                autocomplete="off"
+                data-password-excluded
+              />
+            </label>
+          </fieldset>
+
+          <div class="setting-meta">
+            <label for="password-length">
+              <span>Password length</span>
+              <span class="select-wrap">
+                <select id="password-length" data-password-length>
+                  <option value="8">8 characters</option>
+                  <option value="12">12 characters</option>
+                  <option value="16" selected>16 characters</option>
+                  <option value="20">20 characters</option>
+                  <option value="24">24 characters</option>
+                  <option value="32">32 characters</option>
+                  <option value="48">48 characters</option>
+                  <option value="64">64 characters</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5" /></svg>
+              </span>
+            </label>
+            <label for="password-count">
+              <span>Number of passwords</span>
+              <span class="select-wrap">
+                <select id="password-count" data-password-count>
+                  <option value="1" selected>1 password</option>
+                  <option value="3">3 passwords</option>
+                  <option value="5">5 passwords</option>
+                  <option value="10">10 passwords</option>
+                  <option value="20">20 passwords</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5" /></svg>
+              </span>
+            </label>
+          </div>
+
+          <div class="strength-preview" data-password-strength>
+            <span>Estimated strength</span>
+            <div class="strength-track" aria-hidden="true"><span></span></div>
+            <strong>Strong</strong>
+            <small>About 95 bits</small>
+          </div>
+
+          <p class="form-error" data-password-error role="alert" hidden></p>
+          <button class="generate-button" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+              <circle cx="12" cy="12" r="3.2" />
+            </svg>
+            Generate passwords
+          </button>
+        </form>
+
+        <section class="results-card" aria-labelledby="results-title">
+          <div class="card-heading result-heading">
+            <div>
+              <span class="step-number">02</span>
+              <h2 id="results-title">Generated passwords</h2>
+            </div>
+            <button class="text-button" type="button" data-copy-all hidden>Copy all</button>
+          </div>
+
+          <div class="results-body" data-password-results>
+            <div class="empty-results">
+              <svg viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="12" y="25" width="40" height="30" rx="7" />
+                <path d="M21 25v-7a11 11 0 0 1 22 0v7M32 37v7" />
+                <circle cx="32" cy="36" r="3" />
+              </svg>
+              <h3>Ready to generate secure passwords</h3>
+              <p>Choose your rules, then select Generate passwords.</p>
+            </div>
+          </div>
+
+        </section>
+      </section>
+
+      <section class="tool-seo" aria-labelledby="password-guide-title">
+        <div class="tool-seo__intro">
+          <p class="section-index">About this tool</p>
+          <h2 id="password-guide-title">Generate strong passwords on your device</h2>
+          <p>The generator uses the browser Web Crypto API for secure randomness. Generated passwords remain on this page and are never stored automatically.</p>
+        </div>
+        <div class="tool-seo__grid">
+          <article><h3>Custom password rules</h3><p>Choose lowercase letters, uppercase letters, numbers, and symbols, then set a length from 8 to 64 characters.</p></article>
+          <article><h3>Avoid ambiguous characters</h3><p>Exclude characters that are difficult to distinguish or provide a custom exclusion list for your own requirements.</p></article>
+          <article><h3>Save important passwords privately</h3><p>Copy a generated password and store it in Private Notes when you need encrypted storage.</p></article>
+        </div>
+      </section>
+
+      <p class="sr-only" data-password-announcement aria-live="polite"></p>
+    </main>
+
+    <script type="module" src="/assets/password-tool.20260713.js"></script>
+  </body>
+</html>

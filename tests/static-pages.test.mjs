@@ -4,6 +4,7 @@ import test from "node:test";
 
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
+const passwordHtml = await readFile(new URL("../public/password/index.html", import.meta.url), "utf8");
 const tetrisHtml = await readFile(new URL("../public/tetris/index.html", import.meta.url), "utf8");
 const matchThreeHtml = await readFile(new URL("../public/block-puzzle/index.html", import.meta.url), "utf8");
 const matchThreeJs = await readFile(
@@ -60,6 +61,10 @@ const worldClockJs = await readFile(
   new URL("../public/assets/world-clock.20260711-v2.js", import.meta.url),
   "utf8",
 );
+const passwordJs = await readFile(
+  new URL("../public/assets/password-tool.20260713.js", import.meta.url),
+  "utf8",
+);
 const notesHtml = await readFile(new URL("../public/notes/index.html", import.meta.url), "utf8");
 const notesJs = await readFile(
   new URL("../public/assets/notes.20260813-v3.js", import.meta.url),
@@ -82,8 +87,10 @@ test("home page links to the JSON tool without embedding the formatter", () => {
   assert.doesNotMatch(indexHtml, /styles\.20260706-json\.css/);
 });
 
-test("home page removes the standalone password generator", () => {
-  assert.doesNotMatch(indexHtml, /href="\/password\/"|Password Generator/);
+test("home page links to the standalone password generator", () => {
+  assert.match(indexHtml, /href="\/password\/"/);
+  assert.match(indexHtml, /<h3>Password Generator<\/h3>/);
+  assert.doesNotMatch(indexHtml, /data-password-tool/);
 });
 
 test("home page links to the standalone Tetris game", () => {
@@ -140,7 +147,7 @@ test("home page includes network-synchronized Beijing and Los Angeles clocks", (
 });
 
 test("public pages use consistent English SEO metadata", async () => {
-  const pages = [indexHtml, jsonHtml, tetrisHtml, matchThreeHtml];
+  const pages = [indexHtml, jsonHtml, passwordHtml, tetrisHtml, matchThreeHtml];
   pages.forEach((html) => {
     assert.match(html, /<html lang="en">/);
     assert.match(html, /<meta\s+name="description"/);
@@ -235,8 +242,22 @@ test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
 });
 
-test("sitemap excludes retired password and admin pages", () => {
-  assert.doesNotMatch(sitemapXml, /\/password\/|\/admin\//);
+test("password generator stays local and does not link to the retired vault", () => {
+  assert.match(passwordHtml, /<main class="password-shell" data-password-tool>/);
+  assert.match(passwordHtml, /href="https:\/\/superstar1014\.qzz\.io\/password\/"/);
+  assert.match(passwordHtml, /href="\/assets\/password-page\.20260710\.css"/);
+  assert.match(passwordHtml, /src="\/assets\/password-tool\.20260713\.js"/);
+  assert.match(passwordHtml, /data-password-length/);
+  assert.match(passwordHtml, /data-password-count/);
+  assert.match(passwordHtml, /Save important passwords privately/);
+  assert.match(passwordJs, /generatePasswords/);
+  assert.doesNotMatch(passwordHtml, /\/admin\/#vault|master password|password vault/i);
+  assert.doesNotMatch(passwordJs, /fetch\(|localStorage|sessionStorage|indexedDB/);
+});
+
+test("sitemap includes the standalone password generator and excludes admin", () => {
+  assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/password\/<\/loc>/);
+  assert.doesNotMatch(sitemapXml, /\/admin\//);
 });
 
 test("Tetris is served from a branded standalone page with keyboard controls", () => {
@@ -371,6 +392,7 @@ test("mobile match-three uses accessible tap and swipe controls with isolated pe
 
 test("all standalone tool pages link to Tetris", () => {
   assert.match(jsonHtml, /href="\/tetris\/"/);
+  assert.match(passwordHtml, /href="\/tetris\/"/);
   assert.match(tetrisHtml, /aria-current="page" href="\/tetris\/"/);
 });
 

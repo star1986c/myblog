@@ -9,12 +9,14 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
 - Vendors Three.js locally to avoid a third-party CDN request on first load.
 - Adds `favicon.svg`, `sitemap.xml`, and a robots file with AI crawler signals.
 - Adds a standalone JSON formatter at `/json/`.
+- Adds a standalone password generator at `/password/`; generation and copying stay in the browser
+  and passwords are not stored automatically.
 - Adds a single-login private notes workspace at `/notes/`; note titles and content are encrypted in
   the browser, while D1 stores only versioned AES-GCM envelopes.
 - Stores the random notes data key in D1 only after wrapping it with a Worker secret, so forgetting
   or changing the login password no longer makes notes unreadable.
-- Integrates login account settings into the notes workspace. Retired `/admin/` and `/password/`
-  pages redirect to `/notes/`.
+- Integrates login account settings into the notes workspace. The retired `/admin/` page redirects
+  to `/notes/`; the password generator remains a separate public utility.
 - Redirects former public blog/article/page routes to the private notes workspace and removes all
   blog content from public APIs and the sitemap.
 - Keeps the Worker name as `wispy-cloud-0978`, matching the current Cloudflare custom domain binding.
