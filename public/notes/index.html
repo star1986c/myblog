@@ -8,7 +8,7 @@
     <meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex" />
     <meta name="theme-color" content="#f4f8f6" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/assets/notes.20260813.css" />
+    <link rel="stylesheet" href="/assets/notes.20260813-v2.css" />
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -65,65 +65,29 @@
             </svg>
             私密
           </span>
-          <button class="text-button" type="button" data-lock hidden>锁定</button>
-          <a href="/admin/#account">账号设置</a>
+          <button class="text-button" type="button" data-settings-open>设置</button>
           <a href="/">首页</a>
           <button class="text-button" type="button" data-logout>退出</button>
         </div>
       </header>
 
       <div class="security-notice" data-security-notice hidden>
-        当前账号仍使用初始密码。请先前往<a href="/admin/#account">账号设置</a>修改密码。
+        当前账号仍使用初始密码。请在此处
+        <button type="button" data-settings-notice-open>修改登录密码</button>。
       </div>
 
-      <main class="vault-gate-shell" data-vault-gate>
-        <section class="vault-gate-card" data-vault-setup hidden aria-labelledby="setup-title">
+      <main class="workspace-loading-shell" data-workspace-loading>
+        <section class="workspace-loading-card" aria-labelledby="loading-title">
           <div class="gate-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
               <rect x="5" y="10" width="14" height="10" rx="2" />
               <path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10M12 14v2" />
             </svg>
           </div>
-          <p class="eyebrow">End-to-end encryption</p>
-          <h1 id="setup-title">创建笔记主密码</h1>
-          <p>主密码只在当前浏览器中用于解密，不会发送或保存到服务器。它也将用于现有的密码保险箱。</p>
-          <div class="gate-warning">
-            主密码无法找回。遗忘后，服务器也不能恢复加密笔记，请务必离线备份。
-          </div>
-          <form class="gate-form" data-vault-setup-form>
-            <input type="hidden" name="username" value="private-notes-master-key" autocomplete="username" />
-            <label>
-              主密码（至少 14 个字符）
-              <input name="masterPassword" type="password" minlength="14" maxlength="256" autocomplete="new-password" required />
-            </label>
-            <label>
-              再输入一次
-              <input name="confirmMasterPassword" type="password" minlength="14" maxlength="256" autocomplete="new-password" required />
-            </label>
-            <button class="primary-button" type="submit">创建并解锁</button>
-          </form>
+          <p class="eyebrow">Encrypted workspace</p>
+          <h1 id="loading-title">正在打开私人笔记</h1>
+          <p data-loading-message role="status" aria-live="polite">正在恢复加密密钥并读取笔记…</p>
         </section>
-
-        <section class="vault-gate-card" data-vault-unlock hidden aria-labelledby="unlock-title">
-          <div class="gate-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <rect x="5" y="10" width="14" height="10" rx="2" />
-              <path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10M12 14v2" />
-            </svg>
-          </div>
-          <p class="eyebrow">Encrypted locally</p>
-          <h1 id="unlock-title">解锁私人笔记</h1>
-          <p>输入保险箱主密码。解密只发生在此浏览器，主密码不会离开设备。</p>
-          <form class="gate-form" data-vault-unlock-form>
-            <input type="hidden" name="username" value="private-notes-master-key" autocomplete="username" />
-            <label>
-              主密码
-              <input name="masterPassword" type="password" maxlength="256" autocomplete="current-password" required />
-            </label>
-            <button class="primary-button" type="submit">解锁</button>
-          </form>
-        </section>
-        <p class="gate-message" data-vault-message role="alert"></p>
       </main>
 
       <main class="notes-layout" data-notes-layout hidden>
@@ -209,10 +173,46 @@
         </section>
       </main>
       <p class="global-message" data-global-message role="alert" aria-live="assertive"></p>
+
+      <dialog class="settings-dialog" data-settings-dialog aria-labelledby="settings-title">
+        <form class="settings-card" data-settings-form>
+          <div class="settings-heading">
+            <div>
+              <p class="eyebrow">Account security</p>
+              <h2 id="settings-title">登录账号设置</h2>
+            </div>
+            <button class="dialog-close" type="button" data-settings-close aria-label="关闭账号设置">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+            </button>
+          </div>
+          <p class="settings-copy">这里只修改登录账号。记事加密密钥独立保存，修改或重置登录密码不会再导致笔记打不开。</p>
+          <label>
+            用户名
+            <input name="username" autocomplete="username" maxlength="80" required />
+          </label>
+          <label>
+            当前登录密码
+            <input name="currentPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <label>
+            新登录密码（至少 12 个字符）
+            <input name="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required />
+          </label>
+          <label>
+            再输入一次新密码
+            <input name="confirmPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required />
+          </label>
+          <p class="form-message" data-settings-message role="alert"></p>
+          <div class="settings-actions">
+            <button class="text-button" type="button" data-settings-close>取消</button>
+            <button class="primary-button compact" type="submit">保存设置</button>
+          </div>
+        </form>
+      </dialog>
     </div>
     </div>
 
     <noscript>私人笔记需要启用 JavaScript 才能使用。</noscript>
-    <script type="module" src="/assets/notes.20260813-v2.js"></script>
+    <script type="module" src="/assets/notes.20260813-v3.js"></script>
   </body>
 </html>

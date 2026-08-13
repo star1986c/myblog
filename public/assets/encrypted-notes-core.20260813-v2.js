@@ -1,16 +1,29 @@
-import {
-  VAULT_VERSION,
-  base64UrlToBytes,
-  bytesToBase64Url,
-} from "./password-vault-core.20260713.js";
-
+const ENVELOPE_VERSION = 1;
 const NONCE_BYTES = 12;
+const DATA_KEY_BYTES = 32;
 const MAX_TITLE_LENGTH = 200;
 const MAX_CONTENT_LENGTH = 500_000;
 const MAX_CIPHERTEXT_BYTES = 2_100_000;
 const ENTRY_ID_PATTERN = /^[A-Za-z0-9_-]{8,80}$/;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+function bytesToBase64Url(value) {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("Encrypted data is invalid.");
+  }
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
 
 function requireCrypto(cryptoImpl = globalThis.crypto) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.getRandomValues !== "function") {
@@ -39,7 +52,7 @@ function validateEncryptedNoteEnvelope(input) {
     ciphertext: typeof input?.ciphertext === "string" ? input.ciphertext : "",
     nonce: typeof input?.nonce === "string" ? input.nonce : "",
   };
-  if (!ENTRY_ID_PATTERN.test(envelope.id) || envelope.version !== VAULT_VERSION) {
+  if (!ENTRY_ID_PATTERN.test(envelope.id) || envelope.version !== ENVELOPE_VERSION) {
     throw new Error("Encrypted note metadata is invalid.");
   }
   if (base64UrlToBytes(envelope.nonce).byteLength !== NONCE_BYTES) {
@@ -61,7 +74,7 @@ async function encryptNote(dataKey, id, input, cryptoImpl = globalThis.crypto) {
     {
       name: "AES-GCM",
       iv: nonce,
-      additionalData: noteAdditionalData(id, VAULT_VERSION),
+      additionalData: noteAdditionalData(id, ENVELOPE_VERSION),
       tagLength: 128,
     },
     dataKey,
@@ -69,10 +82,25 @@ async function encryptNote(dataKey, id, input, cryptoImpl = globalThis.crypto) {
   );
   return validateEncryptedNoteEnvelope({
     id,
-    version: VAULT_VERSION,
+    version: ENVELOPE_VERSION,
     ciphertext: bytesToBase64Url(ciphertext),
     nonce: bytesToBase64Url(nonce),
   });
+}
+
+async function importNoteDataKey(value, cryptoImpl = globalThis.crypto) {
+  const cryptoApi = requireCrypto(cryptoImpl);
+  const rawKey = base64UrlToBytes(value);
+  if (rawKey.byteLength !== DATA_KEY_BYTES) {
+    throw new Error("Workspace data key is invalid.");
+  }
+  return await cryptoApi.subtle.importKey(
+    "raw",
+    rawKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
 }
 
 async function decryptNote(dataKey, input, cryptoImpl = globalThis.crypto) {
@@ -102,6 +130,7 @@ export {
   MAX_TITLE_LENGTH,
   decryptNote,
   encryptNote,
+  importNoteDataKey,
   normalizeEncryptedNote,
   validateEncryptedNoteEnvelope,
 };

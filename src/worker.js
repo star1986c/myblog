@@ -7,23 +7,9 @@ import {
 } from "./auth.js";
 import {
   ServiceError,
-  createCategory,
-  createMediaAsset,
-  createPage,
-  createPost,
-  deleteCategory,
-  deletePage,
-  deletePost,
   getAdminAccount,
-  listAdminPages,
-  listAdminPosts,
-  listCategories,
-  listMediaAssets,
   requireDatabase,
   updateAdminAccount,
-  updateCategory,
-  updatePage,
-  updatePost,
 } from "./blog-repository.js";
 import {
   createEncryptedNote,
@@ -31,14 +17,7 @@ import {
   listEncryptedNotes,
   updateEncryptedNote,
 } from "./encrypted-note-repository.js";
-import {
-  createPasswordVault,
-  createPasswordVaultEntry,
-  deletePasswordVaultEntry,
-  readPasswordVault,
-  updatePasswordVault,
-  updatePasswordVaultEntry,
-} from "./password-vault-repository.js";
+import { readOrCreateWorkspaceDataKey } from "./workspace-key-repository.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
@@ -101,6 +80,15 @@ async function handleRequest(request, env, ctx) {
   }
 
   if (url.pathname === "/notes") {
+    return withSiteHeaders(request, redirectResponse("/notes/"));
+  }
+
+  if (
+    url.pathname === "/admin" ||
+    url.pathname === "/admin/" ||
+    url.pathname === "/password" ||
+    url.pathname === "/password/"
+  ) {
     return withSiteHeaders(request, redirectResponse("/notes/"));
   }
 
@@ -736,6 +724,15 @@ async function handleAdminApi(request, env, path) {
 
   const db = requireDatabase(env);
 
+  if (path === "/api/admin/workspace-key" && request.method === "GET") {
+    return jsonResponse({
+      workspaceKey: await readOrCreateWorkspaceDataKey(
+        db,
+        env.NOTES_KEY_ENCRYPTION_SECRET,
+      ),
+    });
+  }
+
   if (path === "/api/admin/encrypted-notes") {
     if (request.method === "GET") {
       return jsonResponse({ notes: await listEncryptedNotes(db) });
@@ -766,108 +763,6 @@ async function handleAdminApi(request, env, path) {
     }
     if (request.method === "PUT") {
       return await handleAccountUpdate(request, env, db);
-    }
-  }
-
-  if (path === "/api/admin/password-vault") {
-    if (request.method === "GET") {
-      return jsonResponse(await readPasswordVault(db));
-    }
-    if (request.method === "POST") {
-      return jsonResponse(
-        { vault: await createPasswordVault(db, await readJson(request)) },
-        { status: 201 },
-      );
-    }
-    if (request.method === "PUT") {
-      return jsonResponse({ vault: await updatePasswordVault(db, await readJson(request)) });
-    }
-  }
-
-  if (path === "/api/admin/password-vault/entries" && request.method === "POST") {
-    return jsonResponse(
-      { entry: await createPasswordVaultEntry(db, await readJson(request)) },
-      { status: 201 },
-    );
-  }
-
-  if (path.startsWith("/api/admin/password-vault/entries/")) {
-    const id = decodeURIComponent(path.slice("/api/admin/password-vault/entries/".length));
-    if (request.method === "PUT") {
-      return jsonResponse({ entry: await updatePasswordVaultEntry(db, id, await readJson(request)) });
-    }
-    if (request.method === "DELETE") {
-      await deletePasswordVaultEntry(db, id);
-      return jsonResponse({ ok: true });
-    }
-  }
-
-  if (path === "/api/admin/posts") {
-    if (request.method === "GET") {
-      return jsonResponse({ posts: await listAdminPosts(db) });
-    }
-    if (request.method === "POST") {
-      return jsonResponse({ post: await createPost(db, await readJson(request)) }, { status: 201 });
-    }
-  }
-
-  if (path.startsWith("/api/admin/posts/")) {
-    const id = decodeURIComponent(path.slice("/api/admin/posts/".length));
-    if (request.method === "PUT") {
-      return jsonResponse({ post: await updatePost(db, id, await readJson(request)) });
-    }
-    if (request.method === "DELETE") {
-      await deletePost(db, id);
-      return jsonResponse({ ok: true });
-    }
-  }
-
-  if (path === "/api/admin/pages") {
-    if (request.method === "GET") {
-      return jsonResponse({ pages: await listAdminPages(db) });
-    }
-    if (request.method === "POST") {
-      return jsonResponse({ page: await createPage(db, await readJson(request)) }, { status: 201 });
-    }
-  }
-
-  if (path.startsWith("/api/admin/pages/")) {
-    const id = decodeURIComponent(path.slice("/api/admin/pages/".length));
-    if (request.method === "PUT") {
-      return jsonResponse({ page: await updatePage(db, id, await readJson(request)) });
-    }
-    if (request.method === "DELETE") {
-      await deletePage(db, id);
-      return jsonResponse({ ok: true });
-    }
-  }
-
-  if (path === "/api/admin/categories") {
-    if (request.method === "GET") {
-      return jsonResponse({ categories: await listCategories(db) });
-    }
-    if (request.method === "POST") {
-      return jsonResponse({ category: await createCategory(db, await readJson(request)) }, { status: 201 });
-    }
-  }
-
-  if (path.startsWith("/api/admin/categories/")) {
-    const id = decodeURIComponent(path.slice("/api/admin/categories/".length));
-    if (request.method === "PUT") {
-      return jsonResponse({ category: await updateCategory(db, id, await readJson(request)) });
-    }
-    if (request.method === "DELETE") {
-      await deleteCategory(db, id);
-      return jsonResponse({ ok: true });
-    }
-  }
-
-  if (path === "/api/admin/media") {
-    if (request.method === "GET") {
-      return jsonResponse({ media: await listMediaAssets(db) });
-    }
-    if (request.method === "POST") {
-      return jsonResponse({ media: await createMediaAsset(db, await readJson(request)) }, { status: 201 });
     }
   }
 

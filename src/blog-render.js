@@ -211,7 +211,7 @@ function renderSiteHeader(current = "") {
     ["home", "/", "Home"],
     ["blog", "/blog/", "Blog"],
     ["json", "/json/", "JSON Formatter"],
-    ["password", "/password/", "Password Generator"],
+    ["notes", "/notes/", "Private Notes"],
     ["tetris", "/tetris/", "Tetris"],
   ];
   const links = navItems

@@ -1,5 +1,5 @@
-const VAULT_ID = "default";
-const VAULT_VERSION = 1;
+const KEYRING_ID = "notes";
+const KEYRING_VERSION = 1;
 const ENTRY_ID_PATTERN = /^[A-Za-z0-9_-]{8,80}$/;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const MAX_CIPHERTEXT_BYTES = 2_100_000;
@@ -64,7 +64,7 @@ function normalizeEncryptedNoteEnvelope(input, expectedId = "") {
       maxBytes: 12,
     }),
   };
-  if (!ENTRY_ID_PATTERN.test(note.id) || note.version !== VAULT_VERSION) {
+  if (!ENTRY_ID_PATTERN.test(note.id) || note.version !== KEYRING_VERSION) {
     throw new EncryptedNoteError("Encrypted note metadata is invalid.", 400);
   }
   if (input?.id && input.id !== note.id) {
@@ -73,13 +73,13 @@ function normalizeEncryptedNoteEnvelope(input, expectedId = "") {
   return note;
 }
 
-async function requireVault(db) {
-  const vault = await db
-    .prepare("SELECT id FROM password_vaults WHERE id = ? LIMIT 1")
-    .bind(VAULT_ID)
+async function requireWorkspaceKey(db) {
+  const keyring = await db
+    .prepare("SELECT id FROM workspace_keyrings WHERE id = ? LIMIT 1")
+    .bind(KEYRING_ID)
     .first();
-  if (!vault) {
-    throw new EncryptedNoteError("Encrypted vault is not configured.", 409);
+  if (!keyring) {
+    throw new EncryptedNoteError("Encrypted workspace key is not configured.", 409);
   }
 }
 
@@ -88,26 +88,26 @@ async function listEncryptedNotes(db) {
     .prepare(
       `SELECT ${NOTE_COLUMNS}
        FROM encrypted_notes
-       WHERE vault_id = ?
+       WHERE keyring_id = ?
        ORDER BY updated_at DESC, created_at DESC`,
     )
-    .bind(VAULT_ID)
+    .bind(KEYRING_ID)
     .all();
   return result.results || [];
 }
 
 async function createEncryptedNote(db, input) {
-  await requireVault(db);
+  await requireWorkspaceKey(db);
   const note = normalizeEncryptedNoteEnvelope(input);
   const now = new Date().toISOString();
   try {
     await db
       .prepare(
         `INSERT INTO encrypted_notes (
-          id, vault_id, version, ciphertext, nonce, created_at, updated_at
+          id, keyring_id, version, ciphertext, nonce, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(note.id, VAULT_ID, note.version, note.ciphertext, note.nonce, now, now)
+      .bind(note.id, KEYRING_ID, note.version, note.ciphertext, note.nonce, now, now)
       .run();
   } catch (error) {
     if (String(error?.message || error).includes("UNIQUE")) {
@@ -125,9 +125,9 @@ async function updateEncryptedNote(db, id, input) {
     .prepare(
       `UPDATE encrypted_notes
        SET version = ?, ciphertext = ?, nonce = ?, updated_at = ?
-       WHERE id = ? AND vault_id = ?`,
+       WHERE id = ? AND keyring_id = ?`,
     )
-    .bind(note.version, note.ciphertext, note.nonce, now, note.id, VAULT_ID)
+    .bind(note.version, note.ciphertext, note.nonce, now, note.id, KEYRING_ID)
     .run();
   if (!result.meta?.changes) {
     throw new EncryptedNoteError("Encrypted note not found.", 404);
@@ -140,8 +140,8 @@ async function deleteEncryptedNote(db, id) {
     throw new EncryptedNoteError("Encrypted note ID is invalid.", 400);
   }
   const result = await db
-    .prepare("DELETE FROM encrypted_notes WHERE id = ? AND vault_id = ?")
-    .bind(id, VAULT_ID)
+    .prepare("DELETE FROM encrypted_notes WHERE id = ? AND keyring_id = ?")
+    .bind(id, KEYRING_ID)
     .run();
   if (!result.meta?.changes) {
     throw new EncryptedNoteError("Encrypted note not found.", 404);

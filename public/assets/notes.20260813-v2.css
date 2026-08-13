@@ -352,7 +352,17 @@ svg {
   text-align: center;
 }
 
-.vault-gate-shell {
+.security-notice button {
+  min-height: 36px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 750;
+  text-decoration: underline;
+}
+
+.workspace-loading-shell {
   display: grid;
   min-height: calc(100dvh - 73px);
   align-content: center;
@@ -360,7 +370,7 @@ svg {
   padding: 40px 24px;
 }
 
-.vault-gate-card {
+.workspace-loading-card {
   width: min(100%, 520px);
   padding: 40px;
   border: 1px solid var(--border);
@@ -385,63 +395,15 @@ svg {
   height: 28px;
 }
 
-.vault-gate-card h1 {
+.workspace-loading-card h1 {
   margin: 0;
   font-size: clamp(1.8rem, 6vw, 2.4rem);
   line-height: 1.2;
 }
 
-.vault-gate-card > p:not(.eyebrow) {
+.workspace-loading-card > p:not(.eyebrow) {
   margin: 12px 0 22px;
   color: var(--text-muted);
-}
-
-.gate-warning {
-  margin-bottom: 22px;
-  padding: 12px 14px;
-  border: 1px solid #fedf89;
-  border-radius: var(--radius-sm);
-  background: #fffaeb;
-  color: #7a2e0e;
-  font-size: 0.88rem;
-}
-
-.gate-form {
-  display: grid;
-  gap: 16px;
-}
-
-.gate-form label {
-  display: grid;
-  gap: 7px;
-  font-size: 0.9rem;
-  font-weight: 650;
-}
-
-.gate-form input {
-  width: 100%;
-  min-height: 48px;
-  padding: 0 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: #fff;
-}
-
-.gate-form input:hover,
-.gate-form input:focus {
-  border-color: var(--primary);
-}
-
-.gate-message {
-  min-height: 24px;
-  max-width: 520px;
-  margin: 14px 0 0;
-  color: var(--danger);
-  text-align: center;
-}
-
-.gate-message[data-tone="success"] {
-  color: var(--primary-strong);
 }
 
 .notes-layout {
@@ -786,6 +748,96 @@ svg {
   display: none;
 }
 
+.settings-dialog {
+  width: min(92vw, 520px);
+  max-height: min(88dvh, 760px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 32px 90px rgba(24, 49, 45, 0.24);
+}
+
+.settings-dialog::backdrop {
+  background: rgba(15, 35, 31, 0.56);
+  backdrop-filter: blur(3px);
+}
+
+.settings-card {
+  display: grid;
+  gap: 16px;
+  padding: 32px;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-heading h2 {
+  margin: 0;
+  font-size: 1.65rem;
+  line-height: 1.2;
+}
+
+.dialog-close {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  place-items: center;
+}
+
+.dialog-close:hover {
+  color: var(--text);
+}
+
+.dialog-close svg {
+  width: 20px;
+  height: 20px;
+}
+
+.settings-copy {
+  margin: -4px 0 2px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.settings-card label {
+  display: grid;
+  gap: 7px;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.settings-card input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.settings-card input:hover,
+.settings-card input:focus {
+  border-color: var(--primary);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 noscript {
   display: block;
   padding: 16px;
@@ -879,18 +931,31 @@ noscript {
     padding: 20px 14px 28px;
   }
 
-  .vault-gate-shell {
+  .workspace-loading-shell {
     min-height: calc(100dvh - 65px);
     padding: 0;
     background: var(--surface);
   }
 
-  .vault-gate-card {
+  .workspace-loading-card {
     min-height: calc(100dvh - 65px);
     padding: 42px 24px;
     border: 0;
     border-radius: 0;
     box-shadow: none;
+  }
+
+  .settings-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: 100dvh;
+    margin: auto 0 0;
+    border-width: 1px 0 0;
+    border-radius: 22px 22px 0 0;
+  }
+
+  .settings-card {
+    padding: 28px 22px max(28px, env(safe-area-inset-bottom));
   }
 }
 

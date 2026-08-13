@@ -1,19 +1,15 @@
 import {
-  MIN_MASTER_PASSWORD_LENGTH,
-  createPasswordVault,
-  unlockPasswordVault,
-} from "./password-vault-core.20260713.js";
-import {
   decryptNote,
   encryptNote,
-} from "./encrypted-notes-core.20260813.js";
+  importNoteDataKey,
+} from "./encrypted-notes-core.20260813-v2.js";
 
 const IDLE_LOCK_MS = 5 * 60 * 1000;
 const HIDDEN_LOCK_MS = 60 * 1000;
 
 const state = {
   csrfToken: "",
-  vault: null,
+  user: null,
   encryptedNotes: [],
   notes: [],
   dataKey: null,
@@ -32,15 +28,16 @@ const elements = {
   loginMessage: document.querySelector("[data-login-message]"),
   appShell: document.querySelector("[data-app-shell]"),
   securityNotice: document.querySelector("[data-security-notice]"),
-  vaultGate: document.querySelector("[data-vault-gate]"),
-  vaultSetup: document.querySelector("[data-vault-setup]"),
-  vaultSetupForm: document.querySelector("[data-vault-setup-form]"),
-  vaultUnlock: document.querySelector("[data-vault-unlock]"),
-  vaultUnlockForm: document.querySelector("[data-vault-unlock-form]"),
-  vaultMessage: document.querySelector("[data-vault-message]"),
+  workspaceLoading: document.querySelector("[data-workspace-loading]"),
+  loadingMessage: document.querySelector("[data-loading-message]"),
   notesLayout: document.querySelector("[data-notes-layout]"),
-  lock: document.querySelector("[data-lock]"),
   logout: document.querySelector("[data-logout]"),
+  settingsOpen: document.querySelector("[data-settings-open]"),
+  settingsNoticeOpen: document.querySelector("[data-settings-notice-open]"),
+  settingsDialog: document.querySelector("[data-settings-dialog]"),
+  settingsClose: document.querySelectorAll("[data-settings-close]"),
+  settingsForm: document.querySelector("[data-settings-form]"),
+  settingsMessage: document.querySelector("[data-settings-message]"),
   newNote: document.querySelector("[data-new-note]"),
   emptyNew: document.querySelector("[data-empty-new]"),
   search: document.querySelector("[data-search]"),
@@ -64,10 +61,14 @@ void init();
 
 function bindEvents() {
   elements.loginForm.addEventListener("submit", handleLogin);
-  elements.vaultSetupForm.addEventListener("submit", handleVaultSetup);
-  elements.vaultUnlockForm.addEventListener("submit", handleVaultUnlock);
-  elements.lock.addEventListener("click", () => void lockWorkspace());
   elements.logout.addEventListener("click", handleLogout);
+  elements.settingsOpen.addEventListener("click", openSettings);
+  elements.settingsNoticeOpen.addEventListener("click", openSettings);
+  elements.settingsClose.forEach((button) => button.addEventListener("click", closeSettings));
+  elements.settingsForm.addEventListener("submit", handleSettingsSubmit);
+  elements.settingsDialog.addEventListener("click", (event) => {
+    if (event.target === elements.settingsDialog) closeSettings();
+  });
   elements.newNote.addEventListener("click", createNote);
   elements.emptyNew.addEventListener("click", createNote);
   elements.search.addEventListener("input", renderNoteList);
@@ -135,12 +136,13 @@ async function handleLogin(event) {
 }
 
 async function handleLogout() {
-  await lockWorkspace({ silent: true });
+  await flushSave();
+  releasePlaintext();
   try {
     await api("/api/auth/logout", { method: "POST" });
   } finally {
     state.csrfToken = "";
-    state.vault = null;
+    state.user = null;
     state.encryptedNotes = [];
     showLogin();
   }
@@ -157,85 +159,87 @@ function showLogin(message = "") {
 function showWorkspace(user) {
   elements.loginShell.hidden = true;
   elements.appShell.hidden = false;
+  state.user = user || null;
   elements.securityNotice.hidden = !user?.mustChangePassword;
+  elements.settingsForm.elements.username.value = user?.username || "";
 }
 
 async function loadEncryptedWorkspace() {
-  setVaultMessage("正在读取加密数据…");
-  const [vaultResult, notesResult] = await Promise.all([
-    api("/api/admin/password-vault"),
+  elements.workspaceLoading.hidden = false;
+  elements.notesLayout.hidden = true;
+  elements.loadingMessage.textContent = "正在恢复加密密钥并读取笔记…";
+  const [keyResult, notesResult] = await Promise.all([
+    api("/api/admin/workspace-key"),
     api("/api/admin/encrypted-notes"),
   ]);
-  state.vault = vaultResult.vault || null;
   state.encryptedNotes = Array.isArray(notesResult.notes) ? notesResult.notes : [];
-  releasePlaintext();
-  showVaultMode(state.vault ? "unlock" : "setup");
-  setVaultMessage(
-    state.vault
-      ? "请输入保险箱主密码；解密只在当前浏览器中进行。"
-      : "创建独立主密码后，笔记标题和正文才会以密文保存。",
-  );
+  try {
+    state.dataKey = await importNoteDataKey(keyResult.workspaceKey?.key || "");
+    state.notes = await Promise.all(state.encryptedNotes.map(async (envelope) => ({
+      envelope,
+      data: await decryptNote(state.dataKey, envelope),
+    })));
+    openWorkspace();
+  } catch (error) {
+    releasePlaintext();
+    elements.workspaceLoading.hidden = false;
+    elements.loadingMessage.textContent = `无法打开加密记事：${error.message}`;
+    throw error;
+  }
 }
 
-async function handleVaultSetup(event) {
+function openSettings() {
+  elements.settingsMessage.textContent = "";
+  elements.settingsForm.elements.username.value = state.user?.username || "";
+  elements.settingsForm.elements.currentPassword.value = "";
+  elements.settingsForm.elements.newPassword.value = "";
+  elements.settingsForm.elements.confirmPassword.value = "";
+  elements.settingsDialog.showModal();
+  elements.settingsForm.elements.username.focus();
+}
+
+function closeSettings() {
+  if (elements.settingsDialog.open) elements.settingsDialog.close();
+  elements.settingsMessage.textContent = "";
+  elements.settingsForm.reset();
+}
+
+async function handleSettingsSubmit(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const body = Object.fromEntries(new FormData(form));
-  if (body.masterPassword !== body.confirmMasterPassword) {
-    setVaultMessage("两次输入的主密码不一致。", "error");
+  const formData = new FormData(form);
+  const username = String(formData.get("username") || "").trim();
+  const currentPassword = String(formData.get("currentPassword") || "");
+  const newPassword = String(formData.get("newPassword") || "");
+  const confirmPassword = String(formData.get("confirmPassword") || "");
+
+  if (newPassword !== confirmPassword) {
+    elements.settingsMessage.textContent = "两次输入的新密码不一致。";
     return;
   }
-  setFormBusy(form, true);
-  setVaultMessage("正在浏览器内创建加密密钥…");
-  try {
-    const created = await createPasswordVault(String(body.masterPassword || ""));
-    const result = await api("/api/admin/password-vault", {
-      method: "POST",
-      body: created.vault,
-    });
-    state.vault = result.vault;
-    state.dataKey = created.dataKey;
-    state.encryptedNotes = [];
-    state.notes = [];
-    form.reset();
-    openWorkspace();
-    setGlobalMessage("主密码已创建。请将它离线保存在安全位置。", "success");
-  } catch (error) {
-    setVaultMessage(vaultErrorMessage(error), "error");
-  } finally {
-    setFormBusy(form, false);
-  }
-}
 
-async function handleVaultUnlock(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const masterPassword = String(new FormData(form).get("masterPassword") || "");
   setFormBusy(form, true);
-  setVaultMessage("正在本地解锁并验证密文…");
+  elements.settingsMessage.textContent = "正在更新登录账号…";
   try {
-    const dataKey = await unlockPasswordVault(masterPassword, state.vault);
-    const notes = await Promise.all(state.encryptedNotes.map(async (envelope) => ({
-      envelope,
-      data: await decryptNote(dataKey, envelope),
-    })));
-    state.dataKey = dataKey;
-    state.notes = notes;
-    form.reset();
-    openWorkspace();
-  } catch {
-    releasePlaintext();
-    showVaultMode("unlock");
-    setVaultMessage("无法解锁。请检查主密码以及加密数据是否完整。", "error");
+    const result = await api("/api/admin/account", {
+      method: "PUT",
+      body: { username, currentPassword, newPassword },
+    });
+    state.user = result.account;
+    state.csrfToken = result.csrfToken || state.csrfToken;
+    elements.securityNotice.hidden = true;
+    closeSettings();
+    setGlobalMessage("登录账号已更新。记事加密密钥不受影响。", "success");
+  } catch (error) {
+    elements.settingsMessage.textContent = accountErrorMessage(error);
   } finally {
     setFormBusy(form, false);
   }
 }
 
 function openWorkspace() {
-  elements.vaultGate.hidden = true;
+  elements.workspaceLoading.hidden = true;
   elements.notesLayout.hidden = false;
-  elements.lock.hidden = false;
   elements.search.value = "";
   renderNoteList();
   if (state.notes.length > 0) {
@@ -246,13 +250,14 @@ function openWorkspace() {
   touchIdleTimer();
 }
 
-async function lockWorkspace({ silent = false } = {}) {
+async function expireSession() {
   await flushSave();
   releasePlaintext();
-  if (state.vault) {
-    showVaultMode("unlock");
-    if (!silent) setVaultMessage("工作区已锁定，内存中的解密密钥与明文已释放。", "success");
-  }
+  await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  state.csrfToken = "";
+  state.user = null;
+  state.encryptedNotes = [];
+  showLogin("已自动锁定。重新登录即可继续，不再需要主密码。");
 }
 
 function releasePlaintext() {
@@ -272,18 +277,8 @@ function releasePlaintext() {
   elements.noteList.replaceChildren();
   elements.noteForm.hidden = true;
   elements.notesLayout.hidden = true;
-  elements.lock.hidden = true;
+  elements.workspaceLoading.hidden = true;
   elements.appShell.classList.remove("is-editing");
-}
-
-function showVaultMode(mode) {
-  elements.vaultGate.hidden = false;
-  elements.vaultSetup.hidden = mode !== "setup";
-  elements.vaultUnlock.hidden = mode !== "unlock";
-  elements.notesLayout.hidden = true;
-  elements.lock.hidden = true;
-  const form = mode === "setup" ? elements.vaultSetupForm : elements.vaultUnlockForm;
-  window.setTimeout(() => form.querySelector("input")?.focus(), 0);
 }
 
 async function createNote() {
@@ -484,14 +479,14 @@ function selectedNote() {
 function touchIdleTimer() {
   if (!state.dataKey) return;
   window.clearTimeout(state.idleTimer);
-  state.idleTimer = window.setTimeout(() => void lockWorkspace(), IDLE_LOCK_MS);
+  state.idleTimer = window.setTimeout(() => void expireSession(), IDLE_LOCK_MS);
 }
 
 function handleVisibilityChange() {
   window.clearTimeout(state.hiddenTimer);
   state.hiddenTimer = 0;
   if (document.hidden && state.dataKey) {
-    state.hiddenTimer = window.setTimeout(() => void lockWorkspace(), HIDDEN_LOCK_MS);
+    state.hiddenTimer = window.setTimeout(() => void expireSession(), HIDDEN_LOCK_MS);
   } else {
     touchIdleTimer();
   }
@@ -500,11 +495,6 @@ function handleVisibilityChange() {
 function setSaveStatus(text, tone = "") {
   elements.saveStatus.textContent = text;
   elements.saveStatus.dataset.tone = tone;
-}
-
-function setVaultMessage(text, tone = "") {
-  elements.vaultMessage.textContent = text;
-  elements.vaultMessage.dataset.tone = tone;
 }
 
 function setGlobalMessage(text, tone = "") {
@@ -540,11 +530,10 @@ function loginErrorMessage(error) {
   return error.message || "暂时无法登录。";
 }
 
-function vaultErrorMessage(error) {
-  if (String(error.message).includes(String(MIN_MASTER_PASSWORD_LENGTH))) {
-    return `主密码至少需要 ${MIN_MASTER_PASSWORD_LENGTH} 个字符。`;
-  }
-  return error.message || "无法创建加密空间。";
+function accountErrorMessage(error) {
+  if (error.status === 403) return "当前登录密码不正确。";
+  if (error.status === 400) return error.message || "请检查账号设置。";
+  return error.message || "暂时无法更新账号。";
 }
 
 async function api(path, options = {}) {

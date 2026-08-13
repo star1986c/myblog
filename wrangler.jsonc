@@ -4,6 +4,9 @@
   "main": "./src/worker.js",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
+  "secrets": {
+    "required": ["SESSION_SECRET", "NOTES_KEY_ENCRYPTION_SECRET"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

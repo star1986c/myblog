@@ -23,6 +23,10 @@ const legacyBlogDeletionMigration = await readFile(
   new URL("../migrations/0006_delete_legacy_blog_content.sql", import.meta.url),
   "utf8",
 );
+const recoverableNotesKeyMigration = await readFile(
+  new URL("../migrations/0007_recoverable_notes_key.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -83,4 +87,19 @@ test("legacy blog deletion removes plaintext content without touching private da
     legacyBlogDeletionMigration,
     /DELETE FROM (?:admin_accounts|password_vaults|password_vault_entries|encrypted_notes)/,
   );
+});
+
+test("recoverable notes key migration retires the forgotten master-password vault", () => {
+  assert.match(recoverableNotesKeyMigration, /CREATE TABLE IF NOT EXISTS workspace_keyrings/);
+  assert.match(recoverableNotesKeyMigration, /wrapped_key TEXT NOT NULL/);
+  assert.match(recoverableNotesKeyMigration, /nonce TEXT NOT NULL/);
+  assert.match(recoverableNotesKeyMigration, /keyring_id TEXT NOT NULL/);
+  assert.match(recoverableNotesKeyMigration, /REFERENCES workspace_keyrings\(id\)/);
+  assert.match(recoverableNotesKeyMigration, /DROP TABLE password_vault_entries/);
+  assert.match(recoverableNotesKeyMigration, /DROP TABLE password_vaults/);
+  assert.doesNotMatch(
+    recoverableNotesKeyMigration,
+    /(?:^|\s)(?:title|content|password|username|master_password)\s+TEXT/im,
+  );
+  assert.doesNotMatch(recoverableNotesKeyMigration, /NOTES_KEY_ENCRYPTION_SECRET\s*=/);
 });

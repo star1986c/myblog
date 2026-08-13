@@ -4,7 +4,6 @@ import test from "node:test";
 
 const indexHtml = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
 const jsonHtml = await readFile(new URL("../public/json/index.html", import.meta.url), "utf8");
-const passwordHtml = await readFile(new URL("../public/password/index.html", import.meta.url), "utf8");
 const tetrisHtml = await readFile(new URL("../public/tetris/index.html", import.meta.url), "utf8");
 const matchThreeHtml = await readFile(new URL("../public/block-puzzle/index.html", import.meta.url), "utf8");
 const matchThreeJs = await readFile(
@@ -49,14 +48,6 @@ const tetrisCss = [
   await readFile(new URL("../public/assets/tetris-page.20260712.css", import.meta.url), "utf8"),
   await readFile(new URL("../public/assets/tetris-page.20260711.css", import.meta.url), "utf8"),
 ].join("\n");
-const passwordJs = await readFile(
-  new URL("../public/assets/password-tool.20260713.js", import.meta.url),
-  "utf8",
-);
-const passwordVaultCoreJs = await readFile(
-  new URL("../public/assets/password-vault-core.20260713.js", import.meta.url),
-  "utf8",
-);
 const visitorNetworkJs = await readFile(
   new URL("../public/assets/visitor-network.20260710-v2.js", import.meta.url),
   "utf8",
@@ -69,29 +60,19 @@ const worldClockJs = await readFile(
   new URL("../public/assets/world-clock.20260711-v2.js", import.meta.url),
   "utf8",
 );
-const adminHtml = await readFile(new URL("../public/admin/index.html", import.meta.url), "utf8");
 const notesHtml = await readFile(new URL("../public/notes/index.html", import.meta.url), "utf8");
 const notesJs = await readFile(
-  new URL("../public/assets/notes.20260813-v2.js", import.meta.url),
+  new URL("../public/assets/notes.20260813-v3.js", import.meta.url),
   "utf8",
 );
 const notesCss = await readFile(
-  new URL("../public/assets/notes.20260813.css", import.meta.url),
+  new URL("../public/assets/notes.20260813-v2.css", import.meta.url),
   "utf8",
 );
 const encryptedNotesCoreJs = await readFile(
-  new URL("../public/assets/encrypted-notes-core.20260813.js", import.meta.url),
+  new URL("../public/assets/encrypted-notes-core.20260813-v2.js", import.meta.url),
   "utf8",
 );
-const adminCss = [
-  await readFile(new URL("../public/assets/admin.20260707.css", import.meta.url), "utf8"),
-  await readFile(new URL("../public/assets/admin.20260713.css", import.meta.url), "utf8"),
-].join("\n");
-const adminJs = [
-  await readFile(new URL("../public/assets/admin.20260707.js", import.meta.url), "utf8"),
-  await readFile(new URL("../public/assets/admin.20260713.js", import.meta.url), "utf8"),
-  await readFile(new URL("../public/assets/admin-vault.20260713.js", import.meta.url), "utf8"),
-].join("\n");
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
 test("home page links to the JSON tool without embedding the formatter", () => {
@@ -101,9 +82,8 @@ test("home page links to the JSON tool without embedding the formatter", () => {
   assert.doesNotMatch(indexHtml, /styles\.20260706-json\.css/);
 });
 
-test("home page links to the standalone password generator", () => {
-  assert.match(indexHtml, /href="\/password\/"/);
-  assert.doesNotMatch(indexHtml, /data-password-tool/);
+test("home page removes the standalone password generator", () => {
+  assert.doesNotMatch(indexHtml, /href="\/password\/"|Password Generator/);
 });
 
 test("home page links to the standalone Tetris game", () => {
@@ -160,7 +140,7 @@ test("home page includes network-synchronized Beijing and Los Angeles clocks", (
 });
 
 test("public pages use consistent English SEO metadata", async () => {
-  const pages = [indexHtml, jsonHtml, passwordHtml, tetrisHtml, matchThreeHtml];
+  const pages = [indexHtml, jsonHtml, tetrisHtml, matchThreeHtml];
   pages.forEach((html) => {
     assert.match(html, /<html lang="en">/);
     assert.match(html, /<meta\s+name="description"/);
@@ -188,23 +168,31 @@ test("public pages use consistent English SEO metadata", async () => {
 test("private notes page encrypts all note fields locally and is excluded from indexing", () => {
   assert.match(notesHtml, /<html lang="zh-Hans">/);
   assert.match(notesHtml, /name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex"/);
-  assert.match(notesHtml, /data-vault-setup-form/);
-  assert.match(notesHtml, /data-vault-unlock-form/);
+  assert.match(notesHtml, /data-workspace-loading/);
+  assert.match(notesHtml, /data-settings-dialog/);
+  assert.match(notesHtml, /data-settings-form/);
+  assert.doesNotMatch(notesHtml, /data-vault-|主密码|\/admin\//);
   assert.match(notesHtml, /data-note-title/);
   assert.match(notesHtml, /data-note-content/);
-  assert.match(notesHtml, /src="\/assets\/notes\.20260813-v2\.js"/);
+  assert.match(notesHtml, /src="\/assets\/notes\.20260813-v3\.js"/);
+  assert.match(notesHtml, /href="\/assets\/notes\.20260813-v2\.css"/);
   assert.match(notesJs, /encryptNote/);
   assert.match(notesJs, /decryptNote/);
   assert.match(notesJs, /\/api\/admin\/encrypted-notes/);
+  assert.match(notesJs, /\/api\/admin\/workspace-key/);
+  assert.match(notesJs, /\/api\/admin\/account/);
+  assert.match(notesJs, /importNoteDataKey/);
   assert.match(notesJs, /IDLE_LOCK_MS = 5 \* 60 \* 1000/);
   assert.match(notesJs, /HIDDEN_LOCK_MS = 60 \* 1000/);
   const loginHandler = notesJs.match(/async function handleLogin\(event\) \{[\s\S]*?\n\}/)?.[0] || "";
   assert.ok(loginHandler.indexOf("new FormData") < loginHandler.indexOf("setFormBusy"));
   assert.match(loginHandler, /body:\s*\{\s*username,\s*password/);
   assert.doesNotMatch(notesJs, /localStorage|sessionStorage|indexedDB/);
+  assert.doesNotMatch(notesJs, /masterPassword|password-vault|unlockPasswordVault/);
   assert.match(encryptedNotesCoreJs, /AES-GCM/);
   assert.match(encryptedNotesCoreJs, /encrypted-note:/);
   assert.match(encryptedNotesCoreJs, /getRandomValues/);
+  assert.match(encryptedNotesCoreJs, /importNoteDataKey/);
   assert.match(notesCss, /@media \(max-width: 760px\)/);
   assert.match(notesCss, /@media \(prefers-reduced-motion: reduce\)/);
 });
@@ -247,25 +235,8 @@ test("sitemap includes the standalone JSON tool URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/json\/<\/loc>/);
 });
 
-test("password generator stays local and links to the encrypted private vault", () => {
-  assert.match(passwordHtml, /<main class="password-shell" data-password-tool>/);
-  assert.match(passwordHtml, /href="https:\/\/superstar1014\.qzz\.io\/password\/"/);
-  assert.match(passwordHtml, /href="\/assets\/tool-brand\.20260710\.css"/);
-  assert.match(passwordHtml, /data-character="lowercase"/);
-  assert.match(passwordHtml, /data-character="symbols"/);
-  assert.match(passwordHtml, /data-password-excluded/);
-  assert.match(passwordHtml, /data-password-length/);
-  assert.match(passwordHtml, /data-password-count/);
-  assert.match(passwordHtml, /href="\/assets\/password-page\.20260713\.css"/);
-  assert.match(passwordHtml, /href="\/admin\/#vault"/);
-  assert.match(passwordHtml, /src="\/assets\/password-tool\.20260713\.js"/);
-  assert.match(passwordJs, /generatePasswords/);
-  assert.doesNotMatch(passwordHtml, /data-password-history|plain text in this browser/);
-  assert.doesNotMatch(passwordJs, /localStorage|sessionStorage|indexedDB/);
-});
-
-test("sitemap includes the standalone password generator URL", () => {
-  assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/password\/<\/loc>/);
+test("sitemap excludes retired password and admin pages", () => {
+  assert.doesNotMatch(sitemapXml, /\/password\/|\/admin\//);
 });
 
 test("Tetris is served from a branded standalone page with keyboard controls", () => {
@@ -400,7 +371,6 @@ test("mobile match-three uses accessible tap and swipe controls with isolated pe
 
 test("all standalone tool pages link to Tetris", () => {
   assert.match(jsonHtml, /href="\/tetris\/"/);
-  assert.match(passwordHtml, /href="\/tetris\/"/);
   assert.match(tetrisHtml, /aria-current="page" href="\/tetris\/"/);
 });
 
@@ -410,73 +380,4 @@ test("sitemap includes the standalone Tetris URL", () => {
 
 test("sitemap includes the standalone mobile match-three URL", () => {
   assert.match(sitemapXml, /<loc>https:\/\/superstar1014\.qzz\.io\/block-puzzle\/<\/loc>/);
-});
-
-test("admin console is served from a standalone page with private article defaults", () => {
-  assert.match(adminHtml, /data-admin-app/);
-  assert.match(adminHtml, /href="\/assets\/admin\.20260713\.css"/);
-  assert.match(adminHtml, /src="\/assets\/admin\.20260713\.js"/);
-  assert.match(adminHtml, /name="visibility"/);
-  assert.match(adminHtml, /value="private" selected/);
-  assert.match(adminHtml, /name="status"/);
-  assert.match(adminHtml, /value="draft" selected/);
-});
-
-test("admin console uses manual media URLs instead of file upload", () => {
-  assert.match(adminHtml, /data-tab="media"/);
-  assert.match(adminHtml, /data-media-form/);
-  assert.match(adminHtml, /name="url"/);
-  assert.doesNotMatch(adminHtml, /type="file"/);
-});
-
-test("admin console includes an account password change panel", () => {
-  assert.match(adminHtml, /data-tab="account"/);
-  assert.match(adminHtml, /data-account-form/);
-  assert.match(adminHtml, /name="currentPassword"/);
-  assert.match(adminHtml, /name="newPassword"/);
-});
-
-test("admin console includes a zero-knowledge encrypted password vault", () => {
-  assert.match(adminHtml, /data-tab="vault"/);
-  assert.match(adminHtml, /data-password-vault/);
-  assert.match(adminHtml, /data-vault-setup-form/);
-  assert.match(adminHtml, /data-vault-unlock-form/);
-  assert.match(adminHtml, /data-vault-entry-form/);
-  assert.match(adminHtml, /data-vault-change-form/);
-  assert.match(adminHtml, /data-vault-export/);
-  assert.match(adminJs, /encryptPasswordVaultEntry/);
-  assert.match(adminJs, /\/api\/admin\/password-vault/);
-  assert.match(adminJs, /IDLE_LOCK_MS = 5 \* 60 \* 1000/);
-  assert.match(adminJs, /HIDDEN_LOCK_MS = 60 \* 1000/);
-  assert.doesNotMatch(adminJs, /localStorage|sessionStorage|indexedDB/);
-  assert.match(passwordVaultCoreJs, /PBKDF2-SHA-256/);
-  assert.match(passwordVaultCoreJs, /name: "AES-GCM"/);
-  assert.match(passwordVaultCoreJs, /additionalData/);
-  assert.match(passwordVaultCoreJs, /600_000/);
-});
-
-test("admin console presents a polished content workspace", () => {
-  assert.match(adminHtml, /Content Studio/);
-  assert.match(adminHtml, /data-section-description/);
-  assert.match(adminHtml, /data-workspace-message/);
-  assert.match(adminHtml, /data-create-label="New post"/);
-  assert.match(adminHtml, /class="form-section"/);
-  assert.match(adminHtml, /class="list-column"/);
-  assert.match(adminCss, /\.workspace-shell/);
-  assert.match(adminCss, /\.status-badge/);
-  assert.match(adminCss, /\.empty-state/);
-  assert.match(adminJs, /renderEmptyState/);
-  assert.match(adminJs, /setWorkspaceMessage/);
-});
-
-test("admin login form is forcibly hidden after authentication", () => {
-  assert.match(adminJs, /classList\.add\("is-authenticated"\)/);
-  assert.match(adminCss, /\.is-authenticated\s+\[data-login\]/);
-  assert.match(adminCss, /display:\s*none\s*!important/);
-  assert.match(adminCss, /\.console\[hidden\]/);
-  assert.match(adminCss, /\.sidebar\s+\.tabs/);
-  assert.match(adminCss, /body\.is-authenticated\s+\.tabs/);
-  assert.match(adminCss, /\.is-authenticated\s+\[data-console\]/);
-  assert.match(adminCss, /@media \(max-width: 760px\)/);
-  assert.match(adminCss, /\.vault-layout/);
 });
