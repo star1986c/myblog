@@ -66,8 +66,9 @@ notes reuse the vault's random data key, encrypt the full `{ title, content }` p
 and use a unique AES-GCM nonce plus record-bound authenticated data for every save.
 
 Migration `0005_make_blog_private.sql` revokes any previous article/page publication flags and adds
-the ciphertext-only `encrypted_notes` table. Existing blog rows are retained as private drafts but
-are not automatically converted because the Worker never receives the vault master password.
+the ciphertext-only `encrypted_notes` table. Migration `0006_delete_legacy_blog_content.sql` then
+permanently deletes legacy posts, pages, categories, post-category links, and media records. It does
+not delete administrator accounts, password-vault data, or encrypted notes.
 
 Media records use manually entered URLs, so R2 is not required for the blog
 admin or production deployment.

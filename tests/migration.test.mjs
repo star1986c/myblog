@@ -19,6 +19,10 @@ const privateNotesMigration = await readFile(
   new URL("../migrations/0005_make_blog_private.sql", import.meta.url),
   "utf8",
 );
+const legacyBlogDeletionMigration = await readFile(
+  new URL("../migrations/0006_delete_legacy_blog_content.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -67,4 +71,16 @@ test("private notes migration revokes publication and stores encrypted envelopes
   assert.match(privateNotesMigration, /nonce TEXT NOT NULL/);
   assert.doesNotMatch(privateNotesMigration, /(?:^|\s)(?:title|content|password|username)\s+TEXT/im);
   assert.doesNotMatch(privateNotesMigration, /published_at\s*=|updated_at\s*=/);
+});
+
+test("legacy blog deletion removes plaintext content without touching private data", () => {
+  assert.match(legacyBlogDeletionMigration, /DELETE FROM post_categories/);
+  assert.match(legacyBlogDeletionMigration, /DELETE FROM posts/);
+  assert.match(legacyBlogDeletionMigration, /DELETE FROM pages/);
+  assert.match(legacyBlogDeletionMigration, /DELETE FROM categories/);
+  assert.match(legacyBlogDeletionMigration, /DELETE FROM media_assets/);
+  assert.doesNotMatch(
+    legacyBlogDeletionMigration,
+    /DELETE FROM (?:admin_accounts|password_vaults|password_vault_entries|encrypted_notes)/,
+  );
 });
