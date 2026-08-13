@@ -192,12 +192,15 @@ test("private notes page encrypts all note fields locally and is excluded from i
   assert.match(notesHtml, /data-vault-unlock-form/);
   assert.match(notesHtml, /data-note-title/);
   assert.match(notesHtml, /data-note-content/);
-  assert.match(notesHtml, /src="\/assets\/notes\.20260813\.js"/);
+  assert.match(notesHtml, /src="\/assets\/notes\.20260813\.js\?v=2"/);
   assert.match(notesJs, /encryptNote/);
   assert.match(notesJs, /decryptNote/);
   assert.match(notesJs, /\/api\/admin\/encrypted-notes/);
   assert.match(notesJs, /IDLE_LOCK_MS = 5 \* 60 \* 1000/);
   assert.match(notesJs, /HIDDEN_LOCK_MS = 60 \* 1000/);
+  const loginHandler = notesJs.match(/async function handleLogin\(event\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.ok(loginHandler.indexOf("new FormData") < loginHandler.indexOf("setFormBusy"));
+  assert.match(loginHandler, /body:\s*\{\s*username,\s*password/);
   assert.doesNotMatch(notesJs, /localStorage|sessionStorage|indexedDB/);
   assert.match(encryptedNotesCoreJs, /AES-GCM/);
   assert.match(encryptedNotesCoreJs, /encrypted-note:/);

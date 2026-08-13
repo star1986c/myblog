@@ -104,17 +104,19 @@ async function init() {
 
 async function handleLogin(event) {
   event.preventDefault();
+  const formData = new FormData(elements.loginForm);
+  const username = formData.get("username");
+  const password = formData.get("password");
   elements.loginMessage.textContent = "";
   setFormBusy(elements.loginForm, true);
   elements.loginButton.textContent = "正在登录…";
-  const formData = new FormData(elements.loginForm);
 
   try {
     const result = await api("/api/auth/login", {
       method: "POST",
       body: {
-        username: formData.get("username"),
-        password: formData.get("password"),
+        username,
+        password,
       },
     });
     state.csrfToken = result.csrfToken || "";
