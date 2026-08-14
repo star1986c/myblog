@@ -6,7 +6,7 @@ import Testing
 
 @Suite("Automatic note saving", .serialized)
 struct AutoSaveTests {
-  @Test("Debounced save reaches the API without cancelling itself")
+  @Test("Manual save is immediate while automatic save waits for a quiet period")
   @MainActor
   func debouncedSaveCompletes() async throws {
     let keyText = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
@@ -33,21 +33,26 @@ struct AutoSaveTests {
       baseURL: URL(string: "https://notes.test/")!,
       session: URLSession(configuration: configuration)
     )
-    let store = NotesStore(api: api)
+    let store = NotesStore(api: api, autoSaveDelay: .milliseconds(350))
 
     await store.login(username: "admin", password: "test-password")
     #expect(store.selectedID == noteID)
 
     store.updateSelectedContent("11111")
-    try await Task.sleep(for: .milliseconds(1_100))
+    #expect(store.saveState == .dirty)
+    try await Task.sleep(for: .milliseconds(120))
+    #expect(AutoSaveURLProtocol.updateRequestCount == 0)
+
+    #expect(await store.saveSelected())
 
     #expect(AutoSaveURLProtocol.updateRequestCount == 1)
     #expect(store.saveState == .saved)
     #expect(store.selectedDocument?.content.content == "11111")
     #expect(store.selectedDocument?.envelope.revision == 2)
 
-    store.updateSelectedContent("still saves after a wrong password")
-    try await Task.sleep(for: .milliseconds(1_100))
+    store.updateSelectedContent("中文输入完成后再自动保存")
+    #expect(store.saveState == .dirty)
+    try await Task.sleep(for: .milliseconds(550))
     #expect(AutoSaveURLProtocol.updateRequestCount == 2)
     #expect(store.saveState == .saved)
     #expect(store.selectedDocument?.envelope.revision == 3)

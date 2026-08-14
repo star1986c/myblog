@@ -21,14 +21,23 @@ public final class NotesStore: ObservableObject {
   private var dataKey: SymmetricKey?
   private var protectionKey: SymmetricKey?
   private var autoSaveTasks: [String: Task<Void, Never>] = [:]
+  private var dirtyNoteIDs: Set<String> = []
+  private let autoSaveDelay: Duration
 
-  public init(api: NotesAPIClient = NotesAPIClient()) {
+  public init(
+    api: NotesAPIClient = NotesAPIClient(),
+    autoSaveDelay: Duration = .seconds(10)
+  ) {
     self.api = api
+    self.autoSaveDelay = autoSaveDelay
   }
 
   #if DEBUG
     public static func preview() -> NotesStore {
-      let store = NotesStore()
+      let store = NotesStore(
+        api: NotesAPIClient(baseURL: URL(string: "http://127.0.0.1:9/")!),
+        autoSaveDelay: .seconds(3_600)
+      )
       store.user = AdminUser(username: "star", mustChangePassword: false)
       store.folders = [
         previewFolder(id: "folder_linux", name: "Linux"),
@@ -307,6 +316,12 @@ public final class NotesStore: ObservableObject {
     updateSelected { $0.content = content }
   }
 
+  @discardableResult
+  public func saveSelected() async -> Bool {
+    guard !location.isTrash, let id = selectedID else { return true }
+    return await save(id: id)
+  }
+
   public func setupAndProtectSelected(password: String, confirmation: String) async throws {
     guard password == confirmation else { throw NoteUnlockError.confirmationMismatch }
     guard protectionKeyring == nil else {
@@ -350,6 +365,7 @@ public final class NotesStore: ObservableObject {
     else { throw NoteUnlockError.incorrectPassword }
     activeNotes[index].content.protectedContent = nil
     activeNotes[index].envelope.isLocked = false
+    dirtyNoteIDs.insert(id)
     guard await performSave(id: id) else { throw NotesAPIError.invalidResponse }
     protectionKey = nil
     unlockedProtectedNoteID = nil
@@ -482,15 +498,17 @@ public final class NotesStore: ObservableObject {
     else { return }
     if activeNotes[index].isProtected && unlockedProtectedNoteID != id { return }
     mutation(&activeNotes[index].content)
-    saveState = .saving
+    dirtyNoteIDs.insert(id)
+    saveState = .dirty
     scheduleSave(id: id)
   }
 
   private func scheduleSave(id: String) {
     autoSaveTasks[id]?.cancel()
+    let delay = autoSaveDelay
     autoSaveTasks[id] = Task { [weak self] in
       do {
-        try await Task.sleep(for: .milliseconds(700))
+        try await Task.sleep(for: delay)
         guard !Task.isCancelled else { return }
         await self?.runScheduledSave(id: id)
       } catch {
@@ -511,6 +529,7 @@ public final class NotesStore: ObservableObject {
   private func save(id: String) async -> Bool {
     autoSaveTasks[id]?.cancel()
     autoSaveTasks[id] = nil
+    guard dirtyNoteIDs.contains(id) else { return true }
     return await performSave(id: id)
   }
 
@@ -544,15 +563,14 @@ public final class NotesStore: ObservableObject {
         return true
       }
       activeNotes[currentIndex].envelope = envelope
-      if activeNotes[currentIndex].content == snapshot {
-        activeNotes[currentIndex].content = snapshot.normalized()
-        saveState = .saved
-      } else if activeNotes[currentIndex].content.title == snapshot.title
+      if activeNotes[currentIndex].content.title == snapshot.title
         && activeNotes[currentIndex].content.content == snapshot.content
       {
         activeNotes[currentIndex].content.protectedContent = snapshot.protectedContent
+        dirtyNoteIDs.remove(id)
         saveState = .saved
       } else {
+        saveState = .dirty
         scheduleSave(id: id)
       }
       return true
@@ -563,7 +581,7 @@ public final class NotesStore: ObservableObject {
   }
 
   private func flushPendingSaves() async {
-    let ids = Array(autoSaveTasks.keys)
+    let ids = Array(Set(autoSaveTasks.keys).union(dirtyNoteIDs))
     for id in ids { _ = await save(id: id) }
   }
 
@@ -603,6 +621,7 @@ public final class NotesStore: ObservableObject {
   private func clearSensitiveState() {
     for task in autoSaveTasks.values { task.cancel() }
     autoSaveTasks.removeAll()
+    dirtyNoteIDs.removeAll()
     user = nil
     activeNotes.removeAll()
     trashedNotes.removeAll()
@@ -628,6 +647,7 @@ public final class NotesStore: ObservableObject {
       using: key
     )
     activeNotes[index].envelope.isLocked = true
+    dirtyNoteIDs.insert(id)
     protectionKey = key
     unlockedProtectedNoteID = id
     guard await performSave(id: id) else { throw NotesAPIError.invalidResponse }

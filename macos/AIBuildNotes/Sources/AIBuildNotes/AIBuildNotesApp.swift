@@ -25,6 +25,19 @@ struct AIBuildNotesApp: App {
         .keyboardShortcut("n", modifiers: .command)
         .disabled(store.user == nil || store.location.isTrash)
       }
+      CommandGroup(replacing: .saveItem) {
+        Button("保存笔记") {
+          Task { await store.saveSelected() }
+        }
+        .keyboardShortcut("s", modifiers: .command)
+        .disabled(
+          store.user == nil
+            || store.location.isTrash
+            || store.selectedDocument == nil
+            || store.saveState == .saving
+        )
+      }
+
       CommandGroup(after: .sidebar) {
         Button("刷新笔记") {
           Task { await store.refresh() }

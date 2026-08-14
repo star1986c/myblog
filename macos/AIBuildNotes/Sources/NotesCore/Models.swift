@@ -378,6 +378,7 @@ public enum NoteListDisplayMode: String, CaseIterable, Identifiable, Sendable {
 
 public enum NoteSaveState: Equatable, Sendable {
   case idle
+  case dirty
   case saving
   case saved
   case failed

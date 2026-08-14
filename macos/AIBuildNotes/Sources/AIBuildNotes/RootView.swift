@@ -693,6 +693,17 @@ private struct NoteEditorView: View {
       }
       Spacer()
       if !store.location.isTrash {
+        Button {
+          Task { await store.saveSelected() }
+        } label: {
+          Label("保存", systemImage: "square.and.arrow.down")
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(
+          store.saveState == .saving
+            || (document.isProtected && !store.isUnlocked(document))
+        )
+        .help("保存笔记（⌘S）")
         protectionControl(document)
         folderMenu(document)
         Button(role: .destructive) {
@@ -790,6 +801,9 @@ private struct NoteEditorView: View {
       switch store.saveState {
       case .idle:
         Text("内容已在本地解密")
+      case .dirty:
+        Label("有未保存更改", systemImage: "circle.fill")
+          .foregroundStyle(.orange)
       case .saving:
         Label("正在加密保存…", systemImage: "arrow.triangle.2.circlepath")
       case .saved:
