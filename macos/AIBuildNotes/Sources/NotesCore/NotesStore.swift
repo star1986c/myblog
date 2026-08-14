@@ -20,6 +20,7 @@ public final class NotesStore: ObservableObject {
   @Published public private(set) var isAttachmentWorking = false
 
   private let api: NotesAPIClient
+  private let attachmentCache: AttachmentDiskCache
   private var dataKey: SymmetricKey?
   private var protectionKey: SymmetricKey?
   private var autoSaveTasks: [String: Task<Void, Never>] = [:]
@@ -28,9 +29,11 @@ public final class NotesStore: ObservableObject {
 
   public init(
     api: NotesAPIClient = NotesAPIClient(),
+    attachmentCache: AttachmentDiskCache = AttachmentDiskCache(),
     autoSaveDelay: Duration = .seconds(10)
   ) {
     self.api = api
+    self.attachmentCache = attachmentCache
     self.autoSaveDelay = autoSaveDelay
   }
 
@@ -209,6 +212,33 @@ public final class NotesStore: ObservableObject {
     await flushPendingSaves()
     await api.logout()
     clearSensitiveState()
+  }
+
+  @discardableResult
+  public func changeLoginPassword(
+    currentPassword: String,
+    newPassword: String
+  ) async -> Bool {
+    guard let username = user?.username, !isWorking else { return false }
+    guard newPassword.count >= 12 else {
+      errorMessage = "新密码至少需要 12 个字符。"
+      return false
+    }
+    await flushPendingSaves()
+    isWorking = true
+    errorMessage = nil
+    defer { isWorking = false }
+    do {
+      user = try await api.changePassword(
+        username: username,
+        currentPassword: currentPassword,
+        newPassword: newPassword
+      )
+      return true
+    } catch {
+      errorMessage = friendlyMessage(error)
+      return false
+    }
   }
 
   public func refresh() async {
@@ -479,6 +509,7 @@ public final class NotesStore: ObservableObject {
     else { return }
     do {
       try await api.purge(id: id, revision: trashedNotes[index].envelope.revision)
+      await attachmentCache.removeAll(noteID: id)
       trashedNotes.remove(at: index)
       selectedID = trashedNotes.first?.id
     } catch {
@@ -500,6 +531,7 @@ public final class NotesStore: ObservableObject {
       let envelopes = try await api.listAttachments(noteID: noteID)
       guard selectedID == noteID else { return }
       if envelopes.isEmpty {
+        await attachmentCache.removeAll(noteID: noteID)
         selectedAttachments.removeAll()
         return
       }
@@ -518,6 +550,7 @@ public final class NotesStore: ObservableObject {
         }
       }.value
       guard selectedID == noteID else { return }
+      await attachmentCache.retain(envelopes, noteID: noteID)
       selectedAttachments = attachments
     } catch {
       guard selectedID == noteID else { return }
@@ -573,6 +606,7 @@ public final class NotesStore: ObservableObject {
         encrypted.payload,
         encryptedBody: encrypted.body
       )
+      await attachmentCache.store(encrypted.body, for: envelope)
       guard selectedID == noteID else { return }
       selectedAttachments.append(
         NoteAttachment(envelope: envelope, metadata: encrypted.metadata, imageData: data)
@@ -590,16 +624,30 @@ public final class NotesStore: ObservableObject {
     let envelope = selectedAttachments[index].envelope
     let metadata = selectedAttachments[index].metadata
     do {
-      let encrypted = try await api.downloadAttachment(noteID: noteID, id: id)
-      let image = try await Task.detached {
-        try AttachmentCrypto.decryptBody(
+      var image: Data?
+      if let cached = await attachmentCache.data(for: envelope) {
+        do {
+          image = try await decryptAttachmentBody(
+            cached,
+            envelope: envelope,
+            metadata: metadata
+          )
+        } catch {
+          await attachmentCache.remove(for: envelope)
+        }
+      }
+      if image == nil {
+        let encrypted = try await api.downloadAttachment(noteID: noteID, id: id)
+        image = try await decryptAttachmentBody(
           encrypted,
           envelope: envelope,
           metadata: metadata
         )
-      }.value
+        await attachmentCache.store(encrypted, for: envelope)
+      }
       guard selectedID == noteID,
-        let current = selectedAttachments.firstIndex(where: { $0.id == id })
+        let current = selectedAttachments.firstIndex(where: { $0.id == id }),
+        let image
       else { return }
       selectedAttachments[current].imageData = image
     } catch {
@@ -620,6 +668,7 @@ public final class NotesStore: ObservableObject {
         id: id,
         revision: selectedAttachments[index].envelope.revision
       )
+      await attachmentCache.remove(for: selectedAttachments[index].envelope)
       guard selectedID == noteID else { return }
       selectedAttachments.removeAll { $0.id == id }
     } catch {
@@ -665,6 +714,20 @@ public final class NotesStore: ObservableObject {
     selectedID = visibleNotes.first?.id
     saveState = .idle
     selectedAttachments.removeAll()
+  }
+
+  private func decryptAttachmentBody(
+    _ encrypted: Data,
+    envelope: EncryptedAttachmentEnvelope,
+    metadata: AttachmentMetadata
+  ) async throws -> Data {
+    try await Task.detached {
+      try AttachmentCrypto.decryptBody(
+        encrypted,
+        envelope: envelope,
+        metadata: metadata
+      )
+    }.value
   }
 
   private func updateSelected(_ mutation: (inout NoteContent) -> Void) {

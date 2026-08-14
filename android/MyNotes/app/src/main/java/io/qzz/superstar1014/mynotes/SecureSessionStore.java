@@ -69,6 +69,10 @@ final class SecureSessionStore {
     saveEncrypted(TOKEN_KEY, "my-notes:device-token:v1", token);
   }
 
+  void clearDeviceToken() {
+    preferences.edit().remove(TOKEN_KEY).apply();
+  }
+
   private void saveEncrypted(String preferenceKey, String aad, String value) {
     if (value == null || value.isEmpty()) {
       preferences.edit().remove(preferenceKey).apply();

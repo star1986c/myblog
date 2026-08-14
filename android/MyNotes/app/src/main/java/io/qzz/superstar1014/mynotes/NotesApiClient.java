@@ -70,6 +70,26 @@ final class NotesApiClient {
     }
   }
 
+  Models.User changePassword(
+    String username,
+    String currentPassword,
+    String newPassword
+  ) throws Exception {
+    JSONObject json = request(
+      "PUT",
+      "api/admin/account",
+      new JSONObject()
+        .put("username", username)
+        .put("currentPassword", currentPassword)
+        .put("newPassword", newPassword),
+      null
+    );
+    csrfToken = json.optString("csrfToken");
+    // The Worker revoked every remembered-device token after this change.
+    sessionStore.clearDeviceToken();
+    return Models.User.fromJson(json.getJSONObject("account"));
+  }
+
   private JSONObject refreshDeviceToken() throws Exception {
     String token = sessionStore.loadDeviceToken();
     HttpURLConnection connection = open("POST", "api/auth/token");

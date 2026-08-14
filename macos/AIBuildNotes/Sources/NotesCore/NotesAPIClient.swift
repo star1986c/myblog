@@ -73,6 +73,26 @@ public actor NotesAPIClient {
     csrfToken = ""
   }
 
+  public func changePassword(
+    username: String,
+    currentPassword: String,
+    newPassword: String
+  ) async throws -> AdminUser {
+    let response: AccountResponse = try await request(
+      method: "PUT",
+      path: "api/admin/account",
+      body: try JSONEncoder().encode(
+        AccountUpdateRequest(
+          username: username,
+          currentPassword: currentPassword,
+          newPassword: newPassword
+        )
+      )
+    )
+    csrfToken = response.csrfToken
+    return response.account
+  }
+
   public func workspaceKey() async throws -> String {
     let response: WorkspaceKeyResponse = try await request(path: "api/admin/workspace-key")
     return response.workspaceKey.key
@@ -346,6 +366,17 @@ private struct LoginRequest: Codable {
 
 private struct LoginResponse: Codable {
   let user: AdminUser
+  let csrfToken: String
+}
+
+private struct AccountUpdateRequest: Codable {
+  let username: String
+  let currentPassword: String
+  let newPassword: String
+}
+
+private struct AccountResponse: Codable {
+  let account: AdminUser
   let csrfToken: String
 }
 

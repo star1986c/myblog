@@ -4,6 +4,10 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.os.Bundle;
 
+import java.io.File;
+import java.util.Arrays;
+import java.util.List;
+
 import javax.crypto.SecretKey;
 
 public final class CryptoTestRunner extends Instrumentation {
@@ -21,6 +25,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyRoundTripsAndBinding();
       verifySharedProtectionPassword();
       verifyEncryptedAttachments();
+      verifyAttachmentDiskCache();
       verifySecureSessionStorage();
       result.putString(REPORT_KEY_STREAMRESULT, "My Notes crypto interoperability: PASS\n");
       finish(Activity.RESULT_OK, result);
@@ -237,9 +242,61 @@ public final class CryptoTestRunner extends Instrumentation {
       "device-id.device-secret".equals(store.loadDeviceToken()),
       "Android Keystore device token round trip failed"
     );
+    store.clearDeviceToken();
+    require(store.loadDeviceToken().isEmpty(), "Revoked device token was not cleared");
+    require(
+      "site_admin_session=test-token".equals(store.load()),
+      "Clearing a revoked device token also cleared the active session"
+    );
     store.clear();
     require(store.load().isEmpty(), "Secure session clear failed");
     require(store.loadDeviceToken().isEmpty(), "Secure device token clear failed");
+  }
+
+  private void verifyAttachmentDiskCache() {
+    File directory = new File(
+      getTargetContext().getCacheDir(),
+      "encrypted-attachment-cache-test-" + System.nanoTime()
+    );
+    AttachmentDiskCache cache = new AttachmentDiskCache(directory);
+    byte[] encrypted = new byte[48];
+    Arrays.fill(encrypted, (byte) 0x5A);
+    Models.AttachmentEnvelope envelope = new Models.AttachmentEnvelope(
+      "attachment_cache_android",
+      "note_cache_android",
+      1,
+      1,
+      "encrypted-metadata",
+      "metadata-nonce",
+      true,
+      encrypted.length,
+      null,
+      "2026-08-14T12:00:00.000Z"
+    );
+
+    cache.write(envelope, encrypted);
+    require(Arrays.equals(encrypted, cache.read(envelope)), "Encrypted image cache round trip failed");
+
+    Models.AttachmentEnvelope changed = new Models.AttachmentEnvelope(
+      envelope.id,
+      envelope.noteId,
+      envelope.version,
+      2,
+      envelope.ciphertext,
+      envelope.nonce,
+      envelope.locked,
+      envelope.ciphertextBytes,
+      null,
+      "2026-08-14T13:00:00.000Z"
+    );
+    require(cache.read(changed) == null, "Changed attachment reused stale cached bytes");
+    cache.retain(envelope.noteId, List.of(changed));
+    require(cache.read(envelope) == null, "Stale attachment cache entry was retained");
+
+    cache.write(changed, encrypted);
+    cache.removeNote(envelope.noteId);
+    require(cache.read(changed) == null, "Deleted note retained encrypted image cache");
+    directory.delete();
   }
 
   private static void require(boolean condition, String message) {

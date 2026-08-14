@@ -82,6 +82,7 @@ public final class MainActivity extends Activity {
   private final List<Models.AttachmentDocument> attachments = new ArrayList<>();
 
   private NotesApiClient api;
+  private AttachmentDiskCache attachmentCache;
   private Models.User user;
   private SecretKey dataKey;
   private Models.ProtectionKeyring protectionKeyring;
@@ -120,6 +121,7 @@ public final class MainActivity extends Activity {
       backCallback
     );
     api = new NotesApiClient(this, demoMode ? "http://127.0.0.1:9/" : NotesApiClient.PRODUCTION_BASE_URL);
+    attachmentCache = new AttachmentDiskCache(this);
     if (demoMode) loadDemoData();
     else restoreSession();
   }
@@ -671,9 +673,10 @@ public final class MainActivity extends Activity {
       menu.getMenu().add(1, nextId++, nextId, folder.name + "（" + count + "）").setIcon(R.drawable.ic_folder);
     }
     menu.getMenu().add(2, 3, 1_000, "新建文件夹").setIcon(R.drawable.ic_add);
-    if (!folders.isEmpty()) menu.getMenu().add(2, 6, 1_001, "管理文件夹").setIcon(R.drawable.ic_folder);
+    if (!folders.isEmpty()) menu.getMenu().add(2, 6, 1_001, "文件夹排序与管理").setIcon(R.drawable.ic_sort);
     menu.getMenu().add(2, 4, 1_002, "回收站（" + trash.size() + "）").setIcon(R.drawable.ic_trash);
-    menu.getMenu().add(3, 5, 2_000, "退出登录").setIcon(R.drawable.ic_logout);
+    menu.getMenu().add(3, 7, 2_000, "修改登录密码").setIcon(R.drawable.ic_key);
+    menu.getMenu().add(3, 5, 2_001, "退出登录").setIcon(R.drawable.ic_logout);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 1) location = LOCATION_ALL;
       else if (item.getItemId() == 2) location = LOCATION_UNFILED;
@@ -687,6 +690,9 @@ public final class MainActivity extends Activity {
       }
       else if (item.getItemId() == 5) {
         logout();
+        return true;
+      } else if (item.getItemId() == 7) {
+        showChangePasswordDialog();
         return true;
       } else if (item.getGroupId() == 1) {
         int index = item.getItemId() - 100;
@@ -1125,6 +1131,7 @@ public final class MainActivity extends Activity {
           api.purgeNote(note.envelope.id, note.envelope.revision);
           return true;
         }, ignored -> {
+          attachmentCache.removeNote(note.envelope.id);
           trash.remove(note);
           selectedNote = null;
           renderHome();
@@ -1364,6 +1371,7 @@ public final class MainActivity extends Activity {
       } else {
         envelope = api.uploadAttachment(encrypted.payload, encrypted.body);
       }
+      attachmentCache.write(envelope, encrypted.body);
       return new Models.AttachmentDocument(envelope, encrypted.metadata, image.bytes);
     }, document -> {
       if (selectedNote != note) return;
@@ -1393,7 +1401,9 @@ public final class MainActivity extends Activity {
     String mediaKey = note.content.attachmentKey;
     runAsync(() -> {
       List<Models.AttachmentDocument> result = new ArrayList<>();
-      for (Models.AttachmentEnvelope envelope : api.listAttachments(note.envelope.id)) {
+      List<Models.AttachmentEnvelope> envelopes = api.listAttachments(note.envelope.id);
+      attachmentCache.retain(note.envelope.id, envelopes);
+      for (Models.AttachmentEnvelope envelope : envelopes) {
         result.add(new Models.AttachmentDocument(
           envelope,
           CryptoEngine.decryptAttachmentMetadata(mediaKey, envelope),
@@ -1477,11 +1487,28 @@ public final class MainActivity extends Activity {
     Models.NoteDocument note = selectedNote;
     if (note == null) return;
     setSavingMessage("正在下载并解密图片…");
-    runAsync(() -> CryptoEngine.decryptAttachmentBody(
-      api.downloadAttachment(note.envelope.id, document.envelope.id),
-      document.envelope,
-      document.metadata
-    ), bytes -> {
+    runAsync(() -> {
+      byte[] encrypted = attachmentCache.read(document.envelope);
+      if (encrypted != null) {
+        try {
+          return CryptoEngine.decryptAttachmentBody(
+            encrypted,
+            document.envelope,
+            document.metadata
+          );
+        } catch (Exception ignored) {
+          attachmentCache.remove(document.envelope);
+        }
+      }
+      encrypted = api.downloadAttachment(note.envelope.id, document.envelope.id);
+      byte[] decrypted = CryptoEngine.decryptAttachmentBody(
+        encrypted,
+        document.envelope,
+        document.metadata
+      );
+      attachmentCache.write(document.envelope, encrypted);
+      return decrypted;
+    }, bytes -> {
       if (selectedNote != note || !attachments.contains(document)) return;
       for (Models.AttachmentDocument item : attachments) item.imageData = null;
       document.imageData = bytes;
@@ -1520,6 +1547,7 @@ public final class MainActivity extends Activity {
         Models.NoteDocument note = selectedNote;
         if (note == null) return;
         if (demoMode) {
+          attachmentCache.remove(document.envelope);
           attachments.remove(document);
           renderAttachmentGallery();
           return;
@@ -1529,6 +1557,7 @@ public final class MainActivity extends Activity {
           api.deleteAttachment(note.envelope.id, document.envelope.id, document.envelope.revision);
           return true;
         }, ignored -> {
+          attachmentCache.remove(document.envelope);
           attachments.remove(document);
           renderAttachmentGallery();
           if (saveStatus != null) saveStatus.setText("图片已删除");
@@ -1612,13 +1641,126 @@ public final class MainActivity extends Activity {
   }
 
   private void manageFolders() {
-    String[] names = new String[folders.size()];
-    for (int index = 0; index < folders.size(); index++) names[index] = folders.get(index).name;
-    new AlertDialog.Builder(this)
-      .setTitle("管理文件夹")
-      .setItems(names, (dialog, index) -> showFolderActions(folders.get(index)))
+    LinearLayout rows = verticalLayout(4);
+    rows.setPadding(dp(12), dp(4), dp(12), dp(4));
+    AlertDialog dialog = new AlertDialog.Builder(this)
+      .setTitle("文件夹排序与管理")
+      .setMessage("使用箭头手动调整文件夹顺序；点击名称可重命名或删除。")
+      .setView(rows)
       .setNegativeButton("完成", null)
-      .show();
+      .create();
+    for (int index = 0; index < folders.size(); index++) {
+      Models.FolderDocument folder = folders.get(index);
+      LinearLayout row = horizontalLayout(Gravity.CENTER_VERTICAL);
+      row.setPadding(dp(6), dp(2), dp(2), dp(2));
+      row.setBackground(roundedBackground(R.color.surface_variant, 14));
+
+      TextView name = text(folder.name, 16, R.color.text_primary);
+      name.setSingleLine(true);
+      name.setPadding(dp(12), 0, dp(8), 0);
+      name.setBackground(rippleBackground(R.color.surface_variant, 12));
+      name.setOnClickListener(view -> {
+        dialog.dismiss();
+        showFolderActions(folder);
+      });
+      row.addView(name, new LinearLayout.LayoutParams(0, dp(52), 1));
+
+      ImageButton up = iconButton(R.drawable.ic_arrow_up, "上移 " + folder.name, false);
+      up.setEnabled(index > 0);
+      up.setAlpha(index > 0 ? 1f : 0.32f);
+      up.setOnClickListener(view -> {
+        dialog.dismiss();
+        moveFolder(folder, -1);
+      });
+      row.addView(up, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+      ImageButton down = iconButton(R.drawable.ic_arrow_down, "下移 " + folder.name, false);
+      down.setEnabled(index < folders.size() - 1);
+      down.setAlpha(index < folders.size() - 1 ? 1f : 0.32f);
+      down.setOnClickListener(view -> {
+        dialog.dismiss();
+        moveFolder(folder, 1);
+      });
+      row.addView(down, new LinearLayout.LayoutParams(dp(48), dp(48)));
+      rows.addView(row, matchHeight(dp(56), 0, 3, 0, 3));
+    }
+    dialog.show();
+  }
+
+  private void showChangePasswordDialog() {
+    if (user == null) return;
+    LinearLayout fields = verticalLayout(8);
+    fields.setPadding(dp(24), dp(8), dp(24), 0);
+    EditText current = editText("当前登录密码", true);
+    current.setSingleLine(true);
+    fields.addView(current, matchHeight(dp(52), 0, 0, 0, 8));
+    EditText updated = editText("新密码（至少 12 个字符）", true);
+    updated.setSingleLine(true);
+    fields.addView(updated, matchHeight(dp(52), 0, 0, 0, 8));
+    EditText confirmation = editText("再次输入新密码", true);
+    confirmation.setSingleLine(true);
+    fields.addView(confirmation, matchHeight(dp(52), 0, 0, 0, 8));
+
+    CheckBox show = new CheckBox(this);
+    show.setText(R.string.show_password);
+    show.setTextColor(getColor(R.color.text_secondary));
+    show.setMinHeight(dp(48));
+    show.setOnCheckedChangeListener((button, checked) -> {
+      int type = InputType.TYPE_CLASS_TEXT
+        | (checked ? InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD : InputType.TYPE_TEXT_VARIATION_PASSWORD);
+      current.setInputType(type);
+      updated.setInputType(type);
+      confirmation.setInputType(type);
+      current.setSelection(current.length());
+      updated.setSelection(updated.length());
+      confirmation.setSelection(confirmation.length());
+    });
+    fields.addView(show, matchHeight(dp(48), 0, 0, 0, 0));
+
+    AlertDialog dialog = new AlertDialog.Builder(this)
+      .setTitle("修改登录密码")
+      .setMessage("修改后其他设备保存的长期 Token 会立即失效。")
+      .setView(fields)
+      .setNegativeButton("取消", null)
+      .setPositiveButton("修改密码", null)
+      .create();
+    dialog.setOnShowListener(ignored -> dialog.getButton(DialogInterface.BUTTON_POSITIVE)
+      .setOnClickListener(view -> {
+        String currentValue = current.getText().toString();
+        String updatedValue = updated.getText().toString();
+        if (currentValue.isEmpty()) {
+          current.setError("请输入当前登录密码。");
+          return;
+        }
+        if (updatedValue.length() < 12) {
+          updated.setError("新密码至少需要 12 个字符。");
+          return;
+        }
+        if (updatedValue.equals(currentValue)) {
+          updated.setError("新密码不能与当前密码相同。");
+          return;
+        }
+        if (!updatedValue.equals(confirmation.getText().toString())) {
+          confirmation.setError("两次输入的新密码不一致。");
+          return;
+        }
+        String username = user.username;
+        dialog.dismiss();
+        showLoading("正在修改登录密码…");
+        runAsync(
+          () -> api.changePassword(username, currentValue, updatedValue),
+          changedUser -> {
+            user = changedUser;
+            toast("登录密码已修改");
+            renderHome();
+          },
+          error -> {
+            renderHome();
+            toast(error.getMessage() == null ? "修改密码失败，请重试。" : error.getMessage());
+          }
+        );
+      }));
+    dialog.show();
   }
 
   private void showFolderActions(Models.FolderDocument folder) {

@@ -99,6 +99,12 @@ derives a wrapping key, while a random AES-256-GCM key encrypts protected note b
 macOS and Android share the format, show locked notes without exposing the body, and require the same
 independent protection password to reveal any protected note.
 
+Downloaded attachment bodies are cached in each app's private cache directory. The cache contains
+only the AES-GCM ciphertext returned by R2; decrypted image bytes remain in memory. Cache keys include
+the attachment revision and encrypted metadata fingerprint, so changed or damaged entries are removed
+and fetched again automatically. Deleting an attachment or permanently deleting a note also clears its
+local cached ciphertext.
+
 Run its focused tests and build an ad-hoc signed app bundle:
 
 ```bash
@@ -120,6 +126,10 @@ additional-data identifiers remain unchanged for ciphertext compatibility.
 Android requests a 90-day rolling device token after a password login. Every refresh rotates the
 token, the Worker stores only its SHA-256 digest, and logout or a password change revokes it. The
 device token and short-lived session cookie are encrypted with an Android Keystore AES-GCM key.
+
+Both native clients expose login-password changes through the authenticated account API. Android also
+provides a visible "文件夹排序与管理" panel with per-folder up/down controls; the complete order is
+saved to the encrypted folders API.
 
 The mobile UI is designed specifically for Android 16 (API 36) with edge-to-edge system bars,
 light/dark themes, visible folder filters, adaptive list/card layouts, and a consistent vector icon

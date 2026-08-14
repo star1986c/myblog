@@ -122,6 +122,7 @@ private struct SidebarView: View {
   @EnvironmentObject private var store: NotesStore
   @State private var folderEditor: FolderEditorRequest?
   @State private var folderToDelete: NoteFolder?
+  @State private var showsPasswordChange = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -214,6 +215,9 @@ private struct SidebarView: View {
         }
       }
     }
+    .sheet(isPresented: $showsPasswordChange) {
+      ChangeLoginPasswordSheet()
+    }
     .confirmationDialog(
       "删除文件夹“\(folderToDelete?.name ?? "")”？",
       isPresented: Binding(
@@ -274,11 +278,19 @@ private struct SidebarView: View {
 
       Spacer()
 
-      Button("退出登录") {
-        Task { await store.logout() }
+      Menu {
+        Button("修改登录密码", systemImage: "key") {
+          showsPasswordChange = true
+        }
+        Divider()
+        Button("退出登录", systemImage: "rectangle.portrait.and.arrow.right") {
+          Task { await store.logout() }
+        }
+      } label: {
+        Image(systemName: "person.crop.circle")
       }
-      .buttonStyle(.plain)
-      .foregroundStyle(.secondary)
+      .menuStyle(.borderlessButton)
+      .help("账户设置")
     }
     .padding(14)
   }
@@ -304,6 +316,76 @@ private struct SidebarView: View {
       get: { store.location },
       set: { if let location = $0 { store.selectLocation(location) } }
     )
+  }
+}
+
+private struct ChangeLoginPasswordSheet: View {
+  @EnvironmentObject private var store: NotesStore
+  @Environment(\.dismiss) private var dismiss
+  @State private var currentPassword = ""
+  @State private var newPassword = ""
+  @State private var confirmation = ""
+
+  private var validationMessage: String? {
+    if currentPassword.isEmpty { return "请输入当前登录密码。" }
+    if newPassword.count < 12 { return "新密码至少需要 12 个字符。" }
+    if newPassword != confirmation { return "两次输入的新密码不一致。" }
+    if newPassword == currentPassword { return "新密码不能与当前密码相同。" }
+    return nil
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(spacing: 12) {
+        Image(systemName: "key.fill")
+          .font(.title2)
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 42, height: 42)
+          .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        VStack(alignment: .leading, spacing: 3) {
+          Text("修改登录密码").font(.title3.bold())
+          Text(store.user?.username ?? "")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      Form {
+        SecureField("当前密码", text: $currentPassword)
+        SecureField("新密码（至少 12 个字符）", text: $newPassword)
+        SecureField("再次输入新密码", text: $confirmation)
+      }
+      .formStyle(.grouped)
+
+      Text("修改成功后，其他设备保存的长期 Token 会立即失效；请使用新密码重新登录。")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+      HStack {
+        Button("取消") { dismiss() }
+        Spacer()
+        Button("修改密码") { submit() }
+          .buttonStyle(.borderedProminent)
+          .disabled(validationMessage != nil || store.isWorking)
+      }
+    }
+    .padding(24)
+    .frame(width: 430)
+  }
+
+  private func submit() {
+    guard validationMessage == nil else { return }
+    Task {
+      if await store.changeLoginPassword(
+        currentPassword: currentPassword,
+        newPassword: newPassword
+      ) {
+        currentPassword = ""
+        newPassword = ""
+        confirmation = ""
+        dismiss()
+      }
+    }
   }
 }
 
