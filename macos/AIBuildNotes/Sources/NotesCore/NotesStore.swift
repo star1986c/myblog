@@ -415,17 +415,30 @@ public final class NotesStore: ObservableObject {
       do {
         try await Task.sleep(for: .milliseconds(700))
         guard !Task.isCancelled else { return }
-        _ = await self?.save(id: id)
+        await self?.runScheduledSave(id: id)
       } catch {
         return
       }
     }
   }
 
+  private func runScheduledSave(id: String) async {
+    // The debounce task is the entry stored for this note. Clear the handle
+    // without cancelling it, otherwise URLSession inherits a cancelled task
+    // and aborts every automatic save before the request reaches the Worker.
+    autoSaveTasks[id] = nil
+    _ = await performSave(id: id)
+  }
+
   @discardableResult
   private func save(id: String) async -> Bool {
     autoSaveTasks[id]?.cancel()
     autoSaveTasks[id] = nil
+    return await performSave(id: id)
+  }
+
+  @discardableResult
+  private func performSave(id: String) async -> Bool {
     guard let dataKey,
       let index = activeNotes.firstIndex(where: { $0.id == id })
     else { return true }
