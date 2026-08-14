@@ -27,6 +27,10 @@ const recoverableNotesKeyMigration = await readFile(
   new URL("../migrations/0007_recoverable_notes_key.sql", import.meta.url),
   "utf8",
 );
+const noteTrashMigration = await readFile(
+  new URL("../migrations/0008_note_trash_and_revisions.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -102,4 +106,12 @@ test("recoverable notes key migration retires the forgotten master-password vaul
     /(?:^|\s)(?:title|content|password|username|master_password)\s+TEXT/im,
   );
   assert.doesNotMatch(recoverableNotesKeyMigration, /NOTES_KEY_ENCRYPTION_SECRET\s*=/);
+});
+
+test("note trash migration adds revisions and recoverable soft deletion without plaintext", () => {
+  assert.match(noteTrashMigration, /ADD COLUMN revision INTEGER NOT NULL DEFAULT 1/);
+  assert.match(noteTrashMigration, /ADD COLUMN deleted_at TEXT/);
+  assert.match(noteTrashMigration, /WHERE deleted_at IS NULL/);
+  assert.match(noteTrashMigration, /WHERE deleted_at IS NOT NULL/);
+  assert.doesNotMatch(noteTrashMigration, /(?:^|\s)(?:title|content|password|username)\s+TEXT/im);
 });

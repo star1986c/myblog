@@ -53,7 +53,12 @@ class FakeStatement {
 
   async all() {
     if (this.sql.includes("FROM encrypted_notes")) {
-      return { results: this.db.encryptedNotes };
+      const notes = this.db.encryptedNotes.filter((note) => {
+        if (this.sql.includes("deleted_at IS NOT NULL")) return Boolean(note.deletedAt);
+        if (this.sql.includes("deleted_at IS NULL")) return !note.deletedAt;
+        return true;
+      });
+      return { results: notes };
     }
 
     if (this.sql.includes("FROM media_assets")) {
@@ -88,6 +93,12 @@ class FakeStatement {
   }
 
   async first() {
+    if (this.sql.includes("FROM encrypted_notes")) {
+      const [id] = this.params;
+      const note = this.db.encryptedNotes.find((item) => item.id === id);
+      return note ? { revision: note.revision || 1, deletedAt: note.deletedAt || null } : null;
+    }
+
     if (this.sql.includes("FROM workspace_keyrings")) {
       return this.db.workspaceKeyring;
     }
@@ -117,23 +128,64 @@ class FakeStatement {
   async run() {
     if (this.sql.includes("INSERT INTO encrypted_notes")) {
       const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
-      this.db.encryptedNotes.unshift({ id, version, ciphertext, nonce, createdAt, updatedAt });
+      this.db.encryptedNotes.unshift({
+        id,
+        version,
+        revision: 1,
+        ciphertext,
+        nonce,
+        createdAt,
+        updatedAt,
+        deletedAt: null,
+      });
       return { success: true, meta: { changes: 1 } };
     }
 
-    if (this.sql.includes("UPDATE encrypted_notes")) {
-      const [version, ciphertext, nonce, updatedAt, id] = this.params;
-      const exists = this.db.encryptedNotes.some((note) => note.id === id);
+    if (this.sql.includes("UPDATE encrypted_notes") && this.sql.includes("SET version = ?")) {
+      const [version, ciphertext, nonce, updatedAt, id, , revision] = this.params;
+      const exists = this.db.encryptedNotes.some(
+        (note) => note.id === id && !note.deletedAt && (note.revision || 1) === revision,
+      );
       this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
-        note.id === id ? { ...note, version, ciphertext, nonce, updatedAt } : note
+        note.id === id && exists
+          ? { ...note, version, ciphertext, nonce, updatedAt, revision: revision + 1 }
+          : note
+      ));
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
+    if (this.sql.includes("UPDATE encrypted_notes") && this.sql.includes("SET deleted_at = NULL")) {
+      const [updatedAt, id, , revision] = this.params;
+      const exists = this.db.encryptedNotes.some(
+        (note) => note.id === id && note.deletedAt && (note.revision || 1) === revision,
+      );
+      this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
+        note.id === id && exists
+          ? { ...note, deletedAt: null, updatedAt, revision: revision + 1 }
+          : note
+      ));
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
+    if (this.sql.includes("UPDATE encrypted_notes") && this.sql.includes("SET deleted_at = ?")) {
+      const [deletedAt, updatedAt, id, , revision] = this.params;
+      const exists = this.db.encryptedNotes.some(
+        (note) => note.id === id && !note.deletedAt && (note.revision || 1) === revision,
+      );
+      this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
+        note.id === id && exists
+          ? { ...note, deletedAt, updatedAt, revision: revision + 1 }
+          : note
       ));
       return { success: true, meta: { changes: exists ? 1 : 0 } };
     }
 
     if (this.sql.includes("DELETE FROM encrypted_notes")) {
-      const [id] = this.params;
+      const [id, , revision] = this.params;
       const previousLength = this.db.encryptedNotes.length;
-      this.db.encryptedNotes = this.db.encryptedNotes.filter((note) => note.id !== id);
+      this.db.encryptedNotes = this.db.encryptedNotes.filter(
+        (note) => !(note.id === id && note.deletedAt && (note.revision || 1) === revision),
+      );
       return {
         success: true,
         meta: { changes: previousLength === this.db.encryptedNotes.length ? 0 : 1 },
@@ -975,7 +1027,7 @@ test("retired blog and password-vault admin APIs return not found", async () => 
   }
 });
 
-test("administrator can create, read, update, and delete encrypted notes", async () => {
+test("administrator can create, update, trash, restore, and purge encrypted notes", async () => {
   const db = new FakeD1({ workspaceKeyring: { id: "notes" } });
   const env = makeEnv({ BLOG_DB: db });
   const cookie = await signSession({
@@ -1017,7 +1069,7 @@ test("administrator can create, read, update, and delete encrypted notes", async
   const updateResponse = await worker.fetch(
     new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
       method: "PUT",
-      headers: writeHeaders,
+      headers: { ...writeHeaders, "If-Match": '"1"' },
       body: JSON.stringify(changedNote),
     }),
     env,
@@ -1028,12 +1080,85 @@ test("administrator can create, read, update, and delete encrypted notes", async
   const deleteResponse = await worker.fetch(
     new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
       method: "DELETE",
-      headers: writeHeaders,
+      headers: { ...writeHeaders, "If-Match": '"2"' },
     }),
     env,
   );
   assert.equal(deleteResponse.status, 200);
+  assert.equal(db.encryptedNotes.length, 1);
+  assert.equal(db.encryptedNotes[0].revision, 3);
+  assert.ok(db.encryptedNotes[0].deletedAt);
+
+  const activeAfterDelete = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.deepEqual((await activeAfterDelete.json()).notes, []);
+
+  const trashResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes-trash", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.deepEqual((await trashResponse.json()).notes.map((item) => item.id), [note.id]);
+
+  const restoreResponse = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/restore`, {
+      method: "POST",
+      headers: { ...writeHeaders, "If-Match": '"3"' },
+    }),
+    env,
+  );
+  assert.equal(restoreResponse.status, 200);
+  assert.equal(db.encryptedNotes[0].deletedAt, null);
+  assert.equal(db.encryptedNotes[0].revision, 4);
+
+  await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "DELETE",
+      headers: { ...writeHeaders, "If-Match": '"4"' },
+    }),
+    env,
+  );
+  const purgeResponse = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/purge`, {
+      method: "DELETE",
+      headers: { ...writeHeaders, "If-Match": '"5"' },
+    }),
+    env,
+  );
+  assert.equal(purgeResponse.status, 200);
   assert.equal(db.encryptedNotes.length, 0);
+});
+
+test("encrypted note updates reject stale revisions", async () => {
+  const note = { ...makeEncryptedNote(), revision: 4, deletedAt: null };
+  const db = new FakeD1({ workspaceKeyring: { id: "notes" }, encryptedNotes: [note] });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "revision-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const response = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "revision-csrf-token",
+        "If-Match": '"3"',
+      },
+      body: JSON.stringify(makeEncryptedNote(note.id, 31)),
+    }),
+    env,
+  );
+  assert.equal(response.status, 409);
+  assert.equal(db.encryptedNotes[0].ciphertext, note.ciphertext);
 });
 
 test("encrypted notes API requires authentication, CSRF, and ciphertext-only payloads", async () => {

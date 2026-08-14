@@ -14,7 +14,10 @@ import {
 import {
   createEncryptedNote,
   deleteEncryptedNote,
+  listDeletedEncryptedNotes,
   listEncryptedNotes,
+  purgeEncryptedNote,
+  restoreEncryptedNote,
   updateEncryptedNote,
 } from "./encrypted-note-repository.js";
 import { readOrCreateWorkspaceDataKey } from "./workspace-key-repository.js";
@@ -747,13 +750,38 @@ async function handleAdminApi(request, env, path) {
     }
   }
 
+  if (path === "/api/admin/encrypted-notes-trash" && request.method === "GET") {
+    return jsonResponse({ notes: await listDeletedEncryptedNotes(db) });
+  }
+
   if (path.startsWith("/api/admin/encrypted-notes/")) {
-    const id = decodeURIComponent(path.slice("/api/admin/encrypted-notes/".length));
-    if (request.method === "PUT") {
-      return jsonResponse({ note: await updateEncryptedNote(db, id, await readJson(request)) });
+    const suffix = path.slice("/api/admin/encrypted-notes/".length);
+    const parts = suffix.split("/");
+    if (!parts[0] || parts.length > 2) {
+      return jsonResponse({ error: "Not found" }, { status: 404 });
     }
-    if (request.method === "DELETE") {
-      await deleteEncryptedNote(db, id);
+    const id = decodeURIComponent(parts[0]);
+    const action = parts[1] || "";
+    const expectedRevision = readExpectedRevision(request);
+    if (!action && request.method === "PUT") {
+      return jsonResponse({
+        note: await updateEncryptedNote(db, id, await readJson(request), expectedRevision),
+      });
+    }
+    if (!action && request.method === "DELETE") {
+      return jsonResponse({
+        ok: true,
+        note: await deleteEncryptedNote(db, id, expectedRevision),
+      });
+    }
+    if (action === "restore" && request.method === "POST") {
+      return jsonResponse({
+        ok: true,
+        note: await restoreEncryptedNote(db, id, expectedRevision),
+      });
+    }
+    if (action === "purge" && request.method === "DELETE") {
+      await purgeEncryptedNote(db, id, expectedRevision);
       return jsonResponse({ ok: true });
     }
   }
@@ -769,6 +797,20 @@ async function handleAdminApi(request, env, path) {
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
+}
+
+function readExpectedRevision(request) {
+  const value = request.headers.get("If-Match");
+  if (value === null || value === "") return null;
+  const match = value.match(/^(?:W\/)?\"([1-9][0-9]*)\"$/);
+  if (!match) {
+    throw new ServiceError("Invalid note revision.", 400);
+  }
+  const revision = Number(match[1]);
+  if (!Number.isSafeInteger(revision)) {
+    throw new ServiceError("Invalid note revision.", 400);
+  }
+  return revision;
 }
 
 function acceptsHtml(request) {

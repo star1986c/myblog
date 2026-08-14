@@ -78,6 +78,24 @@ retired password-vault tables. Apply it only after confirming those legacy encry
 
 R2 is not required for the private notes workspace or production deployment.
 
+## macOS notes app
+
+The native SwiftUI client lives in `macos/AIBuildNotes`. It reuses the existing login, workspace key,
+and ciphertext-only notes API. Search happens locally after decryption. Migration
+`0008_note_trash_and_revisions.sql` adds optimistic revisions and a recoverable trash state for app
+clients while keeping the existing web API compatible.
+
+Run its focused tests and build an ad-hoc signed app bundle:
+
+```bash
+swift test --package-path macos/AIBuildNotes
+/bin/zsh scripts/build-macos-app.sh
+```
+
+The bundle is written to `output/AI Build Notes.app`.
+The 1024px icon master is stored at `macos/AIBuildNotes/Assets/AppIcon-1024.png`; the build script
+generates and embeds the complete `.icns` representation.
+
 ## Deploy
 
 ```bash

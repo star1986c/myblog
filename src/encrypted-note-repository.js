@@ -16,10 +16,12 @@ const PLAINTEXT_FIELDS = [
 const NOTE_COLUMNS = [
   "id",
   "version",
+  "revision",
   "ciphertext",
   "nonce",
   "created_at AS createdAt",
   "updated_at AS updatedAt",
+  "deleted_at AS deletedAt",
 ].join(", ");
 
 class EncryptedNoteError extends Error {
@@ -88,8 +90,21 @@ async function listEncryptedNotes(db) {
     .prepare(
       `SELECT ${NOTE_COLUMNS}
        FROM encrypted_notes
-       WHERE keyring_id = ?
+       WHERE keyring_id = ? AND deleted_at IS NULL
        ORDER BY updated_at DESC, created_at DESC`,
+    )
+    .bind(KEYRING_ID)
+    .all();
+  return result.results || [];
+}
+
+async function listDeletedEncryptedNotes(db) {
+  const result = await db
+    .prepare(
+      `SELECT ${NOTE_COLUMNS}
+       FROM encrypted_notes
+       WHERE keyring_id = ? AND deleted_at IS NOT NULL
+       ORDER BY deleted_at DESC, updated_at DESC`,
     )
     .bind(KEYRING_ID)
     .all();
@@ -115,36 +130,138 @@ async function createEncryptedNote(db, input) {
     }
     throw error;
   }
-  return { ...note, createdAt: now, updatedAt: now };
+  return { ...note, revision: 1, createdAt: now, updatedAt: now, deletedAt: null };
 }
 
-async function updateEncryptedNote(db, id, input) {
+async function readEncryptedNoteState(db, id) {
+  return await db
+    .prepare(
+      `SELECT revision, deleted_at AS deletedAt
+       FROM encrypted_notes
+       WHERE id = ? AND keyring_id = ?
+       LIMIT 1`,
+    )
+    .bind(id, KEYRING_ID)
+    .first();
+}
+
+function requireCurrentRevision(state, expectedRevision) {
+  if (!state || state.deletedAt) {
+    throw new EncryptedNoteError("Encrypted note not found.", 404);
+  }
+  const revision = Number(state.revision);
+  if (!Number.isInteger(revision) || revision < 1) {
+    throw new EncryptedNoteError("Encrypted note revision is invalid.", 500);
+  }
+  if (expectedRevision !== null && expectedRevision !== revision) {
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
+  }
+  return revision;
+}
+
+async function updateEncryptedNote(db, id, input, expectedRevision = null) {
   const note = normalizeEncryptedNoteEnvelope(input, id);
+  const currentRevision = requireCurrentRevision(
+    await readEncryptedNoteState(db, note.id),
+    expectedRevision,
+  );
   const now = new Date().toISOString();
   const result = await db
     .prepare(
       `UPDATE encrypted_notes
-       SET version = ?, ciphertext = ?, nonce = ?, updated_at = ?
-       WHERE id = ? AND keyring_id = ?`,
+       SET version = ?, ciphertext = ?, nonce = ?, updated_at = ?, revision = revision + 1
+       WHERE id = ? AND keyring_id = ? AND deleted_at IS NULL AND revision = ?`,
     )
-    .bind(note.version, note.ciphertext, note.nonce, now, note.id, KEYRING_ID)
+    .bind(note.version, note.ciphertext, note.nonce, now, note.id, KEYRING_ID, currentRevision)
     .run();
   if (!result.meta?.changes) {
-    throw new EncryptedNoteError("Encrypted note not found.", 404);
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
   }
-  return { ...note, updatedAt: now };
+  return {
+    ...note,
+    revision: currentRevision + 1,
+    updatedAt: now,
+    deletedAt: null,
+  };
 }
 
-async function deleteEncryptedNote(db, id) {
+async function deleteEncryptedNote(db, id, expectedRevision = null) {
   if (!ENTRY_ID_PATTERN.test(id)) {
     throw new EncryptedNoteError("Encrypted note ID is invalid.", 400);
   }
+  const currentRevision = requireCurrentRevision(
+    await readEncryptedNoteState(db, id),
+    expectedRevision,
+  );
+  const now = new Date().toISOString();
   const result = await db
-    .prepare("DELETE FROM encrypted_notes WHERE id = ? AND keyring_id = ?")
-    .bind(id, KEYRING_ID)
+    .prepare(
+      `UPDATE encrypted_notes
+       SET deleted_at = ?, updated_at = ?, revision = revision + 1
+       WHERE id = ? AND keyring_id = ? AND deleted_at IS NULL AND revision = ?`,
+    )
+    .bind(now, now, id, KEYRING_ID, currentRevision)
     .run();
   if (!result.meta?.changes) {
-    throw new EncryptedNoteError("Encrypted note not found.", 404);
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
+  }
+  return { id, revision: currentRevision + 1, updatedAt: now, deletedAt: now };
+}
+
+async function restoreEncryptedNote(db, id, expectedRevision = null) {
+  if (!ENTRY_ID_PATTERN.test(id)) {
+    throw new EncryptedNoteError("Encrypted note ID is invalid.", 400);
+  }
+  const state = await readEncryptedNoteState(db, id);
+  if (!state || !state.deletedAt) {
+    throw new EncryptedNoteError("Deleted encrypted note not found.", 404);
+  }
+  const currentRevision = Number(state.revision);
+  if (!Number.isInteger(currentRevision) || currentRevision < 1) {
+    throw new EncryptedNoteError("Encrypted note revision is invalid.", 500);
+  }
+  if (expectedRevision !== null && expectedRevision !== currentRevision) {
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
+  }
+  const now = new Date().toISOString();
+  const result = await db
+    .prepare(
+      `UPDATE encrypted_notes
+       SET deleted_at = NULL, updated_at = ?, revision = revision + 1
+       WHERE id = ? AND keyring_id = ? AND deleted_at IS NOT NULL AND revision = ?`,
+    )
+    .bind(now, id, KEYRING_ID, currentRevision)
+    .run();
+  if (!result.meta?.changes) {
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
+  }
+  return { id, revision: currentRevision + 1, updatedAt: now, deletedAt: null };
+}
+
+async function purgeEncryptedNote(db, id, expectedRevision = null) {
+  if (!ENTRY_ID_PATTERN.test(id)) {
+    throw new EncryptedNoteError("Encrypted note ID is invalid.", 400);
+  }
+  const state = await readEncryptedNoteState(db, id);
+  if (!state || !state.deletedAt) {
+    throw new EncryptedNoteError("Deleted encrypted note not found.", 404);
+  }
+  const currentRevision = Number(state.revision);
+  if (!Number.isInteger(currentRevision) || currentRevision < 1) {
+    throw new EncryptedNoteError("Encrypted note revision is invalid.", 500);
+  }
+  if (expectedRevision !== null && expectedRevision !== currentRevision) {
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
+  }
+  const result = await db
+    .prepare(
+      `DELETE FROM encrypted_notes
+       WHERE id = ? AND keyring_id = ? AND deleted_at IS NOT NULL AND revision = ?`,
+    )
+    .bind(id, KEYRING_ID, currentRevision)
+    .run();
+  if (!result.meta?.changes) {
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
   }
 }
 
@@ -152,7 +269,10 @@ export {
   EncryptedNoteError,
   createEncryptedNote,
   deleteEncryptedNote,
+  listDeletedEncryptedNotes,
   listEncryptedNotes,
   normalizeEncryptedNoteEnvelope,
+  purgeEncryptedNote,
+  restoreEncryptedNote,
   updateEncryptedNote,
 };
