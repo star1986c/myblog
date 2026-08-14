@@ -520,6 +520,11 @@ private struct NoteCard: View {
     Button(action: action) {
       VStack(alignment: .leading, spacing: 12) {
         HStack(alignment: .firstTextBaseline) {
+          if document.isProtected {
+            Image(systemName: "lock.fill")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
           Text(document.title)
             .font(.headline)
             .lineLimit(2)
@@ -565,6 +570,11 @@ private struct DetailedNoteRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       HStack(alignment: .firstTextBaseline) {
+        if document.isProtected {
+          Image(systemName: "lock.fill")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
         Text(document.title)
           .font(.headline)
           .lineLimit(1)
@@ -594,7 +604,7 @@ private struct TitleNoteRow: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      Image(systemName: "note.text")
+      Image(systemName: document.isProtected ? "lock.fill" : "note.text")
         .foregroundStyle(.secondary)
       Text(document.title)
         .font(.body)
@@ -616,8 +626,13 @@ private struct TitleNoteRow: View {
 
 private struct NoteEditorView: View {
   @EnvironmentObject private var store: NotesStore
+  @Environment(\.scenePhase) private var scenePhase
   @State private var confirmTrash = false
   @State private var confirmPurge = false
+  @State private var revealedProtectedNoteID: String?
+  @State private var unlockPassword = ""
+  @State private var unlockError: String?
+  @State private var isUnlocking = false
 
   var body: some View {
     Group {
@@ -625,7 +640,9 @@ private struct NoteEditorView: View {
         VStack(spacing: 0) {
           editorHeader(document)
           Divider()
-          if store.location.isTrash {
+          if document.isProtected && !isRevealed(document) {
+            protectedBody(document)
+          } else if store.location.isTrash {
             readOnlyBody(document)
           } else {
             editableBody
@@ -639,6 +656,11 @@ private struct NoteEditorView: View {
       }
     }
     .background(Color(nsColor: .textBackgroundColor))
+    .onChange(of: store.selectedID) { _, _ in relock() }
+    .onChange(of: scenePhase) { _, phase in
+      if phase != .active { relock() }
+    }
+    .onDisappear { relock() }
     .confirmationDialog("将笔记移到回收站？", isPresented: $confirmTrash) {
       Button("移到回收站", role: .destructive) {
         Task { await store.moveSelectedToTrash() }
@@ -667,6 +689,7 @@ private struct NoteEditorView: View {
       }
       Spacer()
       if !store.location.isTrash {
+        protectionControl(document)
         folderMenu(document)
         Button(role: .destructive) {
           confirmTrash = true
@@ -689,6 +712,40 @@ private struct NoteEditorView: View {
     }
     .padding(.horizontal, 20)
     .frame(height: 58)
+  }
+
+  @ViewBuilder
+  private func protectionControl(_ document: NoteDocument) -> some View {
+    if document.isProtected {
+      Menu {
+        if isRevealed(document) {
+          Button("重新锁定", systemImage: "lock") { relock() }
+          Divider()
+          Button("取消密码保护", systemImage: "lock.open") {
+            store.setSelectedProtection(false)
+            relock()
+          }
+        } else {
+          Button("输入密码查看", systemImage: "lock.open") {
+            unlockError = nil
+          }
+        }
+      } label: {
+        Label(
+          isRevealed(document) ? "已解锁" : "已锁定",
+          systemImage: isRevealed(document) ? "lock.open" : "lock.fill"
+        )
+      }
+      .help("密码保护")
+    } else {
+      Button {
+        store.setSelectedProtection(true)
+        relock()
+      } label: {
+        Label("保护", systemImage: "lock")
+      }
+      .help("打开笔记时先验证账号密码")
+    }
   }
 
   private func folderMenu(_ document: NoteDocument) -> some View {
@@ -718,21 +775,116 @@ private struct NoteEditorView: View {
 
   @ViewBuilder
   private var saveStatus: some View {
-    switch store.saveState {
-    case .idle:
-      Text("内容已在本地解密")
-    case .saving:
-      Label("正在加密保存…", systemImage: "arrow.triangle.2.circlepath")
-    case .saved:
-      Label("已加密保存", systemImage: "checkmark.circle")
-        .foregroundStyle(.green)
-    case .failed:
-      Label("保存失败", systemImage: "exclamationmark.triangle")
-        .foregroundStyle(.red)
-    case .conflict:
-      Label("发现同步冲突", systemImage: "arrow.triangle.branch")
-        .foregroundStyle(.orange)
+    if let document = store.selectedDocument,
+      document.isProtected,
+      !isRevealed(document)
+    {
+      Label("正文已隐藏", systemImage: "lock.fill")
+        .foregroundStyle(.secondary)
+    } else {
+      switch store.saveState {
+      case .idle:
+        Text("内容已在本地解密")
+      case .saving:
+        Label("正在加密保存…", systemImage: "arrow.triangle.2.circlepath")
+      case .saved:
+        Label("已加密保存", systemImage: "checkmark.circle")
+          .foregroundStyle(.green)
+      case .failed:
+        Label("保存失败", systemImage: "exclamationmark.triangle")
+          .foregroundStyle(.red)
+      case .conflict:
+        Label("发现同步冲突", systemImage: "arrow.triangle.branch")
+          .foregroundStyle(.orange)
+      }
     }
+  }
+
+  private func protectedBody(_ document: NoteDocument) -> some View {
+    VStack(spacing: 20) {
+      Spacer()
+      Image(systemName: "lock.shield.fill")
+        .font(.system(size: 42, weight: .medium))
+        .foregroundStyle(Color.accentColor)
+        .frame(width: 76, height: 76)
+        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 20))
+
+      VStack(spacing: 8) {
+        Text(document.title)
+          .font(.title2.bold())
+        Text("••••••••••••••••")
+          .font(.title3.monospaced())
+          .foregroundStyle(.secondary)
+          .accessibilityLabel("正文已隐藏")
+        Text("输入当前账号密码后显示正文")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+      }
+
+      VStack(spacing: 10) {
+        SecureField("账号密码", text: $unlockPassword)
+          .textFieldStyle(.roundedBorder)
+          .onSubmit { unlock(document) }
+          .disabled(isUnlocking)
+
+        if let unlockError {
+          Label(unlockError, systemImage: "exclamationmark.circle")
+            .font(.caption)
+            .foregroundStyle(.red)
+        }
+
+        Button {
+          unlock(document)
+        } label: {
+          HStack {
+            if isUnlocking { ProgressView().controlSize(.small) }
+            Text(isUnlocking ? "正在验证…" : "验证并显示")
+              .frame(maxWidth: .infinity)
+          }
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(unlockPassword.isEmpty || isUnlocking)
+      }
+      .frame(width: 300)
+
+      Label("密码只用于本次重新验证，不会保存", systemImage: "checkmark.shield")
+        .font(.caption)
+        .foregroundStyle(.tertiary)
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .padding(32)
+  }
+
+  private func isRevealed(_ document: NoteDocument) -> Bool {
+    document.isProtected && revealedProtectedNoteID == document.id
+  }
+
+  private func unlock(_ document: NoteDocument) {
+    guard !unlockPassword.isEmpty, !isUnlocking else { return }
+    let password = unlockPassword
+    isUnlocking = true
+    unlockError = nil
+    Task {
+      defer {
+        unlockPassword = ""
+        isUnlocking = false
+      }
+      do {
+        try await store.verifyAccountPassword(password)
+        guard store.selectedID == document.id, scenePhase == .active else { return }
+        revealedProtectedNoteID = document.id
+      } catch {
+        unlockError = error.localizedDescription
+      }
+    }
+  }
+
+  private func relock() {
+    revealedProtectedNoteID = nil
+    unlockPassword = ""
+    unlockError = nil
+    isUnlocking = false
   }
 
   private var editableBody: some View {

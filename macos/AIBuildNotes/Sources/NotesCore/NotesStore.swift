@@ -59,7 +59,8 @@ public final class NotesStore: ObservableObject {
           folderId: "folder_accounts",
           title: "账号安全约定",
           content: "文件夹名称与笔记内容一样，只以密文保存到服务器。",
-          updatedAt: "2026-08-10T11:00:00.000Z"
+          updatedAt: "2026-08-10T11:00:00.000Z",
+          isProtected: true
         ),
       ]
       store.trashedNotes = [
@@ -94,7 +95,8 @@ public final class NotesStore: ObservableObject {
       title: String,
       content: String,
       updatedAt: String,
-      deletedAt: String? = nil
+      deletedAt: String? = nil,
+      isProtected: Bool = false
     ) -> NoteDocument {
       NoteDocument(
         envelope: EncryptedNoteEnvelope(
@@ -107,7 +109,7 @@ public final class NotesStore: ObservableObject {
           updatedAt: updatedAt,
           deletedAt: deletedAt
         ),
-        content: NoteContent(title: title, content: content)
+        content: NoteContent(title: title, content: content, isProtected: isProtected)
       )
     }
   #endif
@@ -293,6 +295,30 @@ public final class NotesStore: ObservableObject {
 
   public func updateSelectedContent(_ content: String) {
     updateSelected { $0.content = content }
+  }
+
+  public func setSelectedProtection(_ isProtected: Bool) {
+    updateSelected { $0.isProtected = isProtected }
+  }
+
+  public func verifyAccountPassword(_ password: String) async throws {
+    guard let currentUser = user else { throw NoteUnlockError.sessionExpired }
+    do {
+      let verifiedUser = try await api.login(
+        username: currentUser.username,
+        password: password
+      )
+      guard verifiedUser.username == currentUser.username else {
+        throw NoteUnlockError.sessionExpired
+      }
+      user = verifiedUser
+    } catch let error as NotesAPIError {
+      switch error.status {
+      case 401: throw NoteUnlockError.incorrectPassword
+      case 429: throw NoteUnlockError.tooManyAttempts
+      default: throw error
+      }
+    }
   }
 
   public func moveSelected(to folderId: String?) async {

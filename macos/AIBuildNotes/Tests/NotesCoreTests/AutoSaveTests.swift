@@ -45,6 +45,23 @@ struct AutoSaveTests {
     #expect(store.saveState == .saved)
     #expect(store.selectedDocument?.content.content == "11111")
     #expect(store.selectedDocument?.envelope.revision == 2)
+
+    try await store.verifyAccountPassword("current-password")
+    #expect(AutoSaveURLProtocol.loginRequestCount == 2)
+
+    AutoSaveURLProtocol.rejectNextLogin()
+    do {
+      try await store.verifyAccountPassword("wrong-password")
+      Issue.record("Wrong password should not unlock a protected note")
+    } catch let error as NoteUnlockError {
+      #expect(error == .incorrectPassword)
+    }
+
+    store.updateSelectedContent("still saves after a wrong password")
+    try await Task.sleep(for: .milliseconds(1_100))
+    #expect(AutoSaveURLProtocol.updateRequestCount == 2)
+    #expect(store.saveState == .saved)
+    #expect(store.selectedDocument?.envelope.revision == 3)
   }
 }
 
@@ -52,11 +69,19 @@ private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
   nonisolated(unsafe) private static var keyText = ""
   nonisolated(unsafe) private static var note: EncryptedNoteEnvelope?
   nonisolated(unsafe) private(set) static var updateRequestCount = 0
+  nonisolated(unsafe) private(set) static var loginRequestCount = 0
+  nonisolated(unsafe) private static var shouldRejectNextLogin = false
 
   static func configure(keyText: String, note: EncryptedNoteEnvelope) {
     self.keyText = keyText
     self.note = note
     updateRequestCount = 0
+    loginRequestCount = 0
+    shouldRejectNextLogin = false
+  }
+
+  static func rejectNextLogin() {
+    shouldRejectNextLogin = true
   }
 
   override class func canInit(with request: URLRequest) -> Bool { true }
@@ -71,12 +96,20 @@ private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
 
     do {
       let responseBody: Data
+      var statusCode = 200
       switch (request.httpMethod ?? "GET", url.path) {
       case ("POST", "/api/auth/login"):
-        responseBody = try json([
-          "user": ["username": "admin", "mustChangePassword": false],
-          "csrfToken": "test-csrf-token",
-        ])
+        Self.loginRequestCount += 1
+        if Self.shouldRejectNextLogin {
+          Self.shouldRejectNextLogin = false
+          statusCode = 401
+          responseBody = try json(["error": "Invalid username or password."])
+        } else {
+          responseBody = try json([
+            "user": ["username": "admin", "mustChangePassword": false],
+            "csrfToken": "test-csrf-token",
+          ])
+        }
       case ("GET", "/api/admin/workspace-key"):
         responseBody = try json(["workspaceKey": ["key": Self.keyText]])
       case ("GET", "/api/admin/encrypted-notes"):
@@ -87,17 +120,22 @@ private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
         responseBody = try json(["folders": []])
       case ("PUT", let path) where path == "/api/admin/encrypted-notes/\(Self.note?.id ?? "")":
         Self.updateRequestCount += 1
-        guard var updated = Self.note else { throw URLError(.cannotDecodeContentData) }
-        updated.revision = 2
-        updated.updatedAt = "2026-08-14T03:00:00.000Z"
-        responseBody = try JSONEncoder().encode(NoteFixture(note: updated))
+        if request.value(forHTTPHeaderField: "X-CSRF-Token") != "test-csrf-token" {
+          statusCode = 403
+          responseBody = try json(["error": "Invalid CSRF token."])
+        } else {
+          guard var updated = Self.note else { throw URLError(.cannotDecodeContentData) }
+          updated.revision = Self.updateRequestCount + 1
+          updated.updatedAt = "2026-08-14T03:00:00.000Z"
+          responseBody = try JSONEncoder().encode(NoteFixture(note: updated))
+        }
       default:
         throw URLError(.unsupportedURL)
       }
 
       let response = HTTPURLResponse(
         url: url,
-        statusCode: 200,
+        statusCode: statusCode,
         httpVersion: "HTTP/1.1",
         headerFields: ["Content-Type": "application/json"]
       )!

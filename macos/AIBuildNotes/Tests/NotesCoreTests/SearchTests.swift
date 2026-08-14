@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import NotesCore
@@ -28,4 +29,24 @@ func normalizesEmptyTitle() {
   let content = NoteContent(title: "  ", content: "  secret\n").normalized()
   #expect(content.title == "无标题笔记")
   #expect(content.content == "  secret\n")
+}
+
+@Test("Legacy notes default to unprotected and protected excerpts stay masked")
+func decodesProtectionBackwardCompatibly() throws {
+  let legacy = Data(#"{"title":"旧笔记","content":"secret-value"}"#.utf8)
+  let decoded = try JSONDecoder().decode(NoteContent.self, from: legacy)
+  #expect(!decoded.isProtected)
+
+  let protected = NoteDocument(
+    envelope: EncryptedNoteEnvelope(
+      id: "note_protected_1234",
+      version: 1,
+      ciphertext: "ciphertext",
+      nonce: "nonce"
+    ),
+    content: NoteContent(title: "密码记录", content: "secret-value", isProtected: true)
+  )
+  #expect(protected.isProtected)
+  #expect(protected.excerpt == "••••••••")
+  #expect(!protected.excerpt.contains("secret-value"))
 }

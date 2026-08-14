@@ -10,6 +10,20 @@ public struct AdminUser: Codable, Equatable, Sendable {
   }
 }
 
+public enum NoteUnlockError: LocalizedError, Equatable, Sendable {
+  case incorrectPassword
+  case tooManyAttempts
+  case sessionExpired
+
+  public var errorDescription: String? {
+    switch self {
+    case .incorrectPassword: "密码不正确。"
+    case .tooManyAttempts: "密码尝试过多，请稍后再试。"
+    case .sessionExpired: "登录状态已失效，请重新登录。"
+    }
+  }
+}
+
 public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable {
   public let id: String
   public var folderId: String?
@@ -172,17 +186,38 @@ public struct EncryptedNotePayload: Codable, Equatable, Sendable {
 public struct NoteContent: Codable, Equatable, Sendable {
   public var title: String
   public var content: String
+  public var isProtected: Bool
 
-  public init(title: String, content: String) {
+  public init(title: String, content: String, isProtected: Bool = false) {
     self.title = title
     self.content = content
+    self.isProtected = isProtected
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case title, content, isProtected
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    title = try container.decode(String.self, forKey: .title)
+    content = try container.decode(String.self, forKey: .content)
+    isProtected = try container.decodeIfPresent(Bool.self, forKey: .isProtected) ?? false
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(title, forKey: .title)
+    try container.encode(content, forKey: .content)
+    try container.encode(isProtected, forKey: .isProtected)
   }
 
   public func normalized() -> NoteContent {
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     return NoteContent(
       title: String((trimmedTitle.isEmpty ? "无标题笔记" : trimmedTitle).prefix(200)),
-      content: String(content.prefix(500_000))
+      content: String(content.prefix(500_000)),
+      isProtected: isProtected
     )
   }
 }
@@ -198,6 +233,7 @@ public struct NoteDocument: Equatable, Identifiable, Sendable {
 
   public var id: String { envelope.id }
   public var folderId: String? { envelope.folderId }
+  public var isProtected: Bool { content.isProtected }
 
   public var title: String {
     let value = content.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -205,6 +241,7 @@ public struct NoteDocument: Equatable, Identifiable, Sendable {
   }
 
   public var excerpt: String {
+    if isProtected { return "••••••••" }
     let collapsed = content.content
       .split(whereSeparator: { $0.isWhitespace })
       .joined(separator: " ")

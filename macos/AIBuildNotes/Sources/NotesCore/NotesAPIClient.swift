@@ -214,7 +214,7 @@ public actor NotesAPIClient {
       throw NotesAPIError.invalidResponse
     }
     guard (200..<300).contains(response.statusCode) else {
-      if response.statusCode == 401 { csrfToken = "" }
+      if response.statusCode == 401 && path != "api/auth/login" { csrfToken = "" }
       let message =
         (try? JSONDecoder().decode(ErrorResponse.self, from: data).error)
         ?? "请求失败，请稍后重试。"
