@@ -62,7 +62,7 @@ private struct LoginView: View {
           .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 18))
 
         VStack(spacing: 8) {
-          Text("AI Build Notes").font(.title.bold())
+          Text("My Notes").font(.title.bold())
           Text("登录后读取你的加密笔记")
             .foregroundStyle(.secondary)
         }
@@ -230,7 +230,7 @@ private struct SidebarView: View {
           .frame(width: 34, height: 34)
           .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 9))
         VStack(alignment: .leading, spacing: 2) {
-          Text("AI Build Notes").font(.headline)
+          Text("My Notes").font(.headline)
           Text(store.user?.username ?? "")
             .font(.caption)
             .foregroundStyle(.secondary)

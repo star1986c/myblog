@@ -14,9 +14,9 @@ if [[ "${CONFIGURATION}" != "release" && "${CONFIGURATION}" != "debug" ]]; then
 fi
 
 if [[ "${CONFIGURATION}" == "debug" ]]; then
-  APP_PATH="${OUTPUT_DIR}/AI Build Notes Preview.app"
+  APP_PATH="${OUTPUT_DIR}/My Notes Preview.app"
 else
-  APP_PATH="${OUTPUT_DIR}/AI Build Notes.app"
+  APP_PATH="${OUTPUT_DIR}/My Notes.app"
 fi
 ICON_SOURCE="${PACKAGE_DIR}/Assets/AppIcon-1024.png"
 ICONSET_DIR="${SCRATCH_DIR}/AppIcon.iconset"

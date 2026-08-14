@@ -10,7 +10,7 @@ struct AIBuildNotesApp: App {
   #endif
 
   var body: some Scene {
-    WindowGroup("AI Build Notes") {
+    WindowGroup("My Notes") {
       RootView()
         .environmentObject(store)
         .frame(minWidth: 820, minHeight: 560)

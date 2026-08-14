@@ -6,3 +6,6 @@ node_modules/
 npm-debug.log*
 output/
 .build/
+android/**/.gradle/
+android/**/build/
+android/**/local.properties

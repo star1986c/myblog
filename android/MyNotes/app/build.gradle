@@ -1,0 +1,29 @@
+plugins {
+  id "com.android.application"
+}
+
+android {
+  namespace "io.qzz.superstar1014.mynotes"
+  compileSdk 36
+
+  defaultConfig {
+    applicationId "io.qzz.superstar1014.mynotes"
+    minSdk 26
+    targetSdk 36
+    versionCode 1
+    versionName "1.0"
+    testInstrumentationRunner "io.qzz.superstar1014.mynotes.CryptoTestRunner"
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+      proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+    }
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}

@@ -98,9 +98,25 @@ swift test --package-path macos/AIBuildNotes
 /bin/zsh scripts/build-macos-app.sh
 ```
 
-The bundle is written to `output/AI Build Notes.app`.
+The bundle is written to `output/My Notes.app`.
 The 1024px icon master is stored at `macos/AIBuildNotes/Assets/AppIcon-1024.png`; the build script
 generates and embeds the complete `.icns` representation.
+
+## Android notes app
+
+The native Android client lives in `android/MyNotes`. It uses the same authenticated Worker API,
+AES-256-GCM envelopes, folders, recoverable trash, and shared independent protection password as
+the macOS and Web clients. The user-visible product name is `My Notes`; historical cryptographic
+additional-data identifiers remain unchanged for ciphertext compatibility.
+
+Build an installable debug APK with the checked-in wrapper:
+
+```bash
+cd android/MyNotes
+./gradlew assembleDebug
+```
+
+The APK is written to `android/MyNotes/app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Deploy
 

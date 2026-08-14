@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">My Notes</string>
+  <string name="login_title">登录 My Notes</string>
+  <string name="login_description">使用现有笔记账号访问加密笔记</string>
+  <string name="username">账号</string>
+  <string name="password">密码</string>
+  <string name="login">登录</string>
+  <string name="show_password">显示密码</string>
+  <string name="search_notes">搜索标题和正文</string>
+  <string name="new_note">新建笔记</string>
+  <string name="save">保存</string>
+  <string name="unlock">输入保护密码解锁</string>
+  <string name="locked_body">••••••••</string>
+  <string name="no_notes">这里还没有笔记</string>
+  <plurals name="note_count">
+    <item quantity="other">%d 条笔记</item>
+  </plurals>
+</resources>
