@@ -2,6 +2,7 @@ import Foundation
 
 public struct NoteMutationState: Codable, Equatable, Sendable {
   public let id: String
+  public let folderId: String?
   public let revision: Int
   public let updatedAt: String?
   public let deletedAt: String?
@@ -85,6 +86,42 @@ public actor NotesAPIClient {
     return response.notes
   }
 
+  public func listFolders() async throws -> [EncryptedFolderEnvelope] {
+    let response: FoldersResponse = try await request(path: "api/admin/encrypted-note-folders")
+    return response.folders
+  }
+
+  public func createFolder(_ payload: EncryptedFolderPayload) async throws
+    -> EncryptedFolderEnvelope
+  {
+    let response: FolderResponse = try await request(
+      method: "POST",
+      path: "api/admin/encrypted-note-folders",
+      body: try JSONEncoder().encode(payload)
+    )
+    return response.folder
+  }
+
+  public func updateFolder(_ payload: EncryptedFolderPayload, revision: Int) async throws
+    -> EncryptedFolderEnvelope
+  {
+    let response: FolderResponse = try await request(
+      method: "PUT",
+      path: "api/admin/encrypted-note-folders/\(payload.id)",
+      body: try JSONEncoder().encode(payload),
+      revision: revision
+    )
+    return response.folder
+  }
+
+  public func deleteFolder(id: String, revision: Int) async throws {
+    let _: OKResponse = try await request(
+      method: "DELETE",
+      path: "api/admin/encrypted-note-folders/\(id)",
+      revision: revision
+    )
+  }
+
   public func create(_ payload: EncryptedNotePayload) async throws -> EncryptedNoteEnvelope {
     let body = try JSONEncoder().encode(payload)
     let response: NoteResponse = try await request(
@@ -113,6 +150,18 @@ public actor NotesAPIClient {
     let response: MutationResponse = try await request(
       method: "DELETE",
       path: "api/admin/encrypted-notes/\(id)",
+      revision: revision
+    )
+    return response.note
+  }
+
+  public func moveNote(id: String, folderId: String?, revision: Int) async throws
+    -> NoteMutationState
+  {
+    let response: MutationResponse = try await request(
+      method: "PUT",
+      path: "api/admin/encrypted-notes/\(id)/folder",
+      body: try JSONEncoder().encode(FolderAssignment(folderId: folderId)),
       revision: revision
     )
     return response.note
@@ -202,6 +251,9 @@ private struct WorkspaceKeyResponse: Codable {
 
 private struct NotesResponse: Codable { let notes: [EncryptedNoteEnvelope] }
 private struct NoteResponse: Codable { let note: EncryptedNoteEnvelope }
+private struct FoldersResponse: Codable { let folders: [EncryptedFolderEnvelope] }
+private struct FolderResponse: Codable { let folder: EncryptedFolderEnvelope }
+private struct FolderAssignment: Codable { let folderId: String? }
 private struct MutationResponse: Codable { let note: NoteMutationState }
 private struct OKResponse: Codable { let ok: Bool }
 private struct ErrorResponse: Codable { let error: String }

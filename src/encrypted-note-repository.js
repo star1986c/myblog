@@ -15,6 +15,7 @@ const PLAINTEXT_FIELDS = [
 
 const NOTE_COLUMNS = [
   "id",
+  "folder_id AS folderId",
   "version",
   "revision",
   "ciphertext",
@@ -130,13 +131,20 @@ async function createEncryptedNote(db, input) {
     }
     throw error;
   }
-  return { ...note, revision: 1, createdAt: now, updatedAt: now, deletedAt: null };
+  return {
+    ...note,
+    folderId: null,
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  };
 }
 
 async function readEncryptedNoteState(db, id) {
   return await db
     .prepare(
-      `SELECT revision, deleted_at AS deletedAt
+      `SELECT revision, folder_id AS folderId, deleted_at AS deletedAt
        FROM encrypted_notes
        WHERE id = ? AND keyring_id = ?
        LIMIT 1`,
@@ -161,10 +169,8 @@ function requireCurrentRevision(state, expectedRevision) {
 
 async function updateEncryptedNote(db, id, input, expectedRevision = null) {
   const note = normalizeEncryptedNoteEnvelope(input, id);
-  const currentRevision = requireCurrentRevision(
-    await readEncryptedNoteState(db, note.id),
-    expectedRevision,
-  );
+  const state = await readEncryptedNoteState(db, note.id);
+  const currentRevision = requireCurrentRevision(state, expectedRevision);
   const now = new Date().toISOString();
   const result = await db
     .prepare(
@@ -179,6 +185,7 @@ async function updateEncryptedNote(db, id, input, expectedRevision = null) {
   }
   return {
     ...note,
+    folderId: state.folderId || null,
     revision: currentRevision + 1,
     updatedAt: now,
     deletedAt: null,
@@ -189,10 +196,8 @@ async function deleteEncryptedNote(db, id, expectedRevision = null) {
   if (!ENTRY_ID_PATTERN.test(id)) {
     throw new EncryptedNoteError("Encrypted note ID is invalid.", 400);
   }
-  const currentRevision = requireCurrentRevision(
-    await readEncryptedNoteState(db, id),
-    expectedRevision,
-  );
+  const state = await readEncryptedNoteState(db, id);
+  const currentRevision = requireCurrentRevision(state, expectedRevision);
   const now = new Date().toISOString();
   const result = await db
     .prepare(
@@ -205,7 +210,13 @@ async function deleteEncryptedNote(db, id, expectedRevision = null) {
   if (!result.meta?.changes) {
     throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
   }
-  return { id, revision: currentRevision + 1, updatedAt: now, deletedAt: now };
+  return {
+    id,
+    folderId: state.folderId || null,
+    revision: currentRevision + 1,
+    updatedAt: now,
+    deletedAt: now,
+  };
 }
 
 async function restoreEncryptedNote(db, id, expectedRevision = null) {
@@ -235,7 +246,58 @@ async function restoreEncryptedNote(db, id, expectedRevision = null) {
   if (!result.meta?.changes) {
     throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
   }
-  return { id, revision: currentRevision + 1, updatedAt: now, deletedAt: null };
+  return {
+    id,
+    folderId: state.folderId || null,
+    revision: currentRevision + 1,
+    updatedAt: now,
+    deletedAt: null,
+  };
+}
+
+async function moveEncryptedNote(db, id, input, expectedRevision = null) {
+  rejectPlaintextFields(input);
+  if (!ENTRY_ID_PATTERN.test(id)) {
+    throw new EncryptedNoteError("Encrypted note ID is invalid.", 400);
+  }
+  const folderId = input?.folderId === null ? null : input?.folderId;
+  if (folderId !== null && !ENTRY_ID_PATTERN.test(folderId || "")) {
+    throw new EncryptedNoteError("Encrypted folder ID is invalid.", 400);
+  }
+  if (folderId) {
+    const folder = await db
+      .prepare(
+        `SELECT id FROM encrypted_note_folders
+         WHERE id = ? AND keyring_id = ?
+         LIMIT 1`,
+      )
+      .bind(folderId, KEYRING_ID)
+      .first();
+    if (!folder) {
+      throw new EncryptedNoteError("Encrypted folder not found.", 404);
+    }
+  }
+  const state = await readEncryptedNoteState(db, id);
+  const currentRevision = requireCurrentRevision(state, expectedRevision);
+  const now = new Date().toISOString();
+  const result = await db
+    .prepare(
+      `UPDATE encrypted_notes
+       SET folder_id = ?, updated_at = ?, revision = revision + 1
+       WHERE id = ? AND keyring_id = ? AND deleted_at IS NULL AND revision = ?`,
+    )
+    .bind(folderId, now, id, KEYRING_ID, currentRevision)
+    .run();
+  if (!result.meta?.changes) {
+    throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
+  }
+  return {
+    id,
+    folderId,
+    revision: currentRevision + 1,
+    updatedAt: now,
+    deletedAt: null,
+  };
 }
 
 async function purgeEncryptedNote(db, id, expectedRevision = null) {
@@ -271,6 +333,7 @@ export {
   deleteEncryptedNote,
   listDeletedEncryptedNotes,
   listEncryptedNotes,
+  moveEncryptedNote,
   normalizeEncryptedNoteEnvelope,
   purgeEncryptedNote,
   restoreEncryptedNote,

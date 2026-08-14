@@ -57,3 +57,32 @@ func bindsCiphertextToRecord() throws {
     try NoteCrypto.decrypt(movedEnvelope, using: key)
   }
 }
+
+@Test("Folder names are encrypted and bound to their folder id")
+func folderRoundTripAndBinding() throws {
+  let key = SymmetricKey(size: .bits256)
+  let payload = try FolderCrypto.encrypt(
+    FolderContent(name: "账号信息"),
+    id: "folder_12345678",
+    using: key
+  )
+  #expect(!payload.ciphertext.contains("账号信息"))
+
+  let envelope = EncryptedFolderEnvelope(
+    id: payload.id,
+    version: payload.version,
+    ciphertext: payload.ciphertext,
+    nonce: payload.nonce
+  )
+  #expect(try FolderCrypto.decrypt(envelope, using: key) == FolderContent(name: "账号信息"))
+
+  let moved = EncryptedFolderEnvelope(
+    id: "folder_87654321",
+    version: payload.version,
+    ciphertext: payload.ciphertext,
+    nonce: payload.nonce
+  )
+  #expect(throws: FolderCryptoError.decryptionFailed) {
+    try FolderCrypto.decrypt(moved, using: key)
+  }
+}

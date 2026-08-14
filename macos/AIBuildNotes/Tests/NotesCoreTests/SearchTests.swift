@@ -6,6 +6,7 @@ import Testing
 func searchesTitleAndBody() {
   let envelope = EncryptedNoteEnvelope(
     id: "note_12345678",
+    folderId: "folder_12345678",
     version: 1,
     ciphertext: "ciphertext",
     nonce: "nonce"
@@ -18,6 +19,8 @@ func searchesTitleAndBody() {
   #expect(document.matches(search: "服务器"))
   #expect(document.matches(search: "swiftui"))
   #expect(!document.matches(search: "待办"))
+  #expect(document.belongs(to: "folder_12345678"))
+  #expect(!document.belongs(to: nil))
 }
 
 @Test("Empty titles normalize without changing body whitespace")

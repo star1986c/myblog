@@ -1,4 +1,10 @@
 import {
+  createEncryptedFolder,
+  deleteEncryptedFolder,
+  listEncryptedFolders,
+  updateEncryptedFolder,
+} from "./encrypted-folder-repository.js";
+import {
   clearSessionCookie,
   createPasswordHash,
   readSession,
@@ -16,6 +22,7 @@ import {
   deleteEncryptedNote,
   listDeletedEncryptedNotes,
   listEncryptedNotes,
+  moveEncryptedNote,
   purgeEncryptedNote,
   restoreEncryptedNote,
   updateEncryptedNote,
@@ -754,6 +761,36 @@ async function handleAdminApi(request, env, path) {
     return jsonResponse({ notes: await listDeletedEncryptedNotes(db) });
   }
 
+  if (path === "/api/admin/encrypted-note-folders") {
+    if (request.method === "GET") {
+      return jsonResponse({ folders: await listEncryptedFolders(db) });
+    }
+    if (request.method === "POST") {
+      return jsonResponse(
+        { folder: await createEncryptedFolder(db, await readJson(request)) },
+        { status: 201 },
+      );
+    }
+  }
+
+  if (path.startsWith("/api/admin/encrypted-note-folders/")) {
+    const suffix = path.slice("/api/admin/encrypted-note-folders/".length);
+    if (!suffix || suffix.includes("/")) {
+      return jsonResponse({ error: "Not found" }, { status: 404 });
+    }
+    const id = decodeURIComponent(suffix);
+    const expectedRevision = readExpectedRevision(request);
+    if (request.method === "PUT") {
+      return jsonResponse({
+        folder: await updateEncryptedFolder(db, id, await readJson(request), expectedRevision),
+      });
+    }
+    if (request.method === "DELETE") {
+      await deleteEncryptedFolder(db, id, expectedRevision);
+      return jsonResponse({ ok: true });
+    }
+  }
+
   if (path.startsWith("/api/admin/encrypted-notes/")) {
     const suffix = path.slice("/api/admin/encrypted-notes/".length);
     const parts = suffix.split("/");
@@ -772,6 +809,11 @@ async function handleAdminApi(request, env, path) {
       return jsonResponse({
         ok: true,
         note: await deleteEncryptedNote(db, id, expectedRevision),
+      });
+    }
+    if (action === "folder" && request.method === "PUT") {
+      return jsonResponse({
+        note: await moveEncryptedNote(db, id, await readJson(request), expectedRevision),
       });
     }
     if (action === "restore" && request.method === "POST") {

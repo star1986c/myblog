@@ -17,6 +17,7 @@ class FakeD1 {
     settings = {},
     workspaceKeyring = null,
     encryptedNotes = [],
+    encryptedFolders = [],
   } = {}) {
     this.posts = posts;
     this.pages = pages;
@@ -25,6 +26,7 @@ class FakeD1 {
     this.adminAccount = adminAccount;
     this.workspaceKeyring = workspaceKeyring;
     this.encryptedNotes = encryptedNotes;
+    this.encryptedFolders = encryptedFolders;
     this.settings = {
       session_secret: "test-session-secret",
       ...settings,
@@ -52,6 +54,10 @@ class FakeStatement {
   }
 
   async all() {
+    if (this.sql.includes("FROM encrypted_note_folders")) {
+      return { results: this.db.encryptedFolders };
+    }
+
     if (this.sql.includes("FROM encrypted_notes")) {
       const notes = this.db.encryptedNotes.filter((note) => {
         if (this.sql.includes("deleted_at IS NOT NULL")) return Boolean(note.deletedAt);
@@ -93,10 +99,25 @@ class FakeStatement {
   }
 
   async first() {
+    if (this.sql.includes("FROM encrypted_note_folders")) {
+      const [id] = this.params;
+      const folder = this.db.encryptedFolders.find((item) => item.id === id);
+      if (!folder) return null;
+      return this.sql.includes("SELECT revision")
+        ? { revision: folder.revision || 1 }
+        : { id: folder.id };
+    }
+
     if (this.sql.includes("FROM encrypted_notes")) {
       const [id] = this.params;
       const note = this.db.encryptedNotes.find((item) => item.id === id);
-      return note ? { revision: note.revision || 1, deletedAt: note.deletedAt || null } : null;
+      return note
+        ? {
+            revision: note.revision || 1,
+            folderId: note.folderId || null,
+            deletedAt: note.deletedAt || null,
+          }
+        : null;
     }
 
     if (this.sql.includes("FROM workspace_keyrings")) {
@@ -126,12 +147,57 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.includes("INSERT INTO encrypted_note_folders")) {
+      const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
+      this.db.encryptedFolders.push({
+        id,
+        version,
+        revision: 1,
+        ciphertext,
+        nonce,
+        createdAt,
+        updatedAt,
+      });
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (this.sql.includes("UPDATE encrypted_note_folders")) {
+      const [version, ciphertext, nonce, updatedAt, id, , revision] = this.params;
+      const exists = this.db.encryptedFolders.some(
+        (folder) => folder.id === id && (folder.revision || 1) === revision,
+      );
+      this.db.encryptedFolders = this.db.encryptedFolders.map((folder) => (
+        folder.id === id && exists
+          ? { ...folder, version, ciphertext, nonce, updatedAt, revision: revision + 1 }
+          : folder
+      ));
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
+    if (this.sql.includes("DELETE FROM encrypted_note_folders")) {
+      const [id, , revision] = this.params;
+      const previousLength = this.db.encryptedFolders.length;
+      this.db.encryptedFolders = this.db.encryptedFolders.filter(
+        (folder) => !(folder.id === id && (folder.revision || 1) === revision),
+      );
+      const changed = previousLength !== this.db.encryptedFolders.length;
+      if (changed) {
+        this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
+          note.folderId === id
+            ? { ...note, folderId: null, revision: (note.revision || 1) + 1 }
+            : note
+        ));
+      }
+      return { success: true, meta: { changes: changed ? 1 : 0 } };
+    }
+
     if (this.sql.includes("INSERT INTO encrypted_notes")) {
       const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
       this.db.encryptedNotes.unshift({
         id,
         version,
         revision: 1,
+        folderId: null,
         ciphertext,
         nonce,
         createdAt,
@@ -149,6 +215,19 @@ class FakeStatement {
       this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
         note.id === id && exists
           ? { ...note, version, ciphertext, nonce, updatedAt, revision: revision + 1 }
+          : note
+      ));
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
+    if (this.sql.includes("UPDATE encrypted_notes") && this.sql.includes("SET folder_id = ?")) {
+      const [folderId, updatedAt, id, , revision] = this.params;
+      const exists = this.db.encryptedNotes.some(
+        (note) => note.id === id && !note.deletedAt && (note.revision || 1) === revision,
+      );
+      this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
+        note.id === id && exists
+          ? { ...note, folderId, updatedAt, revision: revision + 1 }
           : note
       ));
       return { success: true, meta: { changes: exists ? 1 : 0 } };
@@ -313,6 +392,15 @@ function makeWorldClockRequest() {
 }
 
 function makeEncryptedNote(id = "note_12345678", seed = 20) {
+  return {
+    id,
+    version: 1,
+    ciphertext: bytesToBase64Url(new Uint8Array(64).fill(seed)),
+    nonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 1)),
+  };
+}
+
+function makeEncryptedFolder(id = "folder_12345678", seed = 40) {
   return {
     id,
     version: 1,
@@ -1132,6 +1220,128 @@ test("administrator can create, update, trash, restore, and purge encrypted note
   );
   assert.equal(purgeResponse.status, 200);
   assert.equal(db.encryptedNotes.length, 0);
+});
+
+test("administrator can manage encrypted folders without changing the legacy note save API", async () => {
+  const db = new FakeD1({ workspaceKeyring: { id: "notes" } });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "folders-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const writeHeaders = {
+    "Content-Type": "application/json",
+    Cookie: cookie,
+    "X-CSRF-Token": "folders-csrf-token",
+  };
+  const folder = makeEncryptedFolder();
+
+  const createFolder = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-folders", {
+      method: "POST",
+      headers: writeHeaders,
+      body: JSON.stringify(folder),
+    }),
+    env,
+  );
+  assert.equal(createFolder.status, 201);
+  assert.equal(db.encryptedFolders.length, 1);
+  assert.doesNotMatch(JSON.stringify(await createFolder.json()), /name|title|content/i);
+
+  const listFolders = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-folders", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.deepEqual((await listFolders.json()).folders.map((item) => item.id), [folder.id]);
+
+  const note = makeEncryptedNote();
+  await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      method: "POST",
+      headers: writeHeaders,
+      body: JSON.stringify(note),
+    }),
+    env,
+  );
+
+  const moveNote = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/folder`, {
+      method: "PUT",
+      headers: { ...writeHeaders, "If-Match": '"1"' },
+      body: JSON.stringify({ folderId: folder.id }),
+    }),
+    env,
+  );
+  assert.equal(moveNote.status, 200);
+  assert.equal((await moveNote.json()).note.folderId, folder.id);
+  assert.equal(db.encryptedNotes[0].revision, 2);
+
+  const changedNote = makeEncryptedNote(note.id, 60);
+  const legacySave = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "PUT",
+      headers: { ...writeHeaders, "If-Match": '"2"' },
+      body: JSON.stringify(changedNote),
+    }),
+    env,
+  );
+  assert.equal(legacySave.status, 200);
+  assert.equal((await legacySave.json()).note.folderId, folder.id);
+  assert.equal(db.encryptedNotes[0].folderId, folder.id);
+  assert.equal(db.encryptedNotes[0].revision, 3);
+
+  const renamedFolder = makeEncryptedFolder(folder.id, 70);
+  const rename = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-note-folders/${folder.id}`, {
+      method: "PUT",
+      headers: { ...writeHeaders, "If-Match": '"1"' },
+      body: JSON.stringify(renamedFolder),
+    }),
+    env,
+  );
+  assert.equal(rename.status, 200);
+  assert.equal(db.encryptedFolders[0].revision, 2);
+
+  const remove = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-note-folders/${folder.id}`, {
+      method: "DELETE",
+      headers: { ...writeHeaders, "If-Match": '"2"' },
+    }),
+    env,
+  );
+  assert.equal(remove.status, 200);
+  assert.equal(db.encryptedFolders.length, 0);
+  assert.equal(db.encryptedNotes[0].folderId, null);
+  assert.equal(db.encryptedNotes[0].revision, 4);
+});
+
+test("encrypted folder API rejects plaintext names", async () => {
+  const db = new FakeD1({ workspaceKeyring: { id: "notes" } });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "folder-privacy-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-folders", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "folder-privacy-csrf-token",
+      },
+      body: JSON.stringify({ ...makeEncryptedFolder(), name: "must-never-reach-d1" }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 400);
+  assert.equal(db.encryptedFolders.length, 0);
 });
 
 test("encrypted note updates reject stale revisions", async () => {

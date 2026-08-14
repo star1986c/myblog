@@ -31,6 +31,10 @@ const noteTrashMigration = await readFile(
   new URL("../migrations/0008_note_trash_and_revisions.sql", import.meta.url),
   "utf8",
 );
+const encryptedNoteFoldersMigration = await readFile(
+  new URL("../migrations/0009_encrypted_note_folders.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -114,4 +118,18 @@ test("note trash migration adds revisions and recoverable soft deletion without 
   assert.match(noteTrashMigration, /WHERE deleted_at IS NULL/);
   assert.match(noteTrashMigration, /WHERE deleted_at IS NOT NULL/);
   assert.doesNotMatch(noteTrashMigration, /(?:^|\s)(?:title|content|password|username)\s+TEXT/im);
+});
+
+test("encrypted note folders migration stores encrypted names and opaque note membership", () => {
+  assert.match(encryptedNoteFoldersMigration, /CREATE TABLE encrypted_note_folders/);
+  assert.match(encryptedNoteFoldersMigration, /ciphertext TEXT NOT NULL/);
+  assert.match(encryptedNoteFoldersMigration, /nonce TEXT NOT NULL/);
+  assert.match(encryptedNoteFoldersMigration, /ADD COLUMN folder_id TEXT/);
+  assert.match(encryptedNoteFoldersMigration, /AFTER DELETE ON encrypted_note_folders/);
+  assert.match(encryptedNoteFoldersMigration, /SET folder_id = NULL/);
+  assert.match(encryptedNoteFoldersMigration, /revision = revision \+ 1/);
+  assert.doesNotMatch(
+    encryptedNoteFoldersMigration,
+    /(?:^|\s)(?:name|title|content|password|username)\s+TEXT/im,
+  );
 });

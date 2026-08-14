@@ -23,7 +23,7 @@ struct AIBuildNotesApp: App {
           Task { await store.createNote() }
         }
         .keyboardShortcut("n", modifiers: .command)
-        .disabled(store.user == nil || store.section != .notes)
+        .disabled(store.user == nil || store.location.isTrash)
       }
       CommandGroup(after: .sidebar) {
         Button("刷新笔记") {

@@ -12,6 +12,7 @@ public struct AdminUser: Codable, Equatable, Sendable {
 
 public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable {
   public let id: String
+  public var folderId: String?
   public let version: Int
   public var revision: Int
   public var ciphertext: String
@@ -22,6 +23,7 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
 
   public init(
     id: String,
+    folderId: String? = nil,
     version: Int,
     revision: Int = 1,
     ciphertext: String,
@@ -31,6 +33,7 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
     deletedAt: String? = nil
   ) {
     self.id = id
+    self.folderId = folderId
     self.version = version
     self.revision = revision
     self.ciphertext = ciphertext
@@ -41,12 +44,13 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, version, revision, ciphertext, nonce, createdAt, updatedAt, deletedAt
+    case id, folderId, version, revision, ciphertext, nonce, createdAt, updatedAt, deletedAt
   }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(String.self, forKey: .id)
+    folderId = try container.decodeIfPresent(String.self, forKey: .folderId)
     version = try container.decode(Int.self, forKey: .version)
     revision = try container.decodeIfPresent(Int.self, forKey: .revision) ?? 1
     ciphertext = try container.decode(String.self, forKey: .ciphertext)
@@ -59,6 +63,7 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(id, forKey: .id)
+    try container.encodeIfPresent(folderId, forKey: .folderId)
     try container.encode(version, forKey: .version)
     try container.encode(revision, forKey: .revision)
     try container.encode(ciphertext, forKey: .ciphertext)
@@ -77,6 +82,76 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+  }
+}
+
+public struct EncryptedFolderEnvelope: Codable, Equatable, Identifiable, Sendable {
+  public let id: String
+  public let version: Int
+  public var revision: Int
+  public var ciphertext: String
+  public var nonce: String
+  public let createdAt: String?
+  public var updatedAt: String?
+
+  public init(
+    id: String,
+    version: Int,
+    revision: Int = 1,
+    ciphertext: String,
+    nonce: String,
+    createdAt: String? = nil,
+    updatedAt: String? = nil
+  ) {
+    self.id = id
+    self.version = version
+    self.revision = revision
+    self.ciphertext = ciphertext
+    self.nonce = nonce
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct EncryptedFolderPayload: Codable, Equatable, Sendable {
+  public let id: String
+  public let version: Int
+  public let ciphertext: String
+  public let nonce: String
+
+  public init(id: String, version: Int, ciphertext: String, nonce: String) {
+    self.id = id
+    self.version = version
+    self.ciphertext = ciphertext
+    self.nonce = nonce
+  }
+}
+
+public struct FolderContent: Codable, Equatable, Sendable {
+  public var name: String
+
+  public init(name: String) {
+    self.name = name
+  }
+
+  public func normalized() -> FolderContent {
+    FolderContent(name: String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)))
+  }
+}
+
+public struct NoteFolder: Equatable, Identifiable, Sendable {
+  public var envelope: EncryptedFolderEnvelope
+  public var content: FolderContent
+
+  public init(envelope: EncryptedFolderEnvelope, content: FolderContent) {
+    self.envelope = envelope
+    self.content = content
+  }
+
+  public var id: String { envelope.id }
+  public var name: String {
+    let normalized = content.normalized().name
+    return normalized.isEmpty ? "未命名文件夹" : normalized
   }
 }
 
@@ -122,6 +197,7 @@ public struct NoteDocument: Equatable, Identifiable, Sendable {
   }
 
   public var id: String { envelope.id }
+  public var folderId: String? { envelope.folderId }
 
   public var title: String {
     let value = content.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,15 +217,50 @@ public struct NoteDocument: Equatable, Identifiable, Sendable {
     return content.title.localizedCaseInsensitiveContains(value)
       || content.content.localizedCaseInsensitiveContains(value)
   }
+
+  public func belongs(to folderId: String?) -> Bool {
+    envelope.folderId == folderId
+  }
 }
 
-public enum NoteSection: String, CaseIterable, Identifiable, Sendable {
-  case notes
+public enum NoteLocation: Hashable, Identifiable, Sendable {
+  case allNotes
+  case unfiled
+  case folder(String)
   case trash
 
+  public var id: String {
+    switch self {
+    case .allNotes: "all-notes"
+    case .unfiled: "unfiled"
+    case .folder(let id): "folder:\(id)"
+    case .trash: "trash"
+    }
+  }
+
+  public var isTrash: Bool { self == .trash }
+}
+
+public enum NoteListDisplayMode: String, CaseIterable, Identifiable, Sendable {
+  case cards
+  case details
+  case titles
+
   public var id: String { rawValue }
-  public var title: String { self == .notes ? "全部笔记" : "回收站" }
-  public var systemImage: String { self == .notes ? "note.text" : "trash" }
+  public var title: String {
+    switch self {
+    case .cards: "图文卡片"
+    case .details: "详细列表"
+    case .titles: "标题列表"
+    }
+  }
+  public var systemImage: String {
+    switch self {
+    case .cards: "square.grid.2x2"
+    case .details: "list.bullet.rectangle"
+    case .titles: "list.bullet"
+    }
+  }
 }
 
 public enum NoteSaveState: Equatable, Sendable {
