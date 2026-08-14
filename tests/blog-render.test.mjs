@@ -26,7 +26,7 @@ test("blog index renders a polished public landing surface", () => {
   assert.match(html, /Read article/);
   assert.match(html, /rel="canonical" href="https:\/\/superstar1014\.qzz\.io\/blog\/"/);
   assert.match(html, /"@type":"Blog"/);
-  assert.match(html, /href="\/notes\/">Private Notes/);
+  assert.doesNotMatch(html, /href="\/notes\/?"|Private Notes/);
   assert.doesNotMatch(html, /Password Generator|\/password\//);
 });
 

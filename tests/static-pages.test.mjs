@@ -65,19 +65,6 @@ const passwordJs = await readFile(
   new URL("../public/assets/password-tool.20260713.js", import.meta.url),
   "utf8",
 );
-const notesHtml = await readFile(new URL("../public/notes/index.html", import.meta.url), "utf8");
-const notesJs = await readFile(
-  new URL("../public/assets/notes.20260814-v4.js", import.meta.url),
-  "utf8",
-);
-const notesCss = await readFile(
-  new URL("../public/assets/notes.20260814-v3.css", import.meta.url),
-  "utf8",
-);
-const encryptedNotesCoreJs = await readFile(
-  new URL("../public/assets/encrypted-notes-core.20260814-v3.js", import.meta.url),
-  "utf8",
-);
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
 test("home page links to the JSON tool without embedding the formatter", () => {
@@ -109,10 +96,10 @@ test("home page offers the separate match-three game only through a mobile entry
   assert.match(mobileGameEntryCss, /min-height:\s*72px/);
 });
 
-test("home page keeps the developer tools and links to private notes", () => {
-  assert.match(indexHtml, /Developer Tools &amp; Private Notes/);
+test("home page keeps the developer tools without a web notes entry", () => {
+  assert.match(indexHtml, /Developer Tools &amp; Experiments/);
   assert.match(indexHtml, /Personal developer lab/);
-  assert.match(indexHtml, /href="\/notes\/"/);
+  assert.doesNotMatch(indexHtml, /href="\/notes\/?"/);
   assert.match(indexHtml, /id="tools"/);
   assert.match(indexHtml, /id="about"/);
   assert.match(indexHtml, /href="\/assets\/styles\.20260710\.css"/);
@@ -162,50 +149,17 @@ test("public pages use consistent English SEO metadata", async () => {
 
   const publicRoot = new URL("../public/", import.meta.url);
   const publicFiles = (await readdir(publicRoot, { recursive: true }))
-    .filter((path) => /\.(?:html|js|xml|txt)$/.test(path))
-    .filter((path) => !path.startsWith("notes/"))
-    .filter((path) => !path.includes("notes.20260813"))
-    .filter((path) => !path.includes("encrypted-notes-core.20260813"))
-    .filter((path) => !path.includes("notes.20260814"))
-    .filter((path) => !path.includes("encrypted-notes-core.20260814"));
+    .filter((path) => /\.(?:html|js|xml|txt)$/.test(path));
   const publicText = await Promise.all(
     publicFiles.map((path) => readFile(new URL(path, publicRoot), "utf8")),
   );
   publicText.forEach((text) => assert.doesNotMatch(text, /[\p{Script=Han}]/u));
 });
 
-test("private notes page encrypts all note fields locally and is excluded from indexing", () => {
-  assert.match(notesHtml, /<html lang="zh-Hans">/);
-  assert.match(notesHtml, /name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex"/);
-  assert.match(notesHtml, /data-workspace-loading/);
-  assert.match(notesHtml, /data-settings-dialog/);
-  assert.match(notesHtml, /data-settings-form/);
-  assert.doesNotMatch(notesHtml, /data-vault-|主密码|\/admin\//);
-  assert.match(notesHtml, /data-note-title/);
-  assert.match(notesHtml, /data-note-content/);
-  assert.match(notesHtml, /src="\/assets\/notes\.20260814-v4\.js"/);
-  assert.match(notesHtml, /href="\/assets\/notes\.20260814-v3\.css"/);
-  assert.match(notesJs, /encryptNote/);
-  assert.match(notesJs, /decryptNote/);
-  assert.match(notesJs, /\/api\/admin\/encrypted-notes/);
-  assert.match(notesJs, /\/api\/admin\/workspace-key/);
-  assert.match(notesJs, /\/api\/admin\/account/);
-  assert.match(notesJs, /importNoteDataKey/);
-  assert.match(notesJs, /note-protection-keyring/);
-  assert.match(notesJs, /unlockProtectionKeyring/);
-  assert.match(notesJs, /IDLE_LOCK_MS = 5 \* 60 \* 1000/);
-  assert.match(notesJs, /HIDDEN_LOCK_MS = 60 \* 1000/);
-  const loginHandler = notesJs.match(/async function handleLogin\(event\) \{[\s\S]*?\n\}/)?.[0] || "";
-  assert.ok(loginHandler.indexOf("new FormData") < loginHandler.indexOf("setFormBusy"));
-  assert.match(loginHandler, /body:\s*\{\s*username,\s*password/);
-  assert.doesNotMatch(notesJs, /localStorage|sessionStorage|indexedDB/);
-  assert.doesNotMatch(notesJs, /masterPassword|password-vault|unlockPasswordVault/);
-  assert.match(encryptedNotesCoreJs, /AES-GCM/);
-  assert.match(encryptedNotesCoreJs, /encrypted-note:/);
-  assert.match(encryptedNotesCoreJs, /getRandomValues/);
-  assert.match(encryptedNotesCoreJs, /importNoteDataKey/);
-  assert.match(notesCss, /@media \(max-width: 760px\)/);
-  assert.match(notesCss, /@media \(prefers-reduced-motion: reduce\)/);
+test("public static pages do not expose a web notes entry", () => {
+  for (const html of [indexHtml, jsonHtml, passwordHtml, tetrisHtml, matchThreeHtml]) {
+    assert.doesNotMatch(html, /href="\/notes\/?"/);
+  }
 });
 
 test("private routes are absent from the public sitemap", () => {

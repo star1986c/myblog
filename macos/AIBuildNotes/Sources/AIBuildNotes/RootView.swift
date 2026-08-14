@@ -153,6 +153,15 @@ private struct SidebarView: View {
             }
             .tag(NoteLocation.folder(folder.id))
             .contextMenu {
+              Button("上移", systemImage: "arrow.up") {
+                Task { await store.moveFolder(id: folder.id, offset: -1) }
+              }
+              .disabled(store.folders.first?.id == folder.id)
+              Button("下移", systemImage: "arrow.down") {
+                Task { await store.moveFolder(id: folder.id, offset: 1) }
+              }
+              .disabled(store.folders.last?.id == folder.id)
+              Divider()
               Button("重命名", systemImage: "pencil") {
                 folderEditor = FolderEditorRequest(
                   folderID: folder.id,

@@ -27,7 +27,7 @@ test("sets immutable cache for fingerprinted static assets", () => {
   );
 });
 
-test("private workspace shells are never cached", () => {
+test("removed notes paths and retired admin paths are never cached", () => {
   assert.equal(cacheControlFor("/notes/", "text/html; charset=utf-8"), "no-store");
   assert.equal(cacheControlFor("/admin/", "text/html; charset=utf-8"), "no-store");
 });

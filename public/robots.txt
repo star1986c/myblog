@@ -5,7 +5,6 @@ User-agent: *
 Content-Signal: search=yes,ai-train=no,use=reference
 Allow: /
 Disallow: /admin/
-Disallow: /notes/
 
 User-agent: Amazonbot
 Disallow: /

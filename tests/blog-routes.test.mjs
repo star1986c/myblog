@@ -41,6 +41,12 @@ class FakeD1 {
   prepare(sql) {
     return new FakeStatement(this, sql);
   }
+
+  async batch(statements) {
+    const results = [];
+    for (const statement of statements) results.push(await statement.run());
+    return results;
+  }
 }
 
 class FakeStatement {
@@ -51,13 +57,21 @@ class FakeStatement {
   }
 
   bind(...params) {
-    this.params = params;
-    return this;
+    const statement = new FakeStatement(this.db, this.sql);
+    statement.params = params;
+    return statement;
   }
 
   async all() {
     if (this.sql.includes("FROM encrypted_note_folders")) {
-      return { results: this.db.encryptedFolders };
+      const results = this.db.encryptedFolders
+        .map((folder, originalIndex) => ({ folder, originalIndex }))
+        .sort((left, right) => (
+          (left.folder.sortOrder ?? left.originalIndex)
+          - (right.folder.sortOrder ?? right.originalIndex)
+        ))
+        .map(({ folder }) => folder);
+      return { results };
     }
 
     if (this.sql.includes("FROM encrypted_notes")) {
@@ -105,11 +119,18 @@ class FakeStatement {
       return this.db.noteProtectionKeyring;
     }
     if (this.sql.includes("FROM encrypted_note_folders")) {
+      if (this.sql.includes("MAX(sort_order)")) {
+        const maximum = this.db.encryptedFolders.reduce(
+          (value, folder, index) => Math.max(value, folder.sortOrder ?? index),
+          -1,
+        );
+        return { nextSortOrder: maximum + 1 };
+      }
       const [id] = this.params;
       const folder = this.db.encryptedFolders.find((item) => item.id === id);
       if (!folder) return null;
       return this.sql.includes("SELECT revision")
-        ? { revision: folder.revision || 1 }
+        ? { revision: folder.revision || 1, sortOrder: folder.sortOrder ?? 0 }
         : { id: folder.id };
     }
 
@@ -180,17 +201,32 @@ class FakeStatement {
     }
 
     if (this.sql.includes("INSERT INTO encrypted_note_folders")) {
-      const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
+      const [id, , version, ciphertext, nonce, sortOrder, createdAt, updatedAt] = this.params;
       this.db.encryptedFolders.push({
         id,
         version,
         revision: 1,
         ciphertext,
         nonce,
+        sortOrder,
         createdAt,
         updatedAt,
       });
       return { success: true, meta: { changes: 1 } };
+    }
+
+    if (
+      this.sql.includes("UPDATE encrypted_note_folders")
+      && this.sql.includes("SET sort_order = ?")
+    ) {
+      const [sortOrder, id] = this.params;
+      let changes = 0;
+      this.db.encryptedFolders = this.db.encryptedFolders.map((folder) => {
+        if (folder.id !== id) return folder;
+        changes += 1;
+        return { ...folder, sortOrder };
+      });
+      return { success: true, meta: { changes } };
     }
 
     if (this.sql.includes("UPDATE encrypted_note_folders")) {
@@ -803,7 +839,7 @@ test("public time API rejects requests without its same-origin widget header", a
   assert.equal(response.headers.get("Cache-Control"), "no-store");
 });
 
-test("former public blog routes redirect to the private notes workspace", async () => {
+test("former public blog routes redirect to the public home page", async () => {
   const env = makeEnv({
     BLOG_DB: new FakeD1({
       posts: [
@@ -828,7 +864,7 @@ test("former public blog routes redirect to the private notes workspace", async 
   for (const path of ["/blog/", "/blog/edge-guide", "/category/cloudflare", "/p/about"]) {
     const response = await worker.fetch(new Request(`https://superstar1014.qzz.io${path}`), env);
     assert.equal(response.status, 302);
-    assert.equal(response.headers.get("Location"), "/notes/");
+    assert.equal(response.headers.get("Location"), "/");
     assert.equal(response.headers.get("Cache-Control"), "no-store");
   }
 });
@@ -874,14 +910,27 @@ test("admin post list requires a valid session", async () => {
   assert.equal(response.status, 401);
 });
 
-test("retired admin pages redirect to private notes", async () => {
+test("retired admin pages redirect to the public home page", async () => {
   for (const path of ["/admin", "/admin/"]) {
     const response = await worker.fetch(
       new Request(`https://superstar1014.qzz.io${path}`),
       makeEnv(),
     );
     assert.equal(response.status, 302, path);
-    assert.equal(response.headers.get("Location"), "/notes/", path);
+    assert.equal(response.headers.get("Location"), "/", path);
+    assert.equal(response.headers.get("Cache-Control"), "no-store", path);
+  }
+});
+
+test("removed web notes routes return not found without affecting native APIs", async () => {
+  for (const path of ["/notes", "/notes/"]) {
+    const response = await worker.fetch(
+      new Request(`https://superstar1014.qzz.io${path}`, {
+        headers: { Accept: "text/html" },
+      }),
+      makeEnv(),
+    );
+    assert.equal(response.status, 404, path);
     assert.equal(response.headers.get("Cache-Control"), "no-store", path);
   }
 });
@@ -1369,6 +1418,7 @@ test("administrator can manage encrypted folders without changing the legacy not
   );
   assert.equal(createFolder.status, 201);
   assert.equal(db.encryptedFolders.length, 1);
+  assert.equal(db.encryptedFolders[0].sortOrder, 0);
   assert.doesNotMatch(JSON.stringify(await createFolder.json()), /name|title|content/i);
 
   const listFolders = await worker.fetch(
@@ -1438,6 +1488,64 @@ test("administrator can manage encrypted folders without changing the legacy not
   assert.equal(db.encryptedFolders.length, 0);
   assert.equal(db.encryptedNotes[0].folderId, null);
   assert.equal(db.encryptedNotes[0].revision, 4);
+});
+
+test("administrator can persist a complete encrypted folder order", async () => {
+  const timestamp = "2026-08-14T00:00:00.000Z";
+  const encryptedFolders = [
+    { ...makeEncryptedFolder("folder_alpha", 40), revision: 1, sortOrder: 0, createdAt: timestamp },
+    { ...makeEncryptedFolder("folder_bravo", 50), revision: 1, sortOrder: 1, createdAt: timestamp },
+    { ...makeEncryptedFolder("folder_charlie", 60), revision: 1, sortOrder: 2, createdAt: timestamp },
+  ];
+  const db = new FakeD1({ workspaceKeyring: { id: "notes" }, encryptedFolders });
+  const env = makeEnv({ BLOG_DB: db });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "folder-order-csrf-token",
+    now: 1_800_000_000_000,
+  });
+  const headers = {
+    "Content-Type": "application/json",
+    Cookie: cookie,
+    "X-CSRF-Token": "folder-order-csrf-token",
+  };
+  const folderIds = ["folder_charlie", "folder_alpha", "folder_bravo"];
+
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-folders/order", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ folderIds }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).folders.map((folder) => folder.id), folderIds);
+  assert.deepEqual(
+    db.encryptedFolders.slice().sort((a, b) => a.sortOrder - b.sortOrder).map((folder) => folder.id),
+    folderIds,
+  );
+
+  const duplicate = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-folders/order", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ folderIds: ["folder_alpha", "folder_alpha"] }),
+    }),
+    env,
+  );
+  assert.equal(duplicate.status, 400);
+
+  const stale = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-folders/order", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ folderIds: ["folder_alpha", "folder_bravo"] }),
+    }),
+    env,
+  );
+  assert.equal(stale.status, 409);
 });
 
 test("encrypted folder API rejects plaintext names", async () => {

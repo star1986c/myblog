@@ -153,6 +153,15 @@ final class NotesApiClient {
     request("DELETE", "api/admin/encrypted-note-folders/" + id, null, revision);
   }
 
+  void reorderFolders(List<String> folderIds) throws Exception {
+    request(
+      "PUT",
+      "api/admin/encrypted-note-folders/order",
+      new JSONObject().put("folderIds", new JSONArray(folderIds)),
+      null
+    );
+  }
+
   private JSONObject request(String method, String path, JSONObject body, Integer revision)
     throws Exception {
     HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path)

@@ -39,6 +39,10 @@ const noteProtectionMigration = await readFile(
   new URL("../migrations/0010_note_protection.sql", import.meta.url),
   "utf8",
 );
+const encryptedFolderOrderMigration = await readFile(
+  new URL("../migrations/0011_encrypted_folder_order.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -147,5 +151,16 @@ test("note protection migration stores lock metadata and wrapped keys without pl
   assert.doesNotMatch(
     noteProtectionMigration,
     /(?:^|\s)(?:password|title|content|plaintext|data_key)\s+TEXT/im,
+  );
+});
+
+test("encrypted folder order migration preserves the previous deterministic order", () => {
+  assert.match(encryptedFolderOrderMigration, /ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0/);
+  assert.match(encryptedFolderOrderMigration, /preceding\.created_at < target\.created_at/);
+  assert.match(encryptedFolderOrderMigration, /preceding\.id < target\.id/);
+  assert.match(encryptedFolderOrderMigration, /keyring_id, sort_order ASC/);
+  assert.doesNotMatch(
+    encryptedFolderOrderMigration,
+    /(?:^|\s)(?:name|title|content|password|username)\s+TEXT/im,
   );
 });

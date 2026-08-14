@@ -170,6 +170,7 @@ final class Models {
     int revision;
     String ciphertext;
     String nonce;
+    int sortOrder;
     final String createdAt;
     String updatedAt;
 
@@ -179,6 +180,7 @@ final class Models {
       int revision,
       String ciphertext,
       String nonce,
+      int sortOrder,
       String createdAt,
       String updatedAt
     ) {
@@ -187,6 +189,7 @@ final class Models {
       this.revision = revision;
       this.ciphertext = ciphertext;
       this.nonce = nonce;
+      this.sortOrder = sortOrder;
       this.createdAt = createdAt;
       this.updatedAt = updatedAt;
     }
@@ -198,6 +201,7 @@ final class Models {
         json.optInt("revision", 1),
         json.optString("ciphertext"),
         json.optString("nonce"),
+        json.optInt("sortOrder"),
         nullableString(json, "createdAt"),
         nullableString(json, "updatedAt")
       );

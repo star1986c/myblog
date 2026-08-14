@@ -113,6 +113,7 @@ public struct EncryptedFolderEnvelope: Codable, Equatable, Identifiable, Sendabl
   public var revision: Int
   public var ciphertext: String
   public var nonce: String
+  public var sortOrder: Int?
   public let createdAt: String?
   public var updatedAt: String?
 
@@ -122,6 +123,7 @@ public struct EncryptedFolderEnvelope: Codable, Equatable, Identifiable, Sendabl
     revision: Int = 1,
     ciphertext: String,
     nonce: String,
+    sortOrder: Int? = nil,
     createdAt: String? = nil,
     updatedAt: String? = nil
   ) {
@@ -130,6 +132,7 @@ public struct EncryptedFolderEnvelope: Codable, Equatable, Identifiable, Sendabl
     self.revision = revision
     self.ciphertext = ciphertext
     self.nonce = nonce
+    self.sortOrder = sortOrder
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }

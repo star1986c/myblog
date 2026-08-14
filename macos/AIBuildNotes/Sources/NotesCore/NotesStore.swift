@@ -269,7 +269,6 @@ public final class NotesStore: ObservableObject {
       let payload = try FolderCrypto.encrypt(content, id: id, using: dataKey)
       let envelope = try await api.createFolder(payload)
       folders.append(NoteFolder(envelope: envelope, content: content))
-      sortFolders()
       selectLocation(.folder(id))
     } catch {
       errorMessage = friendlyMessage(error)
@@ -290,7 +289,6 @@ public final class NotesStore: ObservableObject {
       )
       guard let current = folders.firstIndex(where: { $0.id == id }) else { return }
       folders[current] = NoteFolder(envelope: envelope, content: content)
-      sortFolders()
     } catch {
       handleMutationError(error)
     }
@@ -304,6 +302,33 @@ public final class NotesStore: ObservableObject {
       if location == .folder(id) { location = .allNotes }
       try await loadWorkspace()
     } catch {
+      handleMutationError(error)
+    }
+  }
+
+  public func moveFolder(id: String, offset: Int) async {
+    guard offset != 0,
+      let source = folders.firstIndex(where: { $0.id == id })
+    else { return }
+    let destination = source + offset
+    guard folders.indices.contains(destination) else { return }
+
+    let previous = folders
+    folders.swapAt(source, destination)
+    do {
+      let envelopes = try await api.reorderFolders(ids: folders.map(\.id))
+      let contentByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0.content) })
+      let reordered = envelopes.compactMap { envelope in
+        contentByID[envelope.id].map { NoteFolder(envelope: envelope, content: $0) }
+      }
+      guard reordered.count == folders.count else {
+        folders = previous
+        errorMessage = "服务器返回的文件夹顺序不完整，请刷新后重试。"
+        return
+      }
+      folders = reordered
+    } catch {
+      folders = previous
       handleMutationError(error)
     }
   }
@@ -480,7 +505,6 @@ public final class NotesStore: ObservableObject {
     folders = try encryptedFolders.map {
       NoteFolder(envelope: $0, content: try FolderCrypto.decrypt($0, using: key))
     }
-    sortFolders()
     dataKey = key
     protectionKey = nil
     unlockedProtectedNoteID = nil
@@ -591,10 +615,6 @@ public final class NotesStore: ObservableObject {
     envelope.updatedAt = state.updatedAt
     envelope.deletedAt = state.deletedAt
     if let isLocked = state.isLocked { envelope.isLocked = isLocked }
-  }
-
-  private func sortFolders() {
-    folders.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
 
   private func handleMutationError(_ error: Error) {

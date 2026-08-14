@@ -11,14 +11,13 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
 - Adds a standalone JSON formatter at `/json/`.
 - Adds a standalone password generator at `/password/`; generation and copying stay in the browser
   and passwords are not stored automatically.
-- Adds a single-login private notes workspace at `/notes/`; note titles and content are encrypted in
-  the browser, while D1 stores only versioned AES-GCM envelopes.
+- Provides a ciphertext-only notes backend for the native macOS and Android clients; there is no Web
+  notes page or public notes entry.
 - Stores the random notes data key in D1 only after wrapping it with a Worker secret, so forgetting
   or changing the login password no longer makes notes unreadable.
-- Integrates login account settings into the notes workspace. The retired `/admin/` page redirects
-  to `/notes/`; the password generator remains a separate public utility.
-- Redirects former public blog/article/page routes to the private notes workspace and removes all
-  blog content from public APIs and the sitemap.
+- Keeps the retired `/admin/` and former blog/article/page routes out of the notes product; they
+  redirect to the public home page. The password generator remains a separate public utility.
+- Removes all legacy blog content from public APIs and the sitemap.
 - Keeps the Worker name as `wispy-cloud-0978`, matching the current Cloudflare custom domain binding.
 
 ## Local commands
@@ -32,7 +31,7 @@ npm run dev
 
 `npm run dev` starts Wrangler on `http://localhost:8787`.
 
-## Private notes backend setup
+## Native notes backend setup
 
 Create the Cloudflare D1 database before production deployment:
 
@@ -53,7 +52,7 @@ account, create encrypted note envelopes, and add the recoverable workspace keyr
 Default administrator:
 
 - Username: `admin`
-- Password: generated during setup; change it from `设置` inside the notes workspace.
+- Password: generated during setup; change it through the authenticated account API when required.
 
 `SESSION_SECRET` is required for administrator sessions. `NOTES_KEY_ENCRYPTION_SECRET`
 wraps the random notes data key. Configure both as encrypted Worker secrets before deployment:
@@ -66,8 +65,8 @@ npx wrangler secret put NOTES_KEY_ENCRYPTION_SECRET
 Losing `SESSION_SECRET` signs out existing sessions but does not affect encrypted notes.
 Losing or rotating `NOTES_KEY_ENCRYPTION_SECRET` without first rewrapping the data key makes existing
 notes unrecoverable. Keep that secret backed up through the Cloudflare account's secure secret workflow.
-Private notes encrypt the full `{ title, content }` payload in the browser and use a unique AES-GCM
-nonce plus record-bound authenticated data for every save.
+The native clients encrypt the full `{ title, content }` payload before upload and use a unique
+AES-GCM nonce plus record-bound authenticated data for every save.
 
 Migration `0005_make_blog_private.sql` revokes any previous article/page publication flags and adds
 the ciphertext-only `encrypted_notes` table. Migration `0006_delete_legacy_blog_content.sql` then
@@ -76,19 +75,21 @@ not delete administrator accounts or encrypted notes. Migration `0007_recoverabl
 replaces the forgotten master-password key relationship with `workspace_keyrings` and removes the
 retired password-vault tables. Apply it only after confirming those legacy encrypted tables are empty.
 
-R2 is not required for the private notes workspace or production deployment.
+Migration `0011_encrypted_folder_order.sql` stores the manual folder order shared by both clients.
+
+R2 is not required for the native notes backend or production deployment.
 
 ## macOS notes app
 
 The native SwiftUI client lives in `macos/AIBuildNotes`. It reuses the existing login, workspace key,
 and ciphertext-only notes API. Search happens locally after decryption. Migration
 `0008_note_trash_and_revisions.sql` adds optimistic revisions and a recoverable trash state for app
-clients while keeping the existing web API compatible.
+clients while keeping the authenticated ciphertext API compatible.
 
 Migration `0010_note_protection.sql` adds an explicit server-side lock flag and one wrapped global
 protection key. The independent protection password never leaves the client: PBKDF2-HMAC-SHA256
 derives a wrapping key, while a random AES-256-GCM key encrypts protected note bodies a second time.
-macOS and Web share the format, show locked notes without exposing the body, and require the same
+macOS and Android share the format, show locked notes without exposing the body, and require the same
 independent protection password to reveal any protected note.
 
 Run its focused tests and build an ad-hoc signed app bundle:
@@ -106,7 +107,7 @@ generates and embeds the complete `.icns` representation.
 
 The native Android client lives in `android/MyNotes`. It uses the same authenticated Worker API,
 AES-256-GCM envelopes, folders, recoverable trash, and shared independent protection password as
-the macOS and Web clients. The user-visible product name is `My Notes`; historical cryptographic
+the macOS client. The user-visible product name is `My Notes`; historical cryptographic
 additional-data identifiers remain unchanged for ciphertext compatibility.
 
 The mobile UI is designed specifically for Android 16 (API 36) with edge-to-edge system bars,
@@ -133,7 +134,7 @@ The deployment target is configured in `wrangler.jsonc`. The custom domain alrea
 ## Cache policy
 
 - Public HTML: `public, max-age=300, s-maxage=86400, stale-while-revalidate=604800`
-- `/notes/`, retired private redirects, and all APIs: `no-store`
+- Removed `/notes` paths, retired admin redirects, and all APIs: `no-store`
 - Fingerprinted static assets under `/assets/` and `/vendor/`: `public, max-age=31536000, immutable`
 - SEO metadata files: short browser cache, longer edge cache
 

@@ -2,6 +2,7 @@ import {
   createEncryptedFolder,
   deleteEncryptedFolder,
   listEncryptedFolders,
+  reorderEncryptedFolders,
   updateEncryptedFolder,
 } from "./encrypted-folder-repository.js";
 import {
@@ -94,10 +95,6 @@ async function handleRequest(request, env, ctx) {
     }));
   }
 
-  if (url.pathname === "/notes") {
-    return withSiteHeaders(request, redirectResponse("/notes/"));
-  }
-
   if (url.pathname === "/password") {
     return withSiteHeaders(request, redirectResponse("/password/"));
   }
@@ -106,7 +103,7 @@ async function handleRequest(request, env, ctx) {
     url.pathname === "/admin" ||
     url.pathname === "/admin/"
   ) {
-    return withSiteHeaders(request, redirectResponse("/notes/"));
+    return withSiteHeaders(request, redirectResponse("/"));
   }
 
   if (
@@ -116,7 +113,7 @@ async function handleRequest(request, env, ctx) {
     url.pathname.startsWith("/category/") ||
     url.pathname.startsWith("/p/")
   ) {
-    return withSiteHeaders(request, redirectResponse("/notes/"));
+    return withSiteHeaders(request, redirectResponse("/"));
   }
 
   let response = await env.ASSETS.fetch(request);
@@ -799,6 +796,12 @@ async function handleAdminApi(request, env, path) {
     }
   }
 
+  if (path === "/api/admin/encrypted-note-folders/order" && request.method === "PUT") {
+    return jsonResponse({
+      folders: await reorderEncryptedFolders(db, await readJson(request)),
+    });
+  }
+
   if (path.startsWith("/api/admin/encrypted-note-folders/")) {
     const suffix = path.slice("/api/admin/encrypted-note-folders/".length);
     if (!suffix || suffix.includes("/")) {
@@ -894,8 +897,9 @@ function withSiteHeaders(request, response) {
     headers.set(name, value);
   }
 
-  if (!headers.has("Cache-Control")) {
-    headers.set("Cache-Control", cacheControlFor(url.pathname, headers.get("Content-Type")));
+  const cacheControl = cacheControlFor(url.pathname, headers.get("Content-Type"));
+  if (cacheControl === "no-store" || !headers.has("Cache-Control")) {
+    headers.set("Cache-Control", cacheControl);
   }
 
   return new Response(request.method === "HEAD" ? null : response.body, {

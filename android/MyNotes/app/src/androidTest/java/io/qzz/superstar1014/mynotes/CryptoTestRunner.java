@@ -104,6 +104,7 @@ public final class CryptoTestRunner extends Instrumentation {
       1,
       folderPayload.getString("ciphertext"),
       folderPayload.getString("nonce"),
+      0,
       null,
       null
     );

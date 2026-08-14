@@ -142,6 +142,15 @@ public actor NotesAPIClient {
     )
   }
 
+  public func reorderFolders(ids: [String]) async throws -> [EncryptedFolderEnvelope] {
+    let response: FoldersResponse = try await request(
+      method: "PUT",
+      path: "api/admin/encrypted-note-folders/order",
+      body: try JSONEncoder().encode(FolderOrder(folderIds: ids))
+    )
+    return response.folders
+  }
+
   public func create(_ payload: EncryptedNotePayload) async throws -> EncryptedNoteEnvelope {
     let body = try JSONEncoder().encode(payload)
     let response: NoteResponse = try await request(
@@ -275,6 +284,7 @@ private struct NoteResponse: Codable { let note: EncryptedNoteEnvelope }
 private struct FoldersResponse: Codable { let folders: [EncryptedFolderEnvelope] }
 private struct FolderResponse: Codable { let folder: EncryptedFolderEnvelope }
 private struct FolderAssignment: Codable { let folderId: String? }
+private struct FolderOrder: Codable { let folderIds: [String] }
 private struct MutationResponse: Codable { let note: NoteMutationState }
 private struct OKResponse: Codable { let ok: Bool }
 private struct ErrorResponse: Codable { let error: String }

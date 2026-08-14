@@ -48,6 +48,7 @@ import android.window.OnBackInvokedDispatcher;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -172,6 +173,7 @@ public final class MainActivity extends Activity {
       1,
       "demo_ciphertext",
       "demo_nonce",
+      0,
       "2026-08-14T06:00:00Z",
       "2026-08-14T06:00:00Z"
     );
@@ -1276,14 +1278,98 @@ public final class MainActivity extends Activity {
   }
 
   private void showFolderActions(Models.FolderDocument folder) {
-    new AlertDialog.Builder(this)
+    int index = folders.indexOf(folder);
+    LinearLayout actions = verticalLayout(4);
+    actions.setPadding(dp(16), dp(4), dp(16), dp(4));
+    AlertDialog dialog = new AlertDialog.Builder(this)
       .setTitle(folder.name)
-      .setItems(new String[] { "重命名", "删除文件夹" }, (dialog, index) -> {
-        if (index == 0) renameFolder(folder);
-        else confirmDeleteFolder(folder);
-      })
+      .setView(actions)
       .setNegativeButton("取消", null)
-      .show();
+      .create();
+    addFolderActionRow(
+      actions,
+      "上移",
+      R.drawable.ic_arrow_up,
+      index > 0,
+      false,
+      () -> { dialog.dismiss(); moveFolder(folder, -1); }
+    );
+    addFolderActionRow(
+      actions,
+      "下移",
+      R.drawable.ic_arrow_down,
+      index >= 0 && index < folders.size() - 1,
+      false,
+      () -> { dialog.dismiss(); moveFolder(folder, 1); }
+    );
+    addFolderActionRow(
+      actions,
+      "重命名",
+      R.drawable.ic_edit,
+      true,
+      false,
+      () -> { dialog.dismiss(); renameFolder(folder); }
+    );
+    addFolderActionRow(
+      actions,
+      "删除文件夹",
+      R.drawable.ic_trash,
+      true,
+      true,
+      () -> { dialog.dismiss(); confirmDeleteFolder(folder); }
+    );
+    dialog.show();
+  }
+
+  private void addFolderActionRow(
+    LinearLayout container,
+    String label,
+    int iconRes,
+    boolean enabled,
+    boolean destructive,
+    Runnable action
+  ) {
+    TextView row = text(label, 16, destructive ? R.color.danger : R.color.text_primary);
+    row.setPadding(dp(16), 0, dp(16), 0);
+    row.setMinHeight(dp(52));
+    row.setClickable(enabled);
+    row.setFocusable(enabled);
+    row.setEnabled(enabled);
+    row.setAlpha(enabled ? 1f : 0.38f);
+    row.setBackground(rippleBackground(R.color.surface, 14));
+    Drawable icon = getDrawable(iconRes).mutate();
+    icon.setTint(getColor(destructive ? R.color.danger : R.color.text_secondary));
+    icon.setBounds(0, 0, dp(22), dp(22));
+    row.setCompoundDrawablePadding(dp(14));
+    row.setCompoundDrawables(icon, null, null, null);
+    if (enabled) row.setOnClickListener(view -> action.run());
+    container.addView(row, matchHeight(52, 0, 0, 0, 0));
+  }
+
+  private void moveFolder(Models.FolderDocument folder, int offset) {
+    int source = folders.indexOf(folder);
+    int destination = source + offset;
+    if (source < 0 || destination < 0 || destination >= folders.size()) return;
+    List<Models.FolderDocument> ordered = new ArrayList<>(folders);
+    Collections.swap(ordered, source, destination);
+    if (demoMode) {
+      folders.clear();
+      folders.addAll(ordered);
+      renderHome();
+      return;
+    }
+    List<String> folderIds = new ArrayList<>();
+    for (Models.FolderDocument item : ordered) folderIds.add(item.envelope.id);
+    showLoading("正在保存文件夹顺序…");
+    runAsync(() -> {
+      api.reorderFolders(folderIds);
+      return true;
+    }, ignored -> {
+      folders.clear();
+      folders.addAll(ordered);
+      renderHome();
+      Toast.makeText(this, "文件夹顺序已保存", Toast.LENGTH_SHORT).show();
+    });
   }
 
   private void renameFolder(Models.FolderDocument folder) {
