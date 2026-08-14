@@ -58,6 +58,35 @@ func bindsCiphertextToRecord() throws {
   }
 }
 
+@Test("Independent protection password wraps one key and encrypts note bodies")
+func protectionPasswordRoundTrip() throws {
+  let password = "correct horse battery staple"
+  let created = try NoteProtectionCrypto.createKeyring(password: password)
+  let keyring = NoteProtectionKeyring(
+    iterations: created.payload.iterations,
+    salt: created.payload.salt,
+    wrappedKey: created.payload.wrappedKey,
+    nonce: created.payload.nonce
+  )
+  let recovered = try NoteProtectionCrypto.unlockKeyring(keyring, password: password)
+  let body = try NoteProtectionCrypto.encryptBody(
+    "server-password-123",
+    noteID: "note_protected_1234",
+    using: recovered
+  )
+  #expect(!body.ciphertext.contains("server-password-123"))
+  #expect(
+    try NoteProtectionCrypto.decryptBody(
+      body,
+      noteID: "note_protected_1234",
+      using: recovered
+    ) == "server-password-123"
+  )
+  #expect(throws: NoteUnlockError.incorrectPassword) {
+    try NoteProtectionCrypto.unlockKeyring(keyring, password: "wrong-password-value")
+  }
+}
+
 @Test("Folder names are encrypted and bound to their folder id")
 func folderRoundTripAndBinding() throws {
   let key = SymmetricKey(size: .bits256)

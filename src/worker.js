@@ -27,6 +27,11 @@ import {
   restoreEncryptedNote,
   updateEncryptedNote,
 } from "./encrypted-note-repository.js";
+import {
+  createNoteProtectionKeyring,
+  readNoteProtectionKeyring,
+  updateNoteProtectionKeyring,
+} from "./note-protection-repository.js";
 import { readOrCreateWorkspaceDataKey } from "./workspace-key-repository.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
@@ -743,6 +748,27 @@ async function handleAdminApi(request, env, path) {
         env.NOTES_KEY_ENCRYPTION_SECRET,
       ),
     });
+  }
+
+  if (path === "/api/admin/note-protection-keyring") {
+    if (request.method === "GET") {
+      return jsonResponse({ keyring: await readNoteProtectionKeyring(db) });
+    }
+    if (request.method === "POST") {
+      return jsonResponse(
+        { keyring: await createNoteProtectionKeyring(db, await readJson(request)) },
+        { status: 201 },
+      );
+    }
+    if (request.method === "PUT") {
+      return jsonResponse({
+        keyring: await updateNoteProtectionKeyring(
+          db,
+          await readJson(request),
+          readExpectedRevision(request),
+        ),
+      });
+    }
   }
 
   if (path === "/api/admin/encrypted-notes") {

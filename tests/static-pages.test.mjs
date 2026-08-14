@@ -67,15 +67,15 @@ const passwordJs = await readFile(
 );
 const notesHtml = await readFile(new URL("../public/notes/index.html", import.meta.url), "utf8");
 const notesJs = await readFile(
-  new URL("../public/assets/notes.20260813-v3.js", import.meta.url),
+  new URL("../public/assets/notes.20260814-v4.js", import.meta.url),
   "utf8",
 );
 const notesCss = await readFile(
-  new URL("../public/assets/notes.20260813-v2.css", import.meta.url),
+  new URL("../public/assets/notes.20260814-v3.css", import.meta.url),
   "utf8",
 );
 const encryptedNotesCoreJs = await readFile(
-  new URL("../public/assets/encrypted-notes-core.20260813-v2.js", import.meta.url),
+  new URL("../public/assets/encrypted-notes-core.20260814-v3.js", import.meta.url),
   "utf8",
 );
 const sitemapXml = await readFile(new URL("../public/sitemap.xml", import.meta.url), "utf8");
@@ -165,7 +165,9 @@ test("public pages use consistent English SEO metadata", async () => {
     .filter((path) => /\.(?:html|js|xml|txt)$/.test(path))
     .filter((path) => !path.startsWith("notes/"))
     .filter((path) => !path.includes("notes.20260813"))
-    .filter((path) => !path.includes("encrypted-notes-core.20260813"));
+    .filter((path) => !path.includes("encrypted-notes-core.20260813"))
+    .filter((path) => !path.includes("notes.20260814"))
+    .filter((path) => !path.includes("encrypted-notes-core.20260814"));
   const publicText = await Promise.all(
     publicFiles.map((path) => readFile(new URL(path, publicRoot), "utf8")),
   );
@@ -181,14 +183,16 @@ test("private notes page encrypts all note fields locally and is excluded from i
   assert.doesNotMatch(notesHtml, /data-vault-|主密码|\/admin\//);
   assert.match(notesHtml, /data-note-title/);
   assert.match(notesHtml, /data-note-content/);
-  assert.match(notesHtml, /src="\/assets\/notes\.20260813-v3\.js"/);
-  assert.match(notesHtml, /href="\/assets\/notes\.20260813-v2\.css"/);
+  assert.match(notesHtml, /src="\/assets\/notes\.20260814-v4\.js"/);
+  assert.match(notesHtml, /href="\/assets\/notes\.20260814-v3\.css"/);
   assert.match(notesJs, /encryptNote/);
   assert.match(notesJs, /decryptNote/);
   assert.match(notesJs, /\/api\/admin\/encrypted-notes/);
   assert.match(notesJs, /\/api\/admin\/workspace-key/);
   assert.match(notesJs, /\/api\/admin\/account/);
   assert.match(notesJs, /importNoteDataKey/);
+  assert.match(notesJs, /note-protection-keyring/);
+  assert.match(notesJs, /unlockProtectionKeyring/);
   assert.match(notesJs, /IDLE_LOCK_MS = 5 \* 60 \* 1000/);
   assert.match(notesJs, /HIDDEN_LOCK_MS = 60 \* 1000/);
   const loginHandler = notesJs.match(/async function handleLogin\(event\) \{[\s\S]*?\n\}/)?.[0] || "";

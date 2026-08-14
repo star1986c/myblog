@@ -682,6 +682,32 @@ svg {
   padding: 48px clamp(28px, 7vw, 84px) 40px;
 }
 
+.protected-note-gate {
+  align-self: stretch;
+  margin: 32px auto;
+  padding: 36px;
+  width: min(420px, calc(100% - 40px));
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface-muted);
+}
+
+.protected-note-gate[hidden] {
+  display: none;
+}
+
+.protected-note-gate strong {
+  display: block;
+  margin-top: 18px;
+  font: 600 1.3rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+}
+
+.protected-note-gate p {
+  color: var(--text-muted);
+}
+
 .title-input,
 .content-input {
   width: 100%;

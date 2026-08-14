@@ -16,6 +16,7 @@ const PLAINTEXT_FIELDS = [
 const NOTE_COLUMNS = [
   "id",
   "folder_id AS folderId",
+  "is_locked AS isLocked",
   "version",
   "revision",
   "ciphertext",
@@ -66,6 +67,7 @@ function normalizeEncryptedNoteEnvelope(input, expectedId = "") {
       minBytes: 12,
       maxBytes: 12,
     }),
+    isLocked: typeof input?.isLocked === "boolean" ? input.isLocked : null,
   };
   if (!ENTRY_ID_PATTERN.test(note.id) || note.version !== KEYRING_VERSION) {
     throw new EncryptedNoteError("Encrypted note metadata is invalid.", 400);
@@ -96,7 +98,7 @@ async function listEncryptedNotes(db) {
     )
     .bind(KEYRING_ID)
     .all();
-  return result.results || [];
+  return (result.results || []).map(publicEnvelope);
 }
 
 async function listDeletedEncryptedNotes(db) {
@@ -109,7 +111,11 @@ async function listDeletedEncryptedNotes(db) {
     )
     .bind(KEYRING_ID)
     .all();
-  return result.results || [];
+  return (result.results || []).map(publicEnvelope);
+}
+
+function publicEnvelope(note) {
+  return { ...note, isLocked: Number(note.isLocked) === 1 || note.isLocked === true };
 }
 
 async function createEncryptedNote(db, input) {
@@ -120,10 +126,19 @@ async function createEncryptedNote(db, input) {
     await db
       .prepare(
         `INSERT INTO encrypted_notes (
-          id, keyring_id, version, ciphertext, nonce, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id, keyring_id, version, ciphertext, nonce, is_locked, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(note.id, KEYRING_ID, note.version, note.ciphertext, note.nonce, now, now)
+      .bind(
+        note.id,
+        KEYRING_ID,
+        note.version,
+        note.ciphertext,
+        note.nonce,
+        note.isLocked === true ? 1 : 0,
+        now,
+        now,
+      )
       .run();
   } catch (error) {
     if (String(error?.message || error).includes("UNIQUE")) {
@@ -138,13 +153,15 @@ async function createEncryptedNote(db, input) {
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
+    isLocked: note.isLocked === true,
   };
 }
 
 async function readEncryptedNoteState(db, id) {
   return await db
     .prepare(
-      `SELECT revision, folder_id AS folderId, deleted_at AS deletedAt
+      `SELECT revision, folder_id AS folderId, is_locked AS isLocked,
+              deleted_at AS deletedAt
        FROM encrypted_notes
        WHERE id = ? AND keyring_id = ?
        LIMIT 1`,
@@ -171,14 +188,28 @@ async function updateEncryptedNote(db, id, input, expectedRevision = null) {
   const note = normalizeEncryptedNoteEnvelope(input, id);
   const state = await readEncryptedNoteState(db, note.id);
   const currentRevision = requireCurrentRevision(state, expectedRevision);
+  if (Number(state.isLocked) === 1 && note.isLocked === null) {
+    throw new EncryptedNoteError("Locked note requires a current client.", 409);
+  }
+  const isLocked = note.isLocked === null ? Number(state.isLocked) === 1 : note.isLocked;
   const now = new Date().toISOString();
   const result = await db
     .prepare(
       `UPDATE encrypted_notes
-       SET version = ?, ciphertext = ?, nonce = ?, updated_at = ?, revision = revision + 1
+       SET version = ?, ciphertext = ?, nonce = ?, is_locked = ?, updated_at = ?,
+           revision = revision + 1
        WHERE id = ? AND keyring_id = ? AND deleted_at IS NULL AND revision = ?`,
     )
-    .bind(note.version, note.ciphertext, note.nonce, now, note.id, KEYRING_ID, currentRevision)
+    .bind(
+      note.version,
+      note.ciphertext,
+      note.nonce,
+      isLocked ? 1 : 0,
+      now,
+      note.id,
+      KEYRING_ID,
+      currentRevision,
+    )
     .run();
   if (!result.meta?.changes) {
     throw new EncryptedNoteError("Encrypted note changed on another device.", 409);
@@ -189,6 +220,7 @@ async function updateEncryptedNote(db, id, input, expectedRevision = null) {
     revision: currentRevision + 1,
     updatedAt: now,
     deletedAt: null,
+    isLocked,
   };
 }
 
@@ -216,6 +248,7 @@ async function deleteEncryptedNote(db, id, expectedRevision = null) {
     revision: currentRevision + 1,
     updatedAt: now,
     deletedAt: now,
+    isLocked: Number(state.isLocked) === 1,
   };
 }
 
@@ -252,6 +285,7 @@ async function restoreEncryptedNote(db, id, expectedRevision = null) {
     revision: currentRevision + 1,
     updatedAt: now,
     deletedAt: null,
+    isLocked: Number(state.isLocked) === 1,
   };
 }
 
@@ -297,6 +331,7 @@ async function moveEncryptedNote(db, id, input, expectedRevision = null) {
     revision: currentRevision + 1,
     updatedAt: now,
     deletedAt: null,
+    isLocked: Number(state.isLocked) === 1,
   };
 }
 

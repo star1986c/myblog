@@ -12,14 +12,16 @@ public struct AdminUser: Codable, Equatable, Sendable {
 
 public enum NoteUnlockError: LocalizedError, Equatable, Sendable {
   case incorrectPassword
-  case tooManyAttempts
-  case sessionExpired
+  case passwordTooShort
+  case confirmationMismatch
+  case notConfigured
 
   public var errorDescription: String? {
     switch self {
     case .incorrectPassword: "密码不正确。"
-    case .tooManyAttempts: "密码尝试过多，请稍后再试。"
-    case .sessionExpired: "登录状态已失效，请重新登录。"
+    case .passwordTooShort: "保护密码至少需要 12 个字符。"
+    case .confirmationMismatch: "两次输入的保护密码不一致。"
+    case .notConfigured: "尚未设置独立保护密码。"
     }
   }
 }
@@ -34,6 +36,7 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
   public let createdAt: String?
   public var updatedAt: String?
   public var deletedAt: String?
+  public var isLocked: Bool
 
   public init(
     id: String,
@@ -44,7 +47,8 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
     nonce: String,
     createdAt: String? = nil,
     updatedAt: String? = nil,
-    deletedAt: String? = nil
+    deletedAt: String? = nil,
+    isLocked: Bool = false
   ) {
     self.id = id
     self.folderId = folderId
@@ -55,10 +59,12 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.deletedAt = deletedAt
+    self.isLocked = isLocked
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, folderId, version, revision, ciphertext, nonce, createdAt, updatedAt, deletedAt
+    case id, folderId, version, revision, ciphertext, nonce, createdAt, updatedAt, deletedAt,
+      isLocked
   }
 
   public init(from decoder: Decoder) throws {
@@ -72,6 +78,7 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
     createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
     updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
     deletedAt = try container.decodeIfPresent(String.self, forKey: .deletedAt)
+    isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -85,6 +92,7 @@ public struct EncryptedNoteEnvelope: Codable, Equatable, Identifiable, Sendable 
     try container.encodeIfPresent(createdAt, forKey: .createdAt)
     try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
     try container.encodeIfPresent(deletedAt, forKey: .deletedAt)
+    try container.encode(isLocked, forKey: .isLocked)
   }
 
   public var displayDate: Date? {
@@ -174,42 +182,110 @@ public struct EncryptedNotePayload: Codable, Equatable, Sendable {
   public let version: Int
   public let ciphertext: String
   public let nonce: String
+  public let isLocked: Bool
 
-  public init(id: String, version: Int, ciphertext: String, nonce: String) {
+  public init(id: String, version: Int, ciphertext: String, nonce: String, isLocked: Bool = false) {
     self.id = id
+    self.version = version
+    self.ciphertext = ciphertext
+    self.nonce = nonce
+    self.isLocked = isLocked
+  }
+}
+
+public struct ProtectedNoteBodyEnvelope: Codable, Equatable, Sendable {
+  public let version: Int
+  public let ciphertext: String
+  public let nonce: String
+
+  public init(version: Int = 1, ciphertext: String, nonce: String) {
     self.version = version
     self.ciphertext = ciphertext
     self.nonce = nonce
   }
 }
 
+public struct NoteProtectionKeyring: Codable, Equatable, Sendable {
+  public let id: String
+  public let version: Int
+  public let kdf: String
+  public let iterations: Int
+  public let salt: String
+  public let wrappedKey: String
+  public let nonce: String
+  public let revision: Int
+  public let createdAt: String?
+  public let updatedAt: String?
+
+  public init(
+    id: String = "notes-protection",
+    version: Int = 1,
+    kdf: String = "PBKDF2-SHA256",
+    iterations: Int,
+    salt: String,
+    wrappedKey: String,
+    nonce: String,
+    revision: Int = 1,
+    createdAt: String? = nil,
+    updatedAt: String? = nil
+  ) {
+    self.id = id
+    self.version = version
+    self.kdf = kdf
+    self.iterations = iterations
+    self.salt = salt
+    self.wrappedKey = wrappedKey
+    self.nonce = nonce
+    self.revision = revision
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct NoteProtectionKeyringPayload: Codable, Equatable, Sendable {
+  public let id: String
+  public let version: Int
+  public let kdf: String
+  public let iterations: Int
+  public let salt: String
+  public let wrappedKey: String
+  public let nonce: String
+}
+
 public struct NoteContent: Codable, Equatable, Sendable {
   public var title: String
   public var content: String
-  public var isProtected: Bool
+  public var protectedContent: ProtectedNoteBodyEnvelope?
 
-  public init(title: String, content: String, isProtected: Bool = false) {
+  public init(
+    title: String,
+    content: String,
+    protectedContent: ProtectedNoteBodyEnvelope? = nil
+  ) {
     self.title = title
     self.content = content
-    self.isProtected = isProtected
+    self.protectedContent = protectedContent
   }
 
   private enum CodingKeys: String, CodingKey {
-    case title, content, isProtected
+    case title, content, protectedContent, isProtected
   }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     title = try container.decode(String.self, forKey: .title)
     content = try container.decode(String.self, forKey: .content)
-    isProtected = try container.decodeIfPresent(Bool.self, forKey: .isProtected) ?? false
+    protectedContent = try container.decodeIfPresent(
+      ProtectedNoteBodyEnvelope.self,
+      forKey: .protectedContent
+    )
   }
 
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(title, forKey: .title)
-    try container.encode(content, forKey: .content)
-    try container.encode(isProtected, forKey: .isProtected)
+    try container.encode(protectedContent == nil ? content : "", forKey: .content)
+    try container.encodeIfPresent(protectedContent, forKey: .protectedContent)
   }
 
   public func normalized() -> NoteContent {
@@ -217,7 +293,7 @@ public struct NoteContent: Codable, Equatable, Sendable {
     return NoteContent(
       title: String((trimmedTitle.isEmpty ? "无标题笔记" : trimmedTitle).prefix(200)),
       content: String(content.prefix(500_000)),
-      isProtected: isProtected
+      protectedContent: protectedContent
     )
   }
 }
@@ -233,7 +309,7 @@ public struct NoteDocument: Equatable, Identifiable, Sendable {
 
   public var id: String { envelope.id }
   public var folderId: String? { envelope.folderId }
-  public var isProtected: Bool { content.isProtected }
+  public var isProtected: Bool { envelope.isLocked }
 
   public var title: String {
     let value = content.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -252,7 +328,7 @@ public struct NoteDocument: Equatable, Identifiable, Sendable {
     let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty else { return true }
     return content.title.localizedCaseInsensitiveContains(value)
-      || content.content.localizedCaseInsensitiveContains(value)
+      || (!isProtected && content.content.localizedCaseInsensitiveContains(value))
   }
 
   public func belongs(to folderId: String?) -> Bool {

@@ -14,9 +14,12 @@ public final class NotesStore: ObservableObject {
   @Published public private(set) var saveState: NoteSaveState = .idle
   @Published public private(set) var isWorking = false
   @Published public private(set) var errorMessage: String?
+  @Published public private(set) var protectionKeyring: NoteProtectionKeyring?
+  @Published public private(set) var unlockedProtectedNoteID: String?
 
   private let api: NotesAPIClient
   private var dataKey: SymmetricKey?
+  private var protectionKey: SymmetricKey?
   private var autoSaveTasks: [String: Task<Void, Never>] = [:]
 
   public init(api: NotesAPIClient = NotesAPIClient()) {
@@ -107,9 +110,10 @@ public final class NotesStore: ObservableObject {
           nonce: "preview",
           createdAt: updatedAt,
           updatedAt: updatedAt,
-          deletedAt: deletedAt
+          deletedAt: deletedAt,
+          isLocked: isProtected
         ),
-        content: NoteContent(title: title, content: content, isProtected: isProtected)
+        content: NoteContent(title: title, content: content)
       )
     }
   #endif
@@ -136,6 +140,12 @@ public final class NotesStore: ObservableObject {
   public var selectedDocument: NoteDocument? {
     let source = location.isTrash ? trashedNotes : activeNotes
     return source.first { $0.id == selectedID }
+  }
+
+  public var hasProtectionPassword: Bool { protectionKeyring != nil }
+
+  public func isUnlocked(_ document: NoteDocument) -> Bool {
+    document.isProtected && unlockedProtectedNoteID == document.id && protectionKey != nil
   }
 
   public var locationTitle: String {
@@ -297,28 +307,64 @@ public final class NotesStore: ObservableObject {
     updateSelected { $0.content = content }
   }
 
-  public func setSelectedProtection(_ isProtected: Bool) {
-    updateSelected { $0.isProtected = isProtected }
+  public func setupAndProtectSelected(password: String, confirmation: String) async throws {
+    guard password == confirmation else { throw NoteUnlockError.confirmationMismatch }
+    guard protectionKeyring == nil else {
+      try await protectSelected(password: password)
+      return
+    }
+    let created = try NoteProtectionCrypto.createKeyring(password: password)
+    let keyring = try await api.createProtectionKeyring(created.payload)
+    protectionKeyring = keyring
+    try await protectSelected(using: created.key)
   }
 
-  public func verifyAccountPassword(_ password: String) async throws {
-    guard let currentUser = user else { throw NoteUnlockError.sessionExpired }
-    do {
-      let verifiedUser = try await api.login(
-        username: currentUser.username,
-        password: password
-      )
-      guard verifiedUser.username == currentUser.username else {
-        throw NoteUnlockError.sessionExpired
-      }
-      user = verifiedUser
-    } catch let error as NotesAPIError {
-      switch error.status {
-      case 401: throw NoteUnlockError.incorrectPassword
-      case 429: throw NoteUnlockError.tooManyAttempts
-      default: throw error
-      }
+  public func protectSelected(password: String) async throws {
+    guard let keyring = protectionKeyring else { throw NoteUnlockError.notConfigured }
+    let key = try NoteProtectionCrypto.unlockKeyring(keyring, password: password)
+    try await protectSelected(using: key)
+  }
+
+  public func unlockSelected(password: String) throws {
+    guard let id = selectedID,
+      let index = activeNotes.firstIndex(where: { $0.id == id }),
+      activeNotes[index].isProtected,
+      let protectedContent = activeNotes[index].content.protectedContent,
+      let keyring = protectionKeyring
+    else { throw NoteUnlockError.notConfigured }
+    let key = try NoteProtectionCrypto.unlockKeyring(keyring, password: password)
+    let plaintext = try NoteProtectionCrypto.decryptBody(
+      protectedContent,
+      noteID: id,
+      using: key
+    )
+    protectionKey = key
+    unlockedProtectedNoteID = id
+    activeNotes[index].content.content = plaintext
+  }
+
+  public func unprotectSelected() async throws {
+    guard let id = selectedID,
+      unlockedProtectedNoteID == id,
+      let index = activeNotes.firstIndex(where: { $0.id == id })
+    else { throw NoteUnlockError.incorrectPassword }
+    activeNotes[index].content.protectedContent = nil
+    activeNotes[index].envelope.isLocked = false
+    guard await performSave(id: id) else { throw NotesAPIError.invalidResponse }
+    protectionKey = nil
+    unlockedProtectedNoteID = nil
+  }
+
+  public func relock(noteID: String? = nil) async {
+    guard let unlockedID = unlockedProtectedNoteID,
+      noteID == nil || noteID == unlockedID
+    else { return }
+    _ = await save(id: unlockedID)
+    if let index = activeNotes.firstIndex(where: { $0.id == unlockedID }) {
+      activeNotes[index].content.content = ""
     }
+    protectionKey = nil
+    unlockedProtectedNoteID = nil
   }
 
   public func moveSelected(to folderId: String?) async {
@@ -402,11 +448,13 @@ public final class NotesStore: ObservableObject {
     async let activeEnvelopes = api.listNotes(inTrash: false)
     async let trashEnvelopes = api.listNotes(inTrash: true)
     async let folderEnvelopes = api.listFolders()
+    async let remoteProtectionKeyring = api.protectionKeyring()
 
     let key = try NoteCrypto.importDataKey(await rawKey)
     let active = try await activeEnvelopes
     let trash = try await trashEnvelopes
     let encryptedFolders = try await folderEnvelopes
+    protectionKeyring = try await remoteProtectionKeyring
     activeNotes = try active.map {
       NoteDocument(envelope: $0, content: try NoteCrypto.decrypt($0, using: key))
     }
@@ -418,6 +466,8 @@ public final class NotesStore: ObservableObject {
     }
     sortFolders()
     dataKey = key
+    protectionKey = nil
+    unlockedProtectedNoteID = nil
     if case .folder(let id) = location, !folders.contains(where: { $0.id == id }) {
       location = .allNotes
     }
@@ -430,6 +480,7 @@ public final class NotesStore: ObservableObject {
       let id = selectedID,
       let index = activeNotes.firstIndex(where: { $0.id == id })
     else { return }
+    if activeNotes[index].isProtected && unlockedProtectedNoteID != id { return }
     mutation(&activeNotes[index].content)
     saveState = .saving
     scheduleSave(id: id)
@@ -469,7 +520,21 @@ public final class NotesStore: ObservableObject {
       let index = activeNotes.firstIndex(where: { $0.id == id })
     else { return true }
 
-    let snapshot = activeNotes[index].content
+    var snapshot = activeNotes[index].content
+    let isLocked = activeNotes[index].envelope.isLocked
+    if isLocked {
+      guard unlockedProtectedNoteID == id, let protectionKey else { return true }
+      do {
+        snapshot.protectedContent = try NoteProtectionCrypto.encryptBody(
+          snapshot.content,
+          noteID: id,
+          using: protectionKey
+        )
+      } catch {
+        handleMutationError(error)
+        return false
+      }
+    }
     let revision = activeNotes[index].envelope.revision
     saveState = .saving
     do {
@@ -481,6 +546,11 @@ public final class NotesStore: ObservableObject {
       activeNotes[currentIndex].envelope = envelope
       if activeNotes[currentIndex].content == snapshot {
         activeNotes[currentIndex].content = snapshot.normalized()
+        saveState = .saved
+      } else if activeNotes[currentIndex].content.title == snapshot.title
+        && activeNotes[currentIndex].content.content == snapshot.content
+      {
+        activeNotes[currentIndex].content.protectedContent = snapshot.protectedContent
         saveState = .saved
       } else {
         scheduleSave(id: id)
@@ -502,6 +572,7 @@ public final class NotesStore: ObservableObject {
     envelope.revision = state.revision
     envelope.updatedAt = state.updatedAt
     envelope.deletedAt = state.deletedAt
+    if let isLocked = state.isLocked { envelope.isLocked = isLocked }
   }
 
   private func sortFolders() {
@@ -537,9 +608,28 @@ public final class NotesStore: ObservableObject {
     trashedNotes.removeAll()
     folders.removeAll()
     dataKey = nil
+    protectionKey = nil
+    protectionKeyring = nil
+    unlockedProtectedNoteID = nil
     selectedID = nil
     searchQuery = ""
     location = .allNotes
     saveState = .idle
+  }
+
+  private func protectSelected(using key: SymmetricKey) async throws {
+    guard let id = selectedID,
+      let index = activeNotes.firstIndex(where: { $0.id == id }),
+      !activeNotes[index].isProtected
+    else { return }
+    activeNotes[index].content.protectedContent = try NoteProtectionCrypto.encryptBody(
+      activeNotes[index].content.content,
+      noteID: id,
+      using: key
+    )
+    activeNotes[index].envelope.isLocked = true
+    protectionKey = key
+    unlockedProtectedNoteID = id
+    guard await performSave(id: id) else { throw NotesAPIError.invalidResponse }
   }
 }

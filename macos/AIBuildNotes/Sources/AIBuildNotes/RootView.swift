@@ -629,10 +629,10 @@ private struct NoteEditorView: View {
   @Environment(\.scenePhase) private var scenePhase
   @State private var confirmTrash = false
   @State private var confirmPurge = false
-  @State private var revealedProtectedNoteID: String?
   @State private var unlockPassword = ""
   @State private var unlockError: String?
   @State private var isUnlocking = false
+  @State private var protectionSheet: ProtectionSheetMode?
 
   var body: some View {
     Group {
@@ -640,7 +640,7 @@ private struct NoteEditorView: View {
         VStack(spacing: 0) {
           editorHeader(document)
           Divider()
-          if document.isProtected && !isRevealed(document) {
+          if document.isProtected && !store.isUnlocked(document) {
             protectedBody(document)
           } else if store.location.isTrash {
             readOnlyBody(document)
@@ -656,11 +656,15 @@ private struct NoteEditorView: View {
       }
     }
     .background(Color(nsColor: .textBackgroundColor))
-    .onChange(of: store.selectedID) { _, _ in relock() }
+    .onChange(of: store.selectedID) { oldID, _ in relock(noteID: oldID) }
     .onChange(of: scenePhase) { _, phase in
       if phase != .active { relock() }
     }
     .onDisappear { relock() }
+    .sheet(item: $protectionSheet) { mode in
+      ProtectionPasswordSheet(mode: mode)
+        .environmentObject(store)
+    }
     .confirmationDialog("将笔记移到回收站？", isPresented: $confirmTrash) {
       Button("移到回收站", role: .destructive) {
         Task { await store.moveSelectedToTrash() }
@@ -718,12 +722,14 @@ private struct NoteEditorView: View {
   private func protectionControl(_ document: NoteDocument) -> some View {
     if document.isProtected {
       Menu {
-        if isRevealed(document) {
+        if store.isUnlocked(document) {
           Button("重新锁定", systemImage: "lock") { relock() }
           Divider()
           Button("取消密码保护", systemImage: "lock.open") {
-            store.setSelectedProtection(false)
-            relock()
+            Task {
+              do { try await store.unprotectSelected() }
+              catch { unlockError = error.localizedDescription }
+            }
           }
         } else {
           Button("输入密码查看", systemImage: "lock.open") {
@@ -732,19 +738,18 @@ private struct NoteEditorView: View {
         }
       } label: {
         Label(
-          isRevealed(document) ? "已解锁" : "已锁定",
-          systemImage: isRevealed(document) ? "lock.open" : "lock.fill"
+          store.isUnlocked(document) ? "已解锁" : "已锁定",
+          systemImage: store.isUnlocked(document) ? "lock.open" : "lock.fill"
         )
       }
       .help("密码保护")
     } else {
       Button {
-        store.setSelectedProtection(true)
-        relock()
+        protectionSheet = store.hasProtectionPassword ? .protect : .setup
       } label: {
         Label("保护", systemImage: "lock")
       }
-      .help("打开笔记时先验证账号密码")
+      .help("使用独立保护密码加密正文")
     }
   }
 
@@ -777,7 +782,7 @@ private struct NoteEditorView: View {
   private var saveStatus: some View {
     if let document = store.selectedDocument,
       document.isProtected,
-      !isRevealed(document)
+      !store.isUnlocked(document)
     {
       Label("正文已隐藏", systemImage: "lock.fill")
         .foregroundStyle(.secondary)
@@ -816,13 +821,13 @@ private struct NoteEditorView: View {
           .font(.title3.monospaced())
           .foregroundStyle(.secondary)
           .accessibilityLabel("正文已隐藏")
-        Text("输入当前账号密码后显示正文")
+        Text("输入独立保护密码后显示正文")
           .font(.subheadline)
           .foregroundStyle(.secondary)
       }
 
       VStack(spacing: 10) {
-        SecureField("账号密码", text: $unlockPassword)
+        SecureField("独立保护密码", text: $unlockPassword)
           .textFieldStyle(.roundedBorder)
           .onSubmit { unlock(document) }
           .disabled(isUnlocking)
@@ -838,7 +843,7 @@ private struct NoteEditorView: View {
         } label: {
           HStack {
             if isUnlocking { ProgressView().controlSize(.small) }
-            Text(isUnlocking ? "正在验证…" : "验证并显示")
+            Text(isUnlocking ? "正在解锁…" : "解锁并显示")
               .frame(maxWidth: .infinity)
           }
         }
@@ -847,17 +852,13 @@ private struct NoteEditorView: View {
       }
       .frame(width: 300)
 
-      Label("密码只用于本次重新验证，不会保存", systemImage: "checkmark.shield")
+      Label("保护密码不会上传或保存在本机", systemImage: "checkmark.shield")
         .font(.caption)
         .foregroundStyle(.tertiary)
       Spacer()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .padding(32)
-  }
-
-  private func isRevealed(_ document: NoteDocument) -> Bool {
-    document.isProtected && revealedProtectedNoteID == document.id
   }
 
   private func unlock(_ document: NoteDocument) {
@@ -871,20 +872,19 @@ private struct NoteEditorView: View {
         isUnlocking = false
       }
       do {
-        try await store.verifyAccountPassword(password)
+        try store.unlockSelected(password: password)
         guard store.selectedID == document.id, scenePhase == .active else { return }
-        revealedProtectedNoteID = document.id
       } catch {
         unlockError = error.localizedDescription
       }
     }
   }
 
-  private func relock() {
-    revealedProtectedNoteID = nil
+  private func relock(noteID: String? = nil) {
     unlockPassword = ""
     unlockError = nil
     isUnlocking = false
+    Task { await store.relock(noteID: noteID) }
   }
 
   private var editableBody: some View {
@@ -929,5 +929,83 @@ private struct NoteEditorView: View {
       get: { store.selectedDocument?.content.content ?? "" },
       set: { store.updateSelectedContent($0) }
     )
+  }
+}
+
+private enum ProtectionSheetMode: String, Identifiable {
+  case setup
+  case protect
+  var id: String { rawValue }
+}
+
+private struct ProtectionPasswordSheet: View {
+  @EnvironmentObject private var store: NotesStore
+  @Environment(\.dismiss) private var dismiss
+  let mode: ProtectionSheetMode
+  @State private var password = ""
+  @State private var confirmation = ""
+  @State private var message: String?
+  @State private var isWorking = false
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section {
+          SecureField("独立保护密码", text: $password)
+          if mode == .setup {
+            SecureField("再次输入保护密码", text: $confirmation)
+          }
+        } header: {
+          Text(mode == .setup ? "设置全局保护密码" : "保护这篇笔记")
+        } footer: {
+          Text(
+            mode == .setup
+              ? "所有受保护笔记共用此密码，至少 12 个字符。密码无法找回，请妥善保存。"
+              : "使用已设置的独立保护密码，不是登录密码。"
+          )
+        }
+        if let message {
+          Label(message, systemImage: "exclamationmark.circle")
+            .foregroundStyle(.red)
+        }
+      }
+      .formStyle(.grouped)
+      .navigationTitle(mode == .setup ? "设置保护密码" : "密码保护")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("取消") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("保护笔记", systemImage: "lock.fill") { submit() }
+            .buttonStyle(.borderedProminent)
+            .disabled(password.isEmpty || isWorking)
+        }
+      }
+    }
+    .frame(width: 440, height: mode == .setup ? 300 : 260)
+  }
+
+  private func submit() {
+    guard !isWorking else { return }
+    isWorking = true
+    message = nil
+    Task {
+      defer { isWorking = false }
+      do {
+        if mode == .setup {
+          try await store.setupAndProtectSelected(
+            password: password,
+            confirmation: confirmation
+          )
+        } else {
+          try await store.protectSelected(password: password)
+        }
+        password = ""
+        confirmation = ""
+        dismiss()
+      } catch {
+        message = error.localizedDescription
+      }
+    }
   }
 }

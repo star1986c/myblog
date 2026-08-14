@@ -1,8 +1,12 @@
 import {
+  createProtectionKeyring,
   decryptNote,
+  decryptProtectedBody,
   encryptNote,
+  encryptProtectedBody,
   importNoteDataKey,
-} from "./encrypted-notes-core.20260813-v2.js";
+  unlockProtectionKeyring,
+} from "./encrypted-notes-core.20260814-v3.js";
 
 const IDLE_LOCK_MS = 5 * 60 * 1000;
 const HIDDEN_LOCK_MS = 60 * 1000;
@@ -13,6 +17,9 @@ const state = {
   encryptedNotes: [],
   notes: [],
   dataKey: null,
+  protectionKeyring: null,
+  protectionKey: null,
+  unlockedProtectedId: "",
   selectedId: "",
   dirtyId: "",
   saveTimer: 0,
@@ -52,6 +59,16 @@ const elements = {
   updatedAt: document.querySelector("[data-updated-at]"),
   characterCount: document.querySelector("[data-character-count]"),
   deleteNote: document.querySelector("[data-delete-note]"),
+  protectNote: document.querySelector("[data-protect-note]"),
+  protectedGate: document.querySelector("[data-protected-gate]"),
+  protectedUnlock: document.querySelector("[data-protected-unlock]"),
+  protectionDialog: document.querySelector("[data-protection-dialog]"),
+  protectionForm: document.querySelector("[data-protection-form]"),
+  protectionTitle: document.querySelector("[data-protection-title]"),
+  protectionCopy: document.querySelector("[data-protection-copy]"),
+  protectionConfirmLabel: document.querySelector("[data-protection-confirm-label]"),
+  protectionMessage: document.querySelector("[data-protection-message]"),
+  protectionClose: document.querySelector("[data-protection-close]"),
   mobileBack: document.querySelector("[data-mobile-back]"),
   globalMessage: document.querySelector("[data-global-message]"),
 };
@@ -75,6 +92,11 @@ function bindEvents() {
   elements.title.addEventListener("input", handleEditorInput);
   elements.content.addEventListener("input", handleEditorInput);
   elements.deleteNote.addEventListener("click", deleteSelectedNote);
+  elements.protectNote.addEventListener("click", handleProtectButton);
+  elements.protectedUnlock.addEventListener("click", () => openProtectionDialog("unlock"));
+  elements.protectionForm.addEventListener("submit", handleProtectionSubmit);
+  elements.protectionDialog.addEventListener("close", () => elements.protectionForm.reset());
+  elements.protectionClose.addEventListener("click", () => elements.protectionDialog.close());
   elements.mobileBack.addEventListener("click", async () => {
     await flushSave();
     elements.appShell.classList.remove("is-editing");
@@ -168,10 +190,12 @@ async function loadEncryptedWorkspace() {
   elements.workspaceLoading.hidden = false;
   elements.notesLayout.hidden = true;
   elements.loadingMessage.textContent = "正在恢复加密密钥并读取笔记…";
-  const [keyResult, notesResult] = await Promise.all([
+  const [keyResult, notesResult, protectionResult] = await Promise.all([
     api("/api/admin/workspace-key"),
     api("/api/admin/encrypted-notes"),
+    api("/api/admin/note-protection-keyring"),
   ]);
+  state.protectionKeyring = protectionResult.keyring || null;
   state.encryptedNotes = Array.isArray(notesResult.notes) ? notesResult.notes : [];
   try {
     state.dataKey = await importNoteDataKey(keyResult.workspaceKey?.key || "");
@@ -268,6 +292,9 @@ function releasePlaintext() {
   state.hiddenTimer = 0;
   state.saveTimer = 0;
   state.dataKey = null;
+  state.protectionKey = null;
+  state.protectionKeyring = null;
+  state.unlockedProtectedId = "";
   state.notes = [];
   state.selectedId = "";
   state.dirtyId = "";
@@ -311,7 +338,10 @@ async function createNote() {
 }
 
 async function selectNote(id, options = {}) {
-  if (state.selectedId !== id) await flushSave();
+  if (state.selectedId !== id) {
+    await flushSave();
+    relockProtectedNote();
+  }
   const item = state.notes.find(({ envelope }) => envelope.id === id);
   if (!item) return;
 
@@ -320,6 +350,7 @@ async function selectNote(id, options = {}) {
   elements.noteForm.hidden = false;
   elements.title.value = item.data.title || "";
   elements.content.value = item.data.content || "";
+  updateProtectionUI(item);
   updateEditorMeta(item);
   setSaveStatus("已加密保存", "saved");
   renderNoteList();
@@ -334,9 +365,24 @@ function showEmptyEditor() {
   elements.appShell.classList.remove("is-editing");
 }
 
+function updateProtectionUI(item) {
+  const locked = item?.envelope?.isLocked === true;
+  const unlocked = locked && state.unlockedProtectedId === item.envelope.id;
+  elements.protectedGate.hidden = !locked || unlocked;
+  elements.content.hidden = locked && !unlocked;
+  elements.content.disabled = locked && !unlocked;
+  elements.title.disabled = locked && !unlocked;
+  elements.protectNote.textContent = locked ? (unlocked ? "重新锁定" : "输入保护密码") : "保护";
+  if (locked && !unlocked) {
+    elements.content.value = "";
+    setSaveStatus("正文已锁定", "saved");
+  }
+}
+
 function handleEditorInput() {
   const item = selectedNote();
   if (!item) return;
+  if (item.envelope.isLocked && state.unlockedProtectedId !== item.envelope.id) return;
   item.data.title = elements.title.value;
   item.data.content = elements.content.value;
   state.dirtyId = item.envelope.id;
@@ -361,6 +407,16 @@ async function flushSave() {
   setSaveStatus("正在本地加密并保存…", "saving");
 
   state.savePromise = (async () => {
+    if (item.envelope.isLocked) {
+      if (!state.protectionKey || state.unlockedProtectedId !== id) {
+        throw new Error("请先输入独立保护密码。");
+      }
+      snapshot.protectedContent = await encryptProtectedBody(
+        state.protectionKey,
+        id,
+        snapshot.content,
+      );
+    }
     const encrypted = await encryptNote(state.dataKey, id, snapshot);
     return await api(`/api/admin/encrypted-notes/${encodeURIComponent(id)}`, {
       method: "PUT",
@@ -371,6 +427,7 @@ async function flushSave() {
   try {
     const result = await state.savePromise;
     item.envelope = result.note;
+    item.data.protectedContent = snapshot.protectedContent;
     const encryptedIndex = state.encryptedNotes.findIndex((note) => note.id === id);
     if (encryptedIndex >= 0) state.encryptedNotes.splice(encryptedIndex, 1, result.note);
     if (!item.data.title.trim()) {
@@ -426,7 +483,9 @@ async function deleteSelectedNote() {
 function renderNoteList() {
   const query = elements.search.value.trim().toLocaleLowerCase();
   const filtered = query
-    ? state.notes.filter(({ data }) => `${data.title}\n${data.content}`.toLocaleLowerCase().includes(query))
+    ? state.notes.filter(({ envelope, data }) => (
+        envelope.isLocked ? data.title : `${data.title}\n${data.content}`
+      ).toLocaleLowerCase().includes(query))
     : state.notes;
 
   elements.noteList.replaceChildren();
@@ -456,7 +515,10 @@ function renderNoteList() {
     button.classList.toggle("is-active", envelope.id === state.selectedId);
     button.setAttribute("aria-pressed", String(envelope.id === state.selectedId));
     title.textContent = data.title.trim() || "无标题笔记";
-    excerpt.textContent = data.content.trim().replace(/\s+/g, " ") || "暂无正文";
+    excerpt.textContent = envelope.isLocked
+      ? "••••••••"
+      : (data.content.trim().replace(/\s+/g, " ") || "暂无正文");
+    if (envelope.isLocked) title.textContent = `🔒 ${title.textContent}`;
     time.dateTime = envelope.updatedAt || envelope.createdAt || "";
     time.textContent = formatDate(envelope.updatedAt || envelope.createdAt);
     button.append(title, excerpt, time);
@@ -486,10 +548,115 @@ function handleVisibilityChange() {
   window.clearTimeout(state.hiddenTimer);
   state.hiddenTimer = 0;
   if (document.hidden && state.dataKey) {
+    if (state.unlockedProtectedId) {
+      void flushSave().then(() => {
+        relockProtectedNote();
+        const item = selectedNote();
+        if (item) updateProtectionUI(item);
+      });
+    }
     state.hiddenTimer = window.setTimeout(() => void expireSession(), HIDDEN_LOCK_MS);
   } else {
     touchIdleTimer();
   }
+}
+
+function handleProtectButton() {
+  const item = selectedNote();
+  if (!item) return;
+  if (item.envelope.isLocked && state.unlockedProtectedId === item.envelope.id) {
+    void flushSave().then(() => {
+      relockProtectedNote();
+      updateProtectionUI(item);
+      renderNoteList();
+    });
+    return;
+  }
+  openProtectionDialog(item.envelope.isLocked ? "unlock" : "protect");
+}
+
+function openProtectionDialog(action) {
+  const item = selectedNote();
+  if (!item) return;
+  elements.protectionForm.dataset.action = action;
+  const setup = action === "protect" && !state.protectionKeyring;
+  elements.protectionTitle.textContent = setup ? "设置独立保护密码" : (
+    action === "unlock" ? "解锁受保护笔记" : "保护这篇笔记"
+  );
+  elements.protectionCopy.textContent = setup
+    ? "所有受保护笔记共用此密码。密码不会上传，且无法找回。"
+    : "请输入独立保护密码，不是登录密码。";
+  elements.protectionConfirmLabel.hidden = !setup;
+  elements.protectionMessage.textContent = "";
+  elements.protectionDialog.showModal();
+  elements.protectionForm.elements.protectionPassword.focus();
+}
+
+async function handleProtectionSubmit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const item = selectedNote();
+  if (!item) return;
+  const password = String(form.elements.protectionPassword.value || "");
+  const confirmation = String(form.elements.protectionConfirmation.value || "");
+  const action = form.dataset.action;
+  const setup = action === "protect" && !state.protectionKeyring;
+  if (setup && password !== confirmation) {
+    elements.protectionMessage.textContent = "两次输入的保护密码不一致。";
+    return;
+  }
+  setFormBusy(form, true);
+  try {
+    let key;
+    if (setup) {
+      const created = await createProtectionKeyring(password);
+      const result = await api("/api/admin/note-protection-keyring", {
+        method: "POST",
+        body: created.payload,
+      });
+      state.protectionKeyring = result.keyring;
+      key = created.key;
+    } else {
+      if (!state.protectionKeyring) throw new Error("尚未设置独立保护密码。");
+      key = await unlockProtectionKeyring(state.protectionKeyring, password);
+    }
+
+    state.protectionKey = key;
+    state.unlockedProtectedId = item.envelope.id;
+    if (action === "unlock") {
+      item.data.content = await decryptProtectedBody(
+        key,
+        item.envelope.id,
+        item.data.protectedContent,
+      );
+    } else {
+      item.envelope.isLocked = true;
+      item.data.protectedContent = await encryptProtectedBody(
+        key,
+        item.envelope.id,
+        item.data.content,
+      );
+      state.dirtyId = item.envelope.id;
+      await flushSave();
+    }
+    elements.content.value = item.data.content;
+    updateProtectionUI(item);
+    renderNoteList();
+    elements.protectionDialog.close();
+  } catch (error) {
+    elements.protectionMessage.textContent = error.message;
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+function relockProtectedNote() {
+  const id = state.unlockedProtectedId;
+  const item = state.notes.find(({ envelope }) => envelope.id === id);
+  if (item?.envelope.isLocked) item.data.content = "";
+  state.protectionKey = null;
+  state.unlockedProtectedId = "";
+  if (item && state.selectedId === id) updateProtectionUI(item);
 }
 
 function setSaveStatus(text, tone = "") {

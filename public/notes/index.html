@@ -8,7 +8,7 @@
     <meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex" />
     <meta name="theme-color" content="#f4f8f6" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/assets/notes.20260813-v2.css" />
+    <link rel="stylesheet" href="/assets/notes.20260814-v3.css" />
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -141,6 +141,7 @@
                 返回列表
               </button>
               <p class="save-status" data-save-status role="status" aria-live="polite">已保存</p>
+              <button class="text-button" type="button" data-protect-note>保护</button>
               <button class="delete-button" type="button" data-delete-note>
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M4 7h16M9 7V4h6v3M8 10v8M12 10v8M16 10v8M6 7l1 14h10l1-14" />
@@ -157,6 +158,19 @@
                 <span data-character-count>0 个字</span>
               </div>
               <label class="visually-hidden" for="note-content">笔记正文</label>
+              <section class="protected-note-gate" data-protected-gate hidden>
+                <div class="gate-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <rect x="5" y="10" width="14" height="10" rx="2" />
+                    <path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10M12 14v2" />
+                  </svg>
+                </div>
+                <strong>••••••••••••</strong>
+                <p>这篇笔记的正文已使用独立保护密码加密。</p>
+                <button class="primary-button compact" type="button" data-protected-unlock>
+                  输入保护密码
+                </button>
+              </section>
               <textarea
                 id="note-content"
                 class="content-input"
@@ -209,10 +223,37 @@
           </div>
         </form>
       </dialog>
+
+      <dialog class="settings-dialog" data-protection-dialog aria-labelledby="protection-title">
+        <form class="settings-card" data-protection-form>
+          <div class="settings-heading">
+            <div>
+              <p class="eyebrow">Protected note</p>
+              <h2 id="protection-title" data-protection-title>独立保护密码</h2>
+            </div>
+            <button class="dialog-close" type="button" data-protection-close aria-label="关闭">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+            </button>
+          </div>
+          <p class="settings-copy" data-protection-copy></p>
+          <label>
+            独立保护密码
+            <input name="protectionPassword" type="password" minlength="12" maxlength="256" autocomplete="off" required />
+          </label>
+          <label data-protection-confirm-label>
+            再输入一次保护密码
+            <input name="protectionConfirmation" type="password" minlength="12" maxlength="256" autocomplete="off" />
+          </label>
+          <p class="form-message" data-protection-message role="alert"></p>
+          <div class="settings-actions">
+            <button class="primary-button compact" type="submit">继续</button>
+          </div>
+        </form>
+      </dialog>
     </div>
     </div>
 
     <noscript>私人笔记需要启用 JavaScript 才能使用。</noscript>
-    <script type="module" src="/assets/notes.20260813-v3.js"></script>
+    <script type="module" src="/assets/notes.20260814-v4.js"></script>
   </body>
 </html>

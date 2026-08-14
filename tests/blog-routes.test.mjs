@@ -18,6 +18,7 @@ class FakeD1 {
     workspaceKeyring = null,
     encryptedNotes = [],
     encryptedFolders = [],
+    noteProtectionKeyring = null,
   } = {}) {
     this.posts = posts;
     this.pages = pages;
@@ -27,6 +28,7 @@ class FakeD1 {
     this.workspaceKeyring = workspaceKeyring;
     this.encryptedNotes = encryptedNotes;
     this.encryptedFolders = encryptedFolders;
+    this.noteProtectionKeyring = noteProtectionKeyring;
     this.settings = {
       session_secret: "test-session-secret",
       ...settings,
@@ -99,6 +101,9 @@ class FakeStatement {
   }
 
   async first() {
+    if (this.sql.includes("FROM note_protection_keyrings")) {
+      return this.db.noteProtectionKeyring;
+    }
     if (this.sql.includes("FROM encrypted_note_folders")) {
       const [id] = this.params;
       const folder = this.db.encryptedFolders.find((item) => item.id === id);
@@ -115,6 +120,7 @@ class FakeStatement {
         ? {
             revision: note.revision || 1,
             folderId: note.folderId || null,
+            isLocked: note.isLocked ? 1 : 0,
             deletedAt: note.deletedAt || null,
           }
         : null;
@@ -147,6 +153,32 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.includes("INSERT INTO note_protection_keyrings")) {
+      if (this.db.noteProtectionKeyring) throw new Error("UNIQUE constraint failed");
+      const [id, version, kdf, iterations, salt, wrappedKey, nonce, createdAt, updatedAt] =
+        this.params;
+      this.db.noteProtectionKeyring = {
+        id, version, kdf, iterations, salt, wrappedKey, nonce,
+        revision: 1, createdAt, updatedAt,
+      };
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (this.sql.includes("UPDATE note_protection_keyrings")) {
+      const [version, kdf, iterations, salt, wrappedKey, nonce, updatedAt, id, revision] =
+        this.params;
+      const exists = this.db.noteProtectionKeyring?.id === id
+        && this.db.noteProtectionKeyring.revision === revision;
+      if (exists) {
+        this.db.noteProtectionKeyring = {
+          ...this.db.noteProtectionKeyring,
+          version, kdf, iterations, salt, wrappedKey, nonce, updatedAt,
+          revision: revision + 1,
+        };
+      }
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
     if (this.sql.includes("INSERT INTO encrypted_note_folders")) {
       const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
       this.db.encryptedFolders.push({
@@ -192,7 +224,7 @@ class FakeStatement {
     }
 
     if (this.sql.includes("INSERT INTO encrypted_notes")) {
-      const [id, , version, ciphertext, nonce, createdAt, updatedAt] = this.params;
+      const [id, , version, ciphertext, nonce, isLocked, createdAt, updatedAt] = this.params;
       this.db.encryptedNotes.unshift({
         id,
         version,
@@ -200,6 +232,7 @@ class FakeStatement {
         folderId: null,
         ciphertext,
         nonce,
+        isLocked: Boolean(isLocked),
         createdAt,
         updatedAt,
         deletedAt: null,
@@ -208,13 +241,21 @@ class FakeStatement {
     }
 
     if (this.sql.includes("UPDATE encrypted_notes") && this.sql.includes("SET version = ?")) {
-      const [version, ciphertext, nonce, updatedAt, id, , revision] = this.params;
+      const [version, ciphertext, nonce, isLocked, updatedAt, id, , revision] = this.params;
       const exists = this.db.encryptedNotes.some(
         (note) => note.id === id && !note.deletedAt && (note.revision || 1) === revision,
       );
       this.db.encryptedNotes = this.db.encryptedNotes.map((note) => (
         note.id === id && exists
-          ? { ...note, version, ciphertext, nonce, updatedAt, revision: revision + 1 }
+          ? {
+              ...note,
+              version,
+              ciphertext,
+              nonce,
+              isLocked: Boolean(isLocked),
+              updatedAt,
+              revision: revision + 1,
+            }
           : note
       ));
       return { success: true, meta: { changes: exists ? 1 : 0 } };
@@ -1113,6 +1154,86 @@ test("retired blog and password-vault admin APIs return not found", async () => 
     );
     assert.equal(response.status, 404, path);
   }
+});
+
+test("administrator stores one wrapped note protection key without a password", async () => {
+  const db = new FakeD1();
+  const env = makeEnv({ BLOG_DB: db });
+  const csrfToken = "protection-csrf-token";
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken,
+    now: 1_800_000_000_000,
+  });
+  const payload = {
+    id: "notes-protection",
+    version: 1,
+    kdf: "PBKDF2-SHA256",
+    iterations: 310000,
+    salt: bytesToBase64Url(new Uint8Array(16).fill(3)),
+    wrappedKey: bytesToBase64Url(new Uint8Array(48).fill(4)),
+    nonce: bytesToBase64Url(new Uint8Array(12).fill(5)),
+  };
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/note-protection-keyring", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify(payload),
+    }),
+    env,
+  );
+  assert.equal(response.status, 201);
+  assert.equal(db.noteProtectionKeyring.wrappedKey, payload.wrappedKey);
+  assert.doesNotMatch(JSON.stringify(db.noteProtectionKeyring), /password|plaintext|content/i);
+
+  const rejected = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/note-protection-keyring", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": csrfToken,
+        "If-Match": '"1"',
+      },
+      body: JSON.stringify({ ...payload, password: "must-never-upload" }),
+    }),
+    env,
+  );
+  assert.equal(rejected.status, 400);
+});
+
+test("legacy clients cannot overwrite a server-locked note", async () => {
+  const note = { ...makeEncryptedNote(), revision: 1, isLocked: true };
+  const db = new FakeD1({ workspaceKeyring: { id: "notes" }, encryptedNotes: [note] });
+  const env = makeEnv({ BLOG_DB: db });
+  const csrfToken = "locked-note-csrf-token";
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken,
+    now: 1_800_000_000_000,
+  });
+  const changed = makeEncryptedNote(note.id, 91);
+  const response = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": csrfToken,
+        "If-Match": '"1"',
+      },
+      body: JSON.stringify(changed),
+    }),
+    env,
+  );
+  assert.equal(response.status, 409);
+  assert.equal(db.encryptedNotes[0].ciphertext, note.ciphertext);
 });
 
 test("administrator can create, update, trash, restore, and purge encrypted notes", async () => {

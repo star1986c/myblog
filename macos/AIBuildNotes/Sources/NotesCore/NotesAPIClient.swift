@@ -6,6 +6,7 @@ public struct NoteMutationState: Codable, Equatable, Sendable {
   public let revision: Int
   public let updatedAt: String?
   public let deletedAt: String?
+  public let isLocked: Bool?
 }
 
 public enum NotesAPIError: LocalizedError, Equatable {
@@ -75,6 +76,25 @@ public actor NotesAPIClient {
   public func workspaceKey() async throws -> String {
     let response: WorkspaceKeyResponse = try await request(path: "api/admin/workspace-key")
     return response.workspaceKey.key
+  }
+
+  public func protectionKeyring() async throws -> NoteProtectionKeyring? {
+    let response: ProtectionKeyringResponse = try await request(
+      path: "api/admin/note-protection-keyring"
+    )
+    return response.keyring
+  }
+
+  public func createProtectionKeyring(_ payload: NoteProtectionKeyringPayload) async throws
+    -> NoteProtectionKeyring
+  {
+    let response: ProtectionKeyringResponse = try await request(
+      method: "POST",
+      path: "api/admin/note-protection-keyring",
+      body: try JSONEncoder().encode(payload)
+    )
+    guard let keyring = response.keyring else { throw NotesAPIError.decoding }
+    return keyring
   }
 
   public func listNotes(inTrash: Bool) async throws -> [EncryptedNoteEnvelope] {
@@ -248,6 +268,7 @@ private struct WorkspaceKeyResponse: Codable {
   struct WorkspaceKey: Codable { let key: String }
   let workspaceKey: WorkspaceKey
 }
+private struct ProtectionKeyringResponse: Codable { let keyring: NoteProtectionKeyring? }
 
 private struct NotesResponse: Codable { let notes: [EncryptedNoteEnvelope] }
 private struct NoteResponse: Codable { let note: EncryptedNoteEnvelope }

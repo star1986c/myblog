@@ -35,6 +35,10 @@ const encryptedNoteFoldersMigration = await readFile(
   new URL("../migrations/0009_encrypted_note_folders.sql", import.meta.url),
   "utf8",
 );
+const noteProtectionMigration = await readFile(
+  new URL("../migrations/0010_note_protection.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -131,5 +135,17 @@ test("encrypted note folders migration stores encrypted names and opaque note me
   assert.doesNotMatch(
     encryptedNoteFoldersMigration,
     /(?:^|\s)(?:name|title|content|password|username)\s+TEXT/im,
+  );
+});
+
+test("note protection migration stores lock metadata and wrapped keys without plaintext", () => {
+  assert.match(noteProtectionMigration, /ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0/);
+  assert.match(noteProtectionMigration, /CREATE TABLE note_protection_keyrings/);
+  assert.match(noteProtectionMigration, /kdf TEXT NOT NULL/);
+  assert.match(noteProtectionMigration, /wrapped_key TEXT NOT NULL/);
+  assert.match(noteProtectionMigration, /nonce TEXT NOT NULL/);
+  assert.doesNotMatch(
+    noteProtectionMigration,
+    /(?:^|\s)(?:password|title|content|plaintext|data_key)\s+TEXT/im,
   );
 });

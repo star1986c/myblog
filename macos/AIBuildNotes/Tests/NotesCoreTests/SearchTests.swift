@@ -35,16 +35,17 @@ func normalizesEmptyTitle() {
 func decodesProtectionBackwardCompatibly() throws {
   let legacy = Data(#"{"title":"旧笔记","content":"secret-value"}"#.utf8)
   let decoded = try JSONDecoder().decode(NoteContent.self, from: legacy)
-  #expect(!decoded.isProtected)
+  #expect(decoded.protectedContent == nil)
 
   let protected = NoteDocument(
     envelope: EncryptedNoteEnvelope(
       id: "note_protected_1234",
       version: 1,
       ciphertext: "ciphertext",
-      nonce: "nonce"
+      nonce: "nonce",
+      isLocked: true
     ),
-    content: NoteContent(title: "密码记录", content: "secret-value", isProtected: true)
+    content: NoteContent(title: "密码记录", content: "")
   )
   #expect(protected.isProtected)
   #expect(protected.excerpt == "••••••••")

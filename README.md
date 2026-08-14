@@ -85,6 +85,12 @@ and ciphertext-only notes API. Search happens locally after decryption. Migratio
 `0008_note_trash_and_revisions.sql` adds optimistic revisions and a recoverable trash state for app
 clients while keeping the existing web API compatible.
 
+Migration `0010_note_protection.sql` adds an explicit server-side lock flag and one wrapped global
+protection key. The independent protection password never leaves the client: PBKDF2-HMAC-SHA256
+derives a wrapping key, while a random AES-256-GCM key encrypts protected note bodies a second time.
+macOS and Web share the format, show locked notes without exposing the body, and require the same
+independent protection password to reveal any protected note.
+
 Run its focused tests and build an ad-hoc signed app bundle:
 
 ```bash
