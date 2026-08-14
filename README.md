@@ -109,6 +109,10 @@ AES-256-GCM envelopes, folders, recoverable trash, and shared independent protec
 the macOS and Web clients. The user-visible product name is `My Notes`; historical cryptographic
 additional-data identifiers remain unchanged for ciphertext compatibility.
 
+The mobile UI is designed specifically for Android 16 (API 36) with edge-to-edge system bars,
+light/dark themes, visible folder filters, adaptive list/card layouts, and a consistent vector icon
+set. Older Android releases are intentionally unsupported.
+
 Build an installable debug APK with the checked-in wrapper:
 
 ```bash

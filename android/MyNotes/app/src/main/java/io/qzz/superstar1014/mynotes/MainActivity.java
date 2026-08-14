@@ -1,6 +1,5 @@
 package io.qzz.superstar1014.mynotes;
 
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
@@ -8,8 +7,12 @@ import android.content.DialogInterface;
 import android.content.pm.ApplicationInfo;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
-import android.os.Build;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,6 +32,9 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridView;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.PopupMenu;
@@ -93,17 +99,14 @@ public final class MainActivity extends Activity {
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    getWindow().setStatusBarColor(getColor(R.color.surface));
-    getWindow().setNavigationBarColor(getColor(R.color.surface));
+    getWindow().setNavigationBarContrastEnforced(false);
     demoMode = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0
       && getIntent().getBooleanExtra("demo", false);
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      backCallback = this::handleBackNavigation;
-      getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-        OnBackInvokedDispatcher.PRIORITY_DEFAULT,
-        backCallback
-      );
-    }
+    backCallback = this::handleBackNavigation;
+    getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+      OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+      backCallback
+    );
     api = new NotesApiClient(this, demoMode ? "http://127.0.0.1:9/" : NotesApiClient.PRODUCTION_BASE_URL);
     if (demoMode) loadDemoData();
     else restoreSession();
@@ -204,18 +207,12 @@ public final class MainActivity extends Activity {
 
   @Override
   protected void onDestroy() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && backCallback != null) {
+    if (backCallback != null) {
       getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
     }
     handler.removeCallbacksAndMessages(null);
     executor.shutdownNow();
     super.onDestroy();
-  }
-
-  @Override
-  @SuppressLint("GestureBackNavigation") // API 33+ is handled by OnBackInvokedCallback above.
-  public void onBackPressed() {
-    handleBackNavigation();
   }
 
   private void handleBackNavigation() {
@@ -289,37 +286,59 @@ public final class MainActivity extends Activity {
 
   private void showLogin() {
     editorVisible = false;
-    LinearLayout form = verticalLayout(20);
-    form.setGravity(Gravity.CENTER_HORIZONTAL);
-    form.setPadding(dp(28), dp(48), dp(28), dp(32));
+    FrameLayout root = new FrameLayout(this);
+    root.setBackgroundColor(getColor(R.color.background));
+    ScrollView scroll = new ScrollView(this);
+    scroll.setFillViewport(true);
+    scroll.setClipToPadding(false);
 
-    TextView logo = text("▤", 44, R.color.on_brand);
-    logo.setGravity(Gravity.CENTER);
-    logo.setBackgroundTintList(ColorStateList.valueOf(getColor(R.color.brand_primary)));
-    logo.setBackgroundResource(android.R.drawable.btn_default);
-    form.addView(logo, new LinearLayout.LayoutParams(dp(72), dp(72)));
+    LinearLayout form = verticalLayout(0);
+    form.setPadding(dp(24), dp(36), dp(24), dp(36));
 
-    TextView title = text(getString(R.string.login_title), 28, R.color.text_primary);
+    LinearLayout brand = horizontalLayout(Gravity.CENTER_VERTICAL);
+    ImageView logo = iconView(R.drawable.ic_note, R.color.on_brand, "My Notes", 28);
+    logo.setBackground(roundedBackground(R.color.brand_primary, 16));
+    logo.setPadding(dp(12), dp(12), dp(12), dp(12));
+    brand.addView(logo, new LinearLayout.LayoutParams(dp(52), dp(52)));
+    TextView wordmark = text("My Notes", 18, R.color.text_primary);
+    wordmark.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    brand.addView(wordmark, new LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.WRAP_CONTENT,
+      dp(52)
+    ));
+    ((LinearLayout.LayoutParams) wordmark.getLayoutParams()).setMarginStart(dp(12));
+    form.addView(brand, matchWrap(0, 0, 0, 48));
+
+    TextView eyebrow = text("你的私人笔记空间", 13, R.color.brand_primary_dark);
+    eyebrow.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    form.addView(eyebrow, matchWrap(2, 0, 0, 8));
+
+    TextView title = text("欢迎回来", 34, R.color.text_primary);
     title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-    title.setGravity(Gravity.CENTER);
-    form.addView(title, matchWrap(0, 20, 0, 6));
+    form.addView(title, matchWrap(0, 0, 0, 8));
 
     TextView subtitle = text(getString(R.string.login_description), 15, R.color.text_secondary);
-    subtitle.setGravity(Gravity.CENTER);
+    subtitle.setLineSpacing(0, 1.25f);
     form.addView(subtitle, matchWrap(0, 0, 0, 28));
 
+    LinearLayout card = verticalLayout(0);
+    card.setPadding(dp(20), dp(22), dp(20), dp(20));
+    card.setBackground(roundedStrokeBackground(R.color.surface, R.color.divider, 24, 1));
+
     TextView usernameLabel = text(getString(R.string.username), 14, R.color.text_primary);
-    form.addView(usernameLabel, matchWrap(0, 0, 0, 6));
+    usernameLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    card.addView(usernameLabel, matchWrap(2, 0, 0, 8));
     EditText usernameField = editText(getString(R.string.username), false);
     usernameField.setSingleLine(true);
     usernameField.setInputType(InputType.TYPE_CLASS_TEXT);
-    form.addView(usernameField, matchHeight(dp(52), 0, 0, 0, 18));
+    card.addView(usernameField, matchHeight(dp(56), 0, 0, 0, 20));
 
     TextView passwordLabel = text(getString(R.string.password), 14, R.color.text_primary);
-    form.addView(passwordLabel, matchWrap(0, 0, 0, 6));
+    passwordLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    card.addView(passwordLabel, matchWrap(2, 0, 0, 8));
     EditText passwordField = editText(getString(R.string.password), true);
     passwordField.setSingleLine(true);
-    form.addView(passwordField, matchHeight(dp(52), 0, 0, 0, 8));
+    card.addView(passwordField, matchHeight(dp(56), 0, 0, 0, 6));
 
     CheckBox showPassword = new CheckBox(this);
     showPassword.setText(R.string.show_password);
@@ -332,9 +351,10 @@ public final class MainActivity extends Activity {
       );
       passwordField.setSelection(passwordField.length());
     });
-    form.addView(showPassword, matchHeight(dp(48), 0, 0, 0, 18));
+    showPassword.setButtonTintList(ColorStateList.valueOf(getColor(R.color.brand_primary)));
+    card.addView(showPassword, matchHeight(dp(48), 0, 0, 0, 16));
 
-    Button loginButton = primaryButton(getString(R.string.login));
+    IconTextButton loginButton = primaryIconButton(getString(R.string.login), R.drawable.ic_login);
     loginButton.setOnClickListener(view -> {
       String username = usernameField.getText().toString().trim();
       String password = passwordField.getText().toString();
@@ -349,7 +369,7 @@ public final class MainActivity extends Activity {
         loadAllData();
       }, error -> {
         loginButton.setEnabled(true);
-        loginButton.setText(R.string.login);
+        loginButton.setText(getString(R.string.login));
         showError(error);
       });
     });
@@ -357,16 +377,23 @@ public final class MainActivity extends Activity {
       loginButton.performClick();
       return true;
     });
-    form.addView(loginButton, matchHeight(dp(52), 0, 0, 0, 0));
+    card.addView(loginButton, matchHeight(dp(56), 0, 0, 0, 0));
+    form.addView(card, matchWrap(0, 0, 0, 20));
 
-    ScrollView scroll = new ScrollView(this);
-    scroll.setFillViewport(true);
-    scroll.setBackgroundColor(getColor(R.color.surface));
+    LinearLayout security = horizontalLayout(Gravity.CENTER_VERTICAL);
+    ImageView lock = iconView(R.drawable.ic_lock, R.color.text_secondary, "端到端加密", 18);
+    security.addView(lock, new LinearLayout.LayoutParams(dp(32), dp(32)));
+    TextView securityText = text("笔记内容加密后同步，服务器不保存明文", 13, R.color.text_secondary);
+    securityText.setLineSpacing(0, 1.2f);
+    security.addView(securityText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+    form.addView(security, matchWrap(4, 0, 4, 0));
+
     scroll.addView(form, new ScrollView.LayoutParams(
       ViewGroup.LayoutParams.MATCH_PARENT,
       ViewGroup.LayoutParams.WRAP_CONTENT
     ));
-    setContentView(applySystemInsets(scroll));
+    root.addView(scroll, frameMatch());
+    setContentView(applySystemInsets(root));
   }
 
   private void renderHome() {
@@ -377,55 +404,116 @@ public final class MainActivity extends Activity {
     dirty = false;
     saving = false;
     filterVisibleNotes();
+    boolean landscape = getResources().getConfiguration().orientation
+      == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+    boolean largeText = getResources().getConfiguration().fontScale >= 1.2f;
+    int summaryHeight = landscape ? (largeText ? 64 : 52) : (largeText ? 72 : 60);
 
     FrameLayout root = new FrameLayout(this);
-    root.setBackgroundColor(getColor(R.color.surface));
+    root.setBackgroundColor(getColor(R.color.background));
     LinearLayout column = verticalLayout(0);
     root.addView(column, frameMatch());
 
     LinearLayout topBar = horizontalLayout(Gravity.CENTER_VERTICAL);
-    topBar.setPadding(dp(8), dp(6), dp(8), dp(6));
-    Button locationButton = toolbarButton("文件夹");
-    locationButton.setContentDescription("选择笔记文件夹");
-    locationButton.setOnClickListener(this::showLocationMenu);
-    topBar.addView(locationButton, new LinearLayout.LayoutParams(dp(76), dp(52)));
+    topBar.setPadding(dp(18), landscape ? dp(6) : dp(12), dp(14), landscape ? dp(4) : dp(8));
+    ImageView brandIcon = iconView(R.drawable.ic_note, R.color.on_brand, "My Notes", 22);
+    brandIcon.setBackground(roundedBackground(R.color.brand_primary, 14));
+    brandIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
+    topBar.addView(brandIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
-    TextView appTitle = text("My Notes", 22, R.color.text_primary);
+    LinearLayout heading = verticalLayout(0);
+    TextView appTitle = text("My Notes", 21, R.color.text_primary);
     appTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-    topBar.addView(appTitle, new LinearLayout.LayoutParams(0, dp(52), 1));
+    heading.addView(appTitle, matchWrap(0, 0, 0, 0));
+    TextView account = text(user == null ? "" : user.username, 12, R.color.text_secondary);
+    heading.addView(account, matchWrap(0, 0, 0, 0));
+    LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(0, dp(52), 1);
+    headingParams.setMarginStart(dp(12));
+    topBar.addView(heading, headingParams);
 
-    Button refresh = toolbarButton("刷新");
+    ImageButton refresh = iconButton(R.drawable.ic_refresh, "刷新笔记", false);
     refresh.setOnClickListener(view -> loadAllData());
-    topBar.addView(refresh, new LinearLayout.LayoutParams(dp(64), dp(52)));
-    Button mode = toolbarButton(modeTitle());
-    mode.setContentDescription("切换笔记列表显示方式");
-    mode.setOnClickListener(this::showModeMenu);
-    topBar.addView(mode, new LinearLayout.LayoutParams(dp(76), dp(52)));
-    column.addView(topBar, matchHeight(dp(64), 0, 0, 0, 0));
+    topBar.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    ImageButton locationButton = iconButton(R.drawable.ic_folder, "文件夹和账户菜单", true);
+    locationButton.setOnClickListener(this::showLocationMenu);
+    LinearLayout.LayoutParams locationParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+    locationParams.setMarginStart(dp(8));
+    topBar.addView(locationButton, locationParams);
+    if (landscape && !LOCATION_TRASH.equals(location)) {
+      ImageButton newNote = iconButton(R.drawable.ic_add, getString(R.string.new_note), false);
+      newNote.setImageTintList(ColorStateList.valueOf(getColor(R.color.on_brand)));
+      newNote.setBackground(rippleBackground(R.color.brand_primary, 16));
+      newNote.setOnClickListener(view -> createNote());
+      LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+      addParams.setMarginStart(dp(8));
+      topBar.addView(newNote, addParams);
+    }
+    column.addView(topBar, matchHeight(dp(landscape ? 60 : 72), 0, 0, 0, 0));
 
     EditText search = editText(getString(R.string.search_notes), false);
     search.setSingleLine(true);
     search.setText(searchQuery);
-    search.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_menu_search, 0, 0, 0);
+    Drawable searchIcon = getDrawable(R.drawable.ic_search);
+    searchIcon.setTint(getColor(R.color.text_secondary));
+    search.setCompoundDrawablesWithIntrinsicBounds(searchIcon, null, null, null);
     search.setCompoundDrawablePadding(dp(10));
+    search.setBackground(roundedStrokeBackground(R.color.surface, R.color.divider, 18, 1));
+    search.setPadding(dp(16), dp(8), dp(16), dp(8));
     search.addTextChangedListener(new SimpleTextWatcher() {
       @Override public void afterTextChanged(Editable editable) {
         searchQuery = editable.toString();
         renderHomeListOnly();
       }
     });
-    LinearLayout.LayoutParams searchParams = matchHeight(dp(52), 16, 4, 16, 8);
+    LinearLayout.LayoutParams searchParams = matchHeight(
+      dp(landscape ? 48 : 56),
+      18,
+      landscape ? 0 : 4,
+      18,
+      landscape ? 6 : 12
+    );
     column.addView(search, searchParams);
 
+    HorizontalScrollView folderScroll = new HorizontalScrollView(this);
+    folderScroll.setHorizontalScrollBarEnabled(false);
+    folderScroll.setClipToPadding(false);
+    folderScroll.setPadding(dp(14), 0, dp(14), 0);
+    LinearLayout folderRail = horizontalLayout(Gravity.CENTER_VERTICAL);
+    addFolderChip(folderRail, "全部", LOCATION_ALL, R.drawable.ic_note);
+    addFolderChip(folderRail, "未分类", LOCATION_UNFILED, R.drawable.ic_unfiled);
+    for (Models.FolderDocument folder : folders) {
+      addFolderChip(
+        folderRail,
+        folder.name,
+        LOCATION_FOLDER_PREFIX + folder.envelope.id,
+        R.drawable.ic_folder
+      );
+    }
+    addFolderChip(folderRail, "回收站", LOCATION_TRASH, R.drawable.ic_trash);
+    folderScroll.addView(folderRail, new HorizontalScrollView.LayoutParams(
+      ViewGroup.LayoutParams.WRAP_CONTENT,
+      dp(landscape ? 42 : 48)
+    ));
+    column.addView(folderScroll, matchHeight(dp(landscape ? 42 : 48), 0, 0, 0, landscape ? 4 : 8));
+
     LinearLayout summary = horizontalLayout(Gravity.CENTER_VERTICAL);
-    summary.setPadding(dp(18), 0, dp(18), 0);
-    TextView locationTitle = text(locationTitle(), 18, R.color.text_primary);
+    summary.setPadding(dp(20), 0, dp(14), 0);
+    LinearLayout summaryText = verticalLayout(0);
+    TextView locationTitle = text(locationTitle(), 20, R.color.text_primary);
     locationTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-    summary.addView(locationTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
-    homeCount = text(visibleNotes.size() + " 条笔记", 14, R.color.text_secondary);
-    homeCount.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-    summary.addView(homeCount, new LinearLayout.LayoutParams(dp(100), dp(48)));
-    column.addView(summary, matchHeight(dp(48), 0, 0, 0, 0));
+    summaryText.addView(locationTitle, matchWrap(0, 0, 0, 0));
+    int count = visibleNotes.size();
+    homeCount = text(
+      getResources().getQuantityString(R.plurals.note_count, count, count),
+      13,
+      R.color.text_secondary
+    );
+    summaryText.addView(homeCount, matchWrap(0, 0, 0, 0));
+    summary.addView(summaryText, new LinearLayout.LayoutParams(0, dp(summaryHeight), 1));
+    ImageButton mode = iconButton(modeIcon(), "切换笔记列表显示方式，当前" + modeTitle(), true);
+    mode.setOnClickListener(this::showModeMenu);
+    summary.addView(mode, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    column.addView(summary, matchHeight(dp(summaryHeight), 0, 0, 0, 0));
 
     homeListContainer = new FrameLayout(this);
     homeListContainer.setId(View.generateViewId());
@@ -437,11 +525,28 @@ public final class MainActivity extends Activity {
     populateListContainer(homeListContainer);
 
     if (!LOCATION_TRASH.equals(location)) {
-      Button newNote = primaryButton(getString(R.string.new_note));
-      newNote.setOnClickListener(view -> createNote());
-      column.addView(newNote, matchHeight(dp(56), 16, 8, 16, 16));
+      if (!landscape) {
+        IconTextButton newNote = primaryIconButton(getString(R.string.new_note), R.drawable.ic_add);
+        newNote.setOnClickListener(view -> createNote());
+        column.addView(newNote, matchHeight(dp(56), 18, 10, 18, 16));
+      }
     }
     setContentView(applySystemInsets(root));
+  }
+
+  private void addFolderChip(LinearLayout rail, String label, String value, int iconRes) {
+    Button chip = chipButton(label, iconRes, value.equals(location));
+    chip.setOnClickListener(view -> {
+      location = value;
+      searchQuery = "";
+      renderHome();
+    });
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.WRAP_CONTENT,
+      dp(40)
+    );
+    params.setMargins(dp(4), dp(4), dp(4), dp(4));
+    rail.addView(chip, params);
   }
 
   private void renderHomeListOnly() {
@@ -473,18 +578,31 @@ public final class MainActivity extends Activity {
 
   private void populateListContainer(FrameLayout container) {
     if (visibleNotes.isEmpty()) {
-      LinearLayout empty = verticalLayout(12);
+      LinearLayout empty = verticalLayout(0);
       empty.setGravity(Gravity.CENTER);
-      TextView icon = text(LOCATION_TRASH.equals(location) ? "□" : "▤", 42, R.color.text_secondary);
-      icon.setGravity(Gravity.CENTER);
-      empty.addView(icon, new LinearLayout.LayoutParams(dp(64), dp(64)));
+      int emptyIcon = LOCATION_TRASH.equals(location) ? R.drawable.ic_trash : R.drawable.ic_note;
+      ImageView icon = iconView(emptyIcon, R.color.brand_primary_dark, "空状态", 30);
+      icon.setPadding(dp(18), dp(18), dp(18), dp(18));
+      icon.setBackground(roundedBackground(R.color.surface_tonal, 28));
+      empty.addView(icon, new LinearLayout.LayoutParams(dp(72), dp(72)));
+      boolean searchEmpty = !searchQuery.trim().isEmpty();
       TextView label = text(
-        LOCATION_TRASH.equals(location) ? "回收站是空的" : getString(R.string.no_notes),
-        17,
+        searchEmpty ? "没有找到相关笔记" : LOCATION_TRASH.equals(location) ? "回收站是空的" : "从第一条笔记开始",
+        18,
+        R.color.text_primary
+      );
+      label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      label.setGravity(Gravity.CENTER);
+      empty.addView(label, matchWrap(24, 18, 24, 6));
+      TextView detail = text(
+        searchEmpty ? "换一个关键词，或清空搜索后再试" : LOCATION_TRASH.equals(location)
+          ? "删除的笔记会在这里保留，方便恢复"
+          : "记录灵感、资料和重要信息",
+        14,
         R.color.text_secondary
       );
-      label.setGravity(Gravity.CENTER);
-      empty.addView(label, matchWrap(0, 0, 0, 0));
+      detail.setGravity(Gravity.CENTER);
+      empty.addView(detail, matchWrap(32, 0, 32, 0));
       container.addView(empty, frameMatch());
       return;
     }
@@ -494,17 +612,17 @@ public final class MainActivity extends Activity {
     if (displayMode == 1) {
       GridView grid = new GridView(this);
       grid.setNumColumns(getResources().getConfiguration().smallestScreenWidthDp >= 600 ? 3 : 2);
-      grid.setHorizontalSpacing(dp(8));
-      grid.setVerticalSpacing(dp(8));
-      grid.setPadding(dp(12), dp(6), dp(12), dp(12));
+      grid.setHorizontalSpacing(dp(4));
+      grid.setVerticalSpacing(dp(4));
+      grid.setPadding(dp(12), dp(4), dp(12), dp(12));
       grid.setClipToPadding(false);
       grid.setAdapter(adapter);
       list = grid;
     } else {
       ListView rows = new ListView(this);
-      rows.setDividerHeight(1);
-      rows.setDivider(getDrawable(R.color.divider));
-      rows.setPadding(dp(8), 0, dp(8), dp(8));
+      rows.setDivider(null);
+      rows.setDividerHeight(0);
+      rows.setPadding(dp(12), 0, dp(12), dp(8));
       rows.setClipToPadding(false);
       rows.setAdapter(adapter);
       list = rows;
@@ -518,22 +636,22 @@ public final class MainActivity extends Activity {
 
   private void showLocationMenu(View anchor) {
     PopupMenu menu = new PopupMenu(this, anchor);
-    menu.getMenu().add(0, 1, 0, "全部笔记（" + notes.size() + "）");
+    menu.getMenu().add(0, 1, 0, "全部笔记（" + notes.size() + "）").setIcon(R.drawable.ic_note);
     int unfiled = 0;
     for (Models.NoteDocument note : notes) if (note.envelope.folderId == null) unfiled++;
-    menu.getMenu().add(0, 2, 1, "未分类（" + unfiled + "）");
+    menu.getMenu().add(0, 2, 1, "未分类（" + unfiled + "）").setIcon(R.drawable.ic_unfiled);
     int nextId = 100;
     for (Models.FolderDocument folder : folders) {
       int count = 0;
       for (Models.NoteDocument note : notes) {
         if (folder.envelope.id.equals(note.envelope.folderId)) count++;
       }
-      menu.getMenu().add(1, nextId++, nextId, folder.name + "（" + count + "）");
+      menu.getMenu().add(1, nextId++, nextId, folder.name + "（" + count + "）").setIcon(R.drawable.ic_folder);
     }
-    menu.getMenu().add(2, 3, 1_000, "新建文件夹");
-    if (!folders.isEmpty()) menu.getMenu().add(2, 6, 1_001, "管理文件夹");
-    menu.getMenu().add(2, 4, 1_002, "回收站（" + trash.size() + "）");
-    menu.getMenu().add(3, 5, 2_000, "退出登录");
+    menu.getMenu().add(2, 3, 1_000, "新建文件夹").setIcon(R.drawable.ic_add);
+    if (!folders.isEmpty()) menu.getMenu().add(2, 6, 1_001, "管理文件夹").setIcon(R.drawable.ic_folder);
+    menu.getMenu().add(2, 4, 1_002, "回收站（" + trash.size() + "）").setIcon(R.drawable.ic_trash);
+    menu.getMenu().add(3, 5, 2_000, "退出登录").setIcon(R.drawable.ic_logout);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 1) location = LOCATION_ALL;
       else if (item.getItemId() == 2) location = LOCATION_UNFILED;
@@ -563,9 +681,9 @@ public final class MainActivity extends Activity {
 
   private void showModeMenu(View anchor) {
     PopupMenu menu = new PopupMenu(this, anchor);
-    menu.getMenu().add(0, 10, 0, "详细列表").setCheckable(true).setChecked(displayMode == 0);
-    menu.getMenu().add(0, 11, 1, "图文卡片").setCheckable(true).setChecked(displayMode == 1);
-    menu.getMenu().add(0, 12, 2, "标题列表").setCheckable(true).setChecked(displayMode == 2);
+    menu.getMenu().add(0, 10, 0, "详细列表").setIcon(R.drawable.ic_list).setCheckable(true).setChecked(displayMode == 0);
+    menu.getMenu().add(0, 11, 1, "图文卡片").setIcon(R.drawable.ic_grid).setCheckable(true).setChecked(displayMode == 1);
+    menu.getMenu().add(0, 12, 2, "标题列表").setIcon(R.drawable.ic_title).setCheckable(true).setChecked(displayMode == 2);
     menu.setOnMenuItemClickListener(item -> {
       displayMode = item.getItemId() - 10;
       renderHome();
@@ -616,57 +734,91 @@ public final class MainActivity extends Activity {
     handler.removeCallbacksAndMessages(null);
 
     LinearLayout root = verticalLayout(0);
-    root.setBackgroundColor(getColor(R.color.surface));
+    root.setBackgroundColor(getColor(R.color.background));
 
     LinearLayout topBar = horizontalLayout(Gravity.CENTER_VERTICAL);
-    topBar.setPadding(dp(6), dp(6), dp(6), dp(6));
-    Button back = toolbarButton("返回");
+    topBar.setPadding(dp(10), dp(8), dp(10), dp(8));
+    ImageButton back = iconButton(R.drawable.ic_arrow_back, "返回笔记列表", false);
     back.setOnClickListener(view -> closeEditor());
-    topBar.addView(back, new LinearLayout.LayoutParams(dp(64), dp(52)));
+    topBar.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
-    saveStatus = text(saveStatusText(), 13, dirty ? R.color.warning : R.color.text_secondary);
-    saveStatus.setGravity(Gravity.CENTER_VERTICAL);
-    topBar.addView(saveStatus, new LinearLayout.LayoutParams(0, dp(52), 1));
+    LinearLayout context = verticalLayout(0);
+    TextView folder = text(folderName(selectedNote.envelope.folderId), 14, R.color.text_primary);
+    folder.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    context.addView(folder, matchWrap(0, 0, 0, 0));
+    saveStatus = text(saveStatusText(), 12, dirty ? R.color.warning : R.color.text_secondary);
+    context.addView(saveStatus, matchWrap(0, 0, 0, 0));
+    LinearLayout.LayoutParams contextParams = new LinearLayout.LayoutParams(0, dp(52), 1);
+    contextParams.setMarginStart(dp(8));
+    topBar.addView(context, contextParams);
 
     if (!LOCATION_TRASH.equals(location)) {
-      Button save = toolbarButton(getString(R.string.save));
-      save.setContentDescription("保存笔记");
+      ImageButton save = iconButton(R.drawable.ic_save, "保存笔记", true);
       save.setOnClickListener(view -> saveSelected(null));
-      topBar.addView(save, new LinearLayout.LayoutParams(dp(64), dp(52)));
+      topBar.addView(save, new LinearLayout.LayoutParams(dp(48), dp(48)));
     }
-    Button more = toolbarButton("操作");
+    ImageButton more = iconButton(R.drawable.ic_more, "更多笔记操作", false);
     more.setOnClickListener(this::showEditorActions);
-    topBar.addView(more, new LinearLayout.LayoutParams(dp(64), dp(52)));
-    root.addView(topBar, matchHeight(dp(64), 0, 0, 0, 0));
+    LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+    moreParams.setMarginStart(dp(8));
+    topBar.addView(more, moreParams);
+    root.addView(topBar, matchHeight(dp(68), 0, 0, 0, 0));
+
+    LinearLayout paper = verticalLayout(0);
+    paper.setBackground(roundedStrokeBackground(R.color.surface, R.color.divider, 24, 1));
+
+    LinearLayout noteMeta = horizontalLayout(Gravity.CENTER_VERTICAL);
+    noteMeta.setPadding(dp(20), dp(12), dp(20), 0);
+    ImageView noteIcon = iconView(
+      selectedNote.envelope.locked ? R.drawable.ic_lock : R.drawable.ic_note,
+      R.color.brand_primary_dark,
+      selectedNote.envelope.locked ? "受保护笔记" : "普通笔记",
+      16
+    );
+    noteMeta.addView(noteIcon, new LinearLayout.LayoutParams(dp(28), dp(28)));
+    TextView date = text(selectedNote.envelope.displayDate(), 12, R.color.text_secondary);
+    noteMeta.addView(date, new LinearLayout.LayoutParams(0, dp(32), 1));
+    paper.addView(noteMeta, matchHeight(dp(44), 0, 0, 0, 0));
 
     titleField = editText("无标题笔记", false);
     titleField.setText(selectedNote.content.title);
-    titleField.setTextSize(24);
+    titleField.setTextSize(27);
     titleField.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
     titleField.setSingleLine(false);
     titleField.setMaxLines(3);
+    titleField.setPadding(dp(20), dp(4), dp(20), dp(10));
+    titleField.setBackgroundColor(Color.TRANSPARENT);
     titleField.setEnabled(!LOCATION_TRASH.equals(location));
     titleField.addTextChangedListener(editorWatcher(true));
-    root.addView(titleField, matchWrap(16, 8, 16, 8));
+    paper.addView(titleField, matchWrap(0, 0, 0, 0));
+
+    View divider = new View(this);
+    divider.setBackgroundColor(getColor(R.color.divider));
+    paper.addView(divider, matchHeight(dp(1), 20, 0, 20, 0));
 
     if (selectedNote.envelope.locked && !selectedNote.unlocked) {
-      LinearLayout lockPanel = verticalLayout(16);
+      LinearLayout lockPanel = verticalLayout(0);
       lockPanel.setGravity(Gravity.CENTER);
-      lockPanel.setPadding(dp(24), dp(36), dp(24), dp(36));
-      lockPanel.setBackgroundColor(getColor(R.color.surface_variant));
-      TextView lock = text(getString(R.string.locked_body), 34, R.color.text_primary);
-      lock.setGravity(Gravity.CENTER);
-      lockPanel.addView(lock, matchWrap(0, 0, 0, 8));
-      TextView description = text("这是一条受保护笔记，正文默认隐藏。", 16, R.color.text_secondary);
+      lockPanel.setPadding(dp(28), dp(36), dp(28), dp(36));
+      ImageView lock = iconView(R.drawable.ic_lock, R.color.brand_primary_dark, "正文已锁定", 32);
+      lock.setPadding(dp(20), dp(20), dp(20), dp(20));
+      lock.setBackground(roundedBackground(R.color.surface_tonal, 34));
+      lockPanel.addView(lock, new LinearLayout.LayoutParams(dp(84), dp(84)));
+      TextView lockTitle = text("正文已受保护", 20, R.color.text_primary);
+      lockTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      lockTitle.setGravity(Gravity.CENTER);
+      lockPanel.addView(lockTitle, matchWrap(0, 22, 0, 8));
+      TextView description = text("输入独立保护密码后，才能在这台设备上查看正文。", 15, R.color.text_secondary);
       description.setGravity(Gravity.CENTER);
-      lockPanel.addView(description, matchWrap(0, 0, 0, 20));
-      Button unlock = primaryButton(getString(R.string.unlock));
+      description.setLineSpacing(0, 1.25f);
+      lockPanel.addView(description, matchWrap(0, 0, 0, 24));
+      IconTextButton unlock = primaryIconButton(getString(R.string.unlock), R.drawable.ic_lock);
       unlock.setOnClickListener(view -> unlockSelected(null));
       lockPanel.addView(unlock, new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        dp(52)
+        dp(56)
       ));
-      root.addView(lockPanel, new LinearLayout.LayoutParams(
+      paper.addView(lockPanel, new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         0,
         1
@@ -674,24 +826,32 @@ public final class MainActivity extends Activity {
     } else {
       bodyField = editText("开始记录…", false);
       bodyField.setGravity(Gravity.TOP | Gravity.START);
-      bodyField.setTextSize(17);
+      bodyField.setTextSize(17.5f);
+      bodyField.setLineSpacing(dp(3), 1.18f);
       bodyField.setText(selectedNote.content.content);
       bodyField.setInputType(
         InputType.TYPE_CLASS_TEXT
           | InputType.TYPE_TEXT_FLAG_MULTI_LINE
           | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
       );
+      bodyField.setPadding(dp(20), dp(14), dp(20), dp(20));
+      bodyField.setBackgroundColor(Color.TRANSPARENT);
       bodyField.setEnabled(!LOCATION_TRASH.equals(location));
       bodyField.addTextChangedListener(editorWatcher(false));
-      root.addView(bodyField, new LinearLayout.LayoutParams(
+      paper.addView(bodyField, new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         0,
         1
       ));
-      LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) bodyField.getLayoutParams();
-      params.setMargins(dp(12), 0, dp(12), dp(12));
-      bodyField.setLayoutParams(params);
     }
+
+    LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT,
+      0,
+      1
+    );
+    paperParams.setMargins(dp(14), dp(4), dp(14), dp(14));
+    root.addView(paper, paperParams);
 
     setContentView(applySystemInsets(root));
     bindingEditor = false;
@@ -820,12 +980,12 @@ public final class MainActivity extends Activity {
     if (selectedNote == null) return;
     PopupMenu menu = new PopupMenu(this, anchor);
     if (LOCATION_TRASH.equals(location)) {
-      menu.getMenu().add(0, 40, 0, "恢复笔记");
-      menu.getMenu().add(0, 41, 1, "永久删除");
+      menu.getMenu().add(0, 40, 0, "恢复笔记").setIcon(R.drawable.ic_refresh);
+      menu.getMenu().add(0, 41, 1, "永久删除").setIcon(R.drawable.ic_trash);
     } else {
-      menu.getMenu().add(0, 30, 0, "移动到文件夹");
-      menu.getMenu().add(0, 31, 1, selectedNote.envelope.locked ? "移除正文保护" : "保护正文");
-      menu.getMenu().add(0, 32, 2, "移到回收站");
+      menu.getMenu().add(0, 30, 0, "移动到文件夹").setIcon(R.drawable.ic_folder);
+      menu.getMenu().add(0, 31, 1, selectedNote.envelope.locked ? "移除正文保护" : "保护正文").setIcon(R.drawable.ic_lock);
+      menu.getMenu().add(0, 32, 2, "移到回收站").setIcon(R.drawable.ic_trash);
     }
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 30) showFolderAssignment();
@@ -1228,15 +1388,21 @@ public final class MainActivity extends Activity {
 
   private void showLoading(String message) {
     editorVisible = false;
-    LinearLayout content = verticalLayout(16);
+    LinearLayout content = verticalLayout(0);
     content.setGravity(Gravity.CENTER);
-    content.setBackgroundColor(getColor(R.color.surface));
+    content.setBackgroundColor(getColor(R.color.background));
+    ImageView icon = iconView(R.drawable.ic_note, R.color.on_brand, "My Notes", 26);
+    icon.setPadding(dp(14), dp(14), dp(14), dp(14));
+    icon.setBackground(roundedBackground(R.color.brand_primary, 18));
+    content.addView(icon, new LinearLayout.LayoutParams(dp(60), dp(60)));
     ProgressBar progress = new ProgressBar(this);
     progress.setIndeterminateTintList(ColorStateList.valueOf(getColor(R.color.brand_primary)));
-    content.addView(progress, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(dp(40), dp(40));
+    progressParams.setMargins(0, dp(22), 0, dp(8));
+    content.addView(progress, progressParams);
     TextView label = text(message, 16, R.color.text_secondary);
     label.setGravity(Gravity.CENTER);
-    content.addView(label, matchWrap(0, 0, 0, 0));
+    content.addView(label, matchWrap(24, 0, 24, 0));
     setContentView(applySystemInsets(content));
   }
 
@@ -1338,12 +1504,19 @@ public final class MainActivity extends Activity {
   }
 
   private <T extends View> T applySystemInsets(T view) {
+    int left = view.getPaddingLeft();
+    int top = view.getPaddingTop();
+    int right = view.getPaddingRight();
+    int bottom = view.getPaddingBottom();
     view.setOnApplyWindowInsetsListener((target, insets) -> {
+      Insets bars = insets.getInsets(
+        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+      );
       target.setPadding(
-        target.getPaddingLeft(),
-        insets.getSystemWindowInsetTop(),
-        target.getPaddingRight(),
-        insets.getSystemWindowInsetBottom()
+        left + bars.left,
+        top + bars.top,
+        right + bars.right,
+        bottom + bars.bottom
       );
       return insets;
     });
@@ -1371,6 +1544,7 @@ public final class MainActivity extends Activity {
     view.setTextSize(size);
     view.setTextColor(getColor(color));
     view.setGravity(Gravity.CENTER_VERTICAL);
+    view.setIncludeFontPadding(false);
     return view;
   }
 
@@ -1380,38 +1554,123 @@ public final class MainActivity extends Activity {
     field.setTextColor(getColor(R.color.text_primary));
     field.setHintTextColor(getColor(R.color.text_secondary));
     field.setTextSize(16);
-    field.setPadding(dp(14), dp(8), dp(14), dp(8));
-    field.setBackgroundTintList(new ColorStateList(
-      new int[][] { new int[] { android.R.attr.state_focused }, new int[] {} },
-      new int[] { getColor(R.color.brand_primary), getColor(R.color.divider) }
-    ));
+    field.setPadding(dp(16), dp(8), dp(16), dp(8));
+    StateListDrawable background = new StateListDrawable();
+    background.addState(
+      new int[] { android.R.attr.state_focused },
+      roundedStrokeBackground(R.color.surface, R.color.brand_primary, 16, 2)
+    );
+    background.addState(
+      new int[] {},
+      roundedStrokeBackground(R.color.surface, R.color.divider, 16, 1)
+    );
+    field.setBackground(background);
     if (password) {
       field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
     }
     return field;
   }
 
-  private Button primaryButton(String label) {
-    Button button = new Button(this);
-    button.setText(label);
-    button.setTextSize(16);
-    button.setAllCaps(false);
-    button.setTextColor(getColor(R.color.on_brand));
-    button.setBackgroundTintList(ColorStateList.valueOf(getColor(R.color.brand_primary)));
-    button.setMinHeight(dp(48));
+  private Drawable roundedBackground(int colorRes, int radiusDp) {
+    GradientDrawable drawable = new GradientDrawable();
+    drawable.setColor(getColor(colorRes));
+    drawable.setCornerRadius(dp(radiusDp));
+    return drawable;
+  }
+
+  private Drawable roundedStrokeBackground(
+    int colorRes,
+    int strokeColorRes,
+    int radiusDp,
+    int strokeDp
+  ) {
+    GradientDrawable drawable = new GradientDrawable();
+    drawable.setColor(getColor(colorRes));
+    drawable.setCornerRadius(dp(radiusDp));
+    drawable.setStroke(dp(strokeDp), getColor(strokeColorRes));
+    return drawable;
+  }
+
+  private Drawable rippleBackground(int colorRes, int radiusDp) {
+    GradientDrawable content = new GradientDrawable();
+    content.setColor(getColor(colorRes));
+    content.setCornerRadius(dp(radiusDp));
+    GradientDrawable mask = new GradientDrawable();
+    mask.setColor(Color.WHITE);
+    mask.setCornerRadius(dp(radiusDp));
+    return new RippleDrawable(
+      ColorStateList.valueOf(getColor(R.color.surface_high)),
+      content,
+      mask
+    );
+  }
+
+  private Drawable rippleStrokeBackground(int colorRes, int strokeColorRes, int radiusDp) {
+    GradientDrawable content = new GradientDrawable();
+    content.setColor(getColor(colorRes));
+    content.setCornerRadius(dp(radiusDp));
+    content.setStroke(dp(1), getColor(strokeColorRes));
+    GradientDrawable mask = new GradientDrawable();
+    mask.setColor(Color.WHITE);
+    mask.setCornerRadius(dp(radiusDp));
+    return new RippleDrawable(
+      ColorStateList.valueOf(getColor(R.color.surface_high)),
+      content,
+      mask
+    );
+  }
+
+  private ImageView iconView(int drawableRes, int tintRes, String description, int iconDp) {
+    ImageView icon = new ImageView(this);
+    icon.setImageResource(drawableRes);
+    icon.setImageTintList(ColorStateList.valueOf(getColor(tintRes)));
+    icon.setContentDescription(description);
+    icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+    icon.setMinimumWidth(dp(iconDp));
+    icon.setMinimumHeight(dp(iconDp));
+    return icon;
+  }
+
+  private ImageButton iconButton(int drawableRes, String description, boolean tonal) {
+    ImageButton button = new ImageButton(this);
+    button.setImageResource(drawableRes);
+    button.setImageTintList(ColorStateList.valueOf(getColor(R.color.brand_primary_dark)));
+    button.setContentDescription(description);
+    button.setPadding(dp(12), dp(12), dp(12), dp(12));
+    button.setBackground(rippleBackground(tonal ? R.color.surface_tonal : R.color.background, 16));
+    button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+    button.setMinimumWidth(dp(48));
+    button.setMinimumHeight(dp(48));
     return button;
   }
 
-  private Button toolbarButton(String label) {
+  private IconTextButton primaryIconButton(String label, int drawableRes) {
+    return new IconTextButton(label, drawableRes);
+  }
+
+  private Button chipButton(String label, int drawableRes, boolean selected) {
     Button button = new Button(this);
     button.setText(label);
-    button.setTextSize(14);
+    button.setTextSize(13);
     button.setAllCaps(false);
+    button.setGravity(Gravity.CENTER);
+    button.setMinHeight(dp(40));
     button.setMinWidth(dp(48));
-    button.setMinHeight(dp(48));
-    button.setTextColor(getColor(R.color.brand_primary_dark));
-    button.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+    button.setPadding(dp(14), 0, dp(14), 0);
+    button.setTextColor(getColor(selected ? R.color.on_brand : R.color.text_primary));
+    Drawable icon = getDrawable(drawableRes);
+    icon.setTint(getColor(selected ? R.color.on_brand : R.color.text_secondary));
+    icon.setBounds(0, 0, dp(18), dp(18));
+    button.setCompoundDrawablePadding(dp(7));
+    button.setCompoundDrawables(icon, null, null, null);
+    button.setBackground(rippleBackground(selected ? R.color.brand_primary : R.color.surface, 14));
+    button.setContentDescription(label + (selected ? "，已选择" : ""));
+    button.setSelected(selected);
     return button;
+  }
+
+  private int modeIcon() {
+    return displayMode == 0 ? R.drawable.ic_list : displayMode == 1 ? R.drawable.ic_grid : R.drawable.ic_title;
   }
 
   private int dp(int value) {
@@ -1452,6 +1711,49 @@ public final class MainActivity extends Activity {
     @Override public void onTextChanged(CharSequence value, int start, int before, int count) {}
   }
 
+  private final class IconTextButton extends LinearLayout {
+    private final TextView labelView;
+
+    IconTextButton(String label, int drawableRes) {
+      super(MainActivity.this);
+      setOrientation(HORIZONTAL);
+      setGravity(Gravity.CENTER);
+      setPadding(dp(18), 0, dp(18), 0);
+      setMinimumHeight(dp(48));
+      setClickable(true);
+      setFocusable(true);
+      setContentDescription(label);
+      setBackground(rippleBackground(R.color.brand_primary, 18));
+
+      ImageView icon = iconView(drawableRes, R.color.on_brand, null, 22);
+      addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
+      labelView = text(label, 16, R.color.on_brand);
+      labelView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+      );
+      labelParams.setMarginStart(dp(10));
+      addView(labelView, labelParams);
+    }
+
+    void setText(String value) {
+      labelView.setText(value);
+      setContentDescription(value);
+    }
+
+    @Override
+    public void setEnabled(boolean enabled) {
+      super.setEnabled(enabled);
+      setAlpha(enabled ? 1f : 0.5f);
+    }
+
+    @Override
+    public CharSequence getAccessibilityClassName() {
+      return Button.class.getName();
+    }
+  }
+
   private final class NotesAdapter extends BaseAdapter {
     @Override public int getCount() { return visibleNotes.size(); }
     @Override public Models.NoteDocument getItem(int position) { return visibleNotes.get(position); }
@@ -1460,23 +1762,34 @@ public final class MainActivity extends Activity {
     @Override
     public View getView(int position, View recycled, ViewGroup parent) {
       Models.NoteDocument note = getItem(position);
-      LinearLayout cell = verticalLayout(4);
-      cell.setPadding(dp(16), dp(14), dp(16), dp(14));
-      cell.setBackgroundColor(displayMode == 1
-        ? getColor(R.color.surface_variant)
-        : getColor(R.color.surface));
-      cell.setMinimumHeight(dp(displayMode == 1 ? 148 : displayMode == 2 ? 56 : 96));
+      FrameLayout outer = new FrameLayout(MainActivity.this);
+      outer.setPadding(dp(4), dp(4), dp(4), dp(4));
+      LinearLayout cell = verticalLayout(0);
+      cell.setPadding(dp(16), dp(15), dp(16), dp(14));
+      cell.setBackground(rippleStrokeBackground(
+        displayMode == 1 ? R.color.surface_variant : R.color.surface,
+        R.color.divider,
+        18
+      ));
+      cell.setMinimumHeight(dp(displayMode == 1 ? 176 : displayMode == 2 ? 72 : 116));
 
+      LinearLayout titleRow = horizontalLayout(Gravity.CENTER_VERTICAL);
+      if (note.envelope.locked) {
+        ImageView lock = iconView(R.drawable.ic_lock, R.color.brand_primary_dark, "受保护笔记", 16);
+        titleRow.addView(lock, new LinearLayout.LayoutParams(dp(26), dp(26)));
+      }
       TextView title = text(note.title(), displayMode == 1 ? 18 : 17, R.color.text_primary);
       title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
       title.setMaxLines(displayMode == 1 ? 2 : 1);
       title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-      if (note.envelope.locked) title.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_lock_lock, 0, 0, 0);
-      title.setCompoundDrawablePadding(dp(8));
-      cell.addView(title, matchWrap(0, 0, 0, 4));
+      LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+      if (note.envelope.locked) titleParams.setMarginStart(dp(6));
+      titleRow.addView(title, titleParams);
+      cell.addView(titleRow, matchWrap(0, 0, 0, 7));
 
       if (displayMode != 2) {
         TextView excerpt = text(note.excerpt(), 14, R.color.text_secondary);
+        excerpt.setLineSpacing(dp(2), 1.12f);
         excerpt.setMaxLines(displayMode == 1 ? 4 : 2);
         excerpt.setEllipsize(android.text.TextUtils.TruncateAt.END);
         cell.addView(excerpt, new LinearLayout.LayoutParams(
@@ -1484,15 +1797,20 @@ public final class MainActivity extends Activity {
           displayMode == 1 ? 0 : ViewGroup.LayoutParams.WRAP_CONTENT,
           displayMode == 1 ? 1 : 0
         ));
-        TextView metadata = text(
-          folderName(note.envelope.folderId) + "　" + note.envelope.displayDate(),
-          12,
-          R.color.text_secondary
-        );
-        metadata.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        cell.addView(metadata, matchWrap(0, 8, 0, 0));
       }
-      return cell;
+      LinearLayout metadata = horizontalLayout(Gravity.CENTER_VERTICAL);
+      ImageView folderIcon = iconView(R.drawable.ic_folder, R.color.text_secondary, "所在文件夹", 14);
+      metadata.addView(folderIcon, new LinearLayout.LayoutParams(dp(22), dp(22)));
+      TextView folder = text(folderName(note.envelope.folderId), 12, R.color.text_secondary);
+      folder.setMaxLines(1);
+      folder.setEllipsize(android.text.TextUtils.TruncateAt.END);
+      metadata.addView(folder, new LinearLayout.LayoutParams(0, dp(28), 1));
+      TextView date = text(note.envelope.displayDate(), 12, R.color.text_secondary);
+      date.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+      metadata.addView(date, new LinearLayout.LayoutParams(dp(64), dp(28)));
+      cell.addView(metadata, matchWrap(0, displayMode == 2 ? 2 : 10, 0, 0));
+      outer.addView(cell, frameMatch());
+      return outer;
     }
   }
 
