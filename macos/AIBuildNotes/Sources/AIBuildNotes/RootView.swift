@@ -1,5 +1,7 @@
+import AppKit
 import NotesCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RootView: View {
   @EnvironmentObject private var store: NotesStore
@@ -642,6 +644,7 @@ private struct NoteEditorView: View {
   @State private var unlockError: String?
   @State private var isUnlocking = false
   @State private var protectionSheet: ProtectionSheetMode?
+  @State private var showImageImporter = false
 
   var body: some View {
     Group {
@@ -665,6 +668,7 @@ private struct NoteEditorView: View {
       }
     }
     .background(Color(nsColor: .textBackgroundColor))
+    .task(id: attachmentLoadID) { await store.loadSelectedAttachments() }
     .onChange(of: store.selectedID) { oldID, _ in relock(noteID: oldID) }
     .onChange(of: scenePhase) { _, phase in
       if phase != .active { relock() }
@@ -674,6 +678,12 @@ private struct NoteEditorView: View {
       ProtectionPasswordSheet(mode: mode)
         .environmentObject(store)
     }
+    .fileImporter(
+      isPresented: $showImageImporter,
+      allowedContentTypes: [.image],
+      allowsMultipleSelection: false,
+      onCompletion: importImage
+    )
     .confirmationDialog("将笔记移到回收站？", isPresented: $confirmTrash) {
       Button("移到回收站", role: .destructive) {
         Task { await store.moveSelectedToTrash() }
@@ -713,6 +723,16 @@ private struct NoteEditorView: View {
             || (document.isProtected && !store.isUnlocked(document))
         )
         .help("保存笔记（⌘S）")
+        Button {
+          showImageImporter = true
+        } label: {
+          Label("图片", systemImage: "photo.badge.plus")
+        }
+        .disabled(
+          store.isAttachmentWorking
+            || (document.isProtected && !store.isUnlocked(document))
+        )
+        .help("添加加密图片（单张不超过 10 MiB）")
         protectionControl(document)
         folderMenu(document)
         Button(role: .destructive) {
@@ -918,6 +938,7 @@ private struct NoteEditorView: View {
         .padding(.horizontal, 28)
         .padding(.top, 26)
         .padding(.bottom, 12)
+      attachmentGallery(allowsDeletion: true)
       TextEditor(text: contentBinding)
         .font(.body)
         .scrollContentBackground(.hidden)
@@ -935,8 +956,86 @@ private struct NoteEditorView: View {
           .font(.body)
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
+        attachmentGallery(allowsDeletion: false)
       }
       .padding(28)
+    }
+  }
+
+  @ViewBuilder
+  private func attachmentGallery(allowsDeletion: Bool) -> some View {
+    if !store.selectedAttachments.isEmpty || store.isAttachmentWorking {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack {
+          Label("图片", systemImage: "photo.on.rectangle.angled")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+          Spacer()
+          Text("\(store.selectedAttachments.count)/20")
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.tertiary)
+        }
+        ScrollView(.horizontal) {
+          HStack(spacing: 12) {
+            ForEach(store.selectedAttachments) { attachment in
+              AttachmentCard(attachment: attachment, allowsDeletion: allowsDeletion)
+                .environmentObject(store)
+            }
+            if store.isAttachmentWorking {
+              VStack(spacing: 8) {
+                ProgressView()
+                Text("正在加密上传…")
+                  .font(.caption2)
+                  .foregroundStyle(.secondary)
+              }
+              .frame(width: 150, height: 100)
+              .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+            }
+          }
+          .padding(.vertical, 2)
+        }
+        .scrollIndicators(.hidden)
+      }
+      .padding(.horizontal, 28)
+      .padding(.bottom, 12)
+    }
+  }
+
+  private var attachmentLoadID: String {
+    guard let document = store.selectedDocument else { return "none" }
+    return "\(document.id):\(store.isUnlocked(document))"
+  }
+
+  private func importImage(_ result: Result<[URL], Error>) {
+    Task {
+      do {
+        guard let url = try result.get().first else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let values = try url.resourceValues(forKeys: [.contentTypeKey])
+        let contentType: String
+        if values.contentType?.conforms(to: .jpeg) == true {
+          contentType = "image/jpeg"
+        } else if values.contentType?.conforms(to: .png) == true {
+          contentType = "image/png"
+        } else if values.contentType?.identifier == "org.webmproject.webp" {
+          contentType = "image/webp"
+        } else {
+          throw AttachmentCryptoError.unsupportedImage
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard let representation = NSBitmapImageRep(data: data) else {
+          throw AttachmentCryptoError.unsupportedImage
+        }
+        await store.addImage(
+          data: data,
+          contentType: contentType,
+          pixelWidth: representation.pixelsWide,
+          pixelHeight: representation.pixelsHigh
+        )
+      } catch {
+        store.report(error)
+      }
     }
   }
 
@@ -952,6 +1051,60 @@ private struct NoteEditorView: View {
       get: { store.selectedDocument?.content.content ?? "" },
       set: { store.updateSelectedContent($0) }
     )
+  }
+}
+
+private struct AttachmentCard: View {
+  @EnvironmentObject private var store: NotesStore
+  let attachment: NoteAttachment
+  let allowsDeletion: Bool
+
+  var body: some View {
+    ZStack(alignment: .topTrailing) {
+      Group {
+        if let data = attachment.imageData, let image = NSImage(data: data) {
+          Image(nsImage: image)
+            .resizable()
+            .scaledToFill()
+        } else {
+          VStack(spacing: 8) {
+            ProgressView()
+            Text("正在安全解密")
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
+        }
+      }
+      .frame(width: 150, height: 100)
+      .clipped()
+      .background(.quaternary)
+      .clipShape(RoundedRectangle(cornerRadius: 12))
+      .overlay(alignment: .bottomLeading) {
+        Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.metadata.plaintextBytes), countStyle: .file))
+          .font(.caption2.monospacedDigit())
+          .padding(.horizontal, 7)
+          .padding(.vertical, 4)
+          .background(.black.opacity(0.58), in: Capsule())
+          .foregroundStyle(.white)
+          .padding(6)
+      }
+      if allowsDeletion {
+        Button(role: .destructive) {
+          Task { await store.deleteAttachment(id: attachment.id) }
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.title3)
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, .black.opacity(0.62))
+        }
+        .buttonStyle(.plain)
+        .padding(6)
+        .disabled(store.isAttachmentWorking)
+        .help("删除图片")
+      }
+    }
+    .task(id: attachment.id) { await store.loadAttachmentImage(id: attachment.id) }
+    .accessibilityLabel("加密图片")
   }
 }
 

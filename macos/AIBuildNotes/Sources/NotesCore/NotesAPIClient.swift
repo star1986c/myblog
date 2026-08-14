@@ -213,6 +213,76 @@ public actor NotesAPIClient {
     )
   }
 
+  public func listAttachments(noteID: String) async throws -> [EncryptedAttachmentEnvelope] {
+    let response: AttachmentsResponse = try await request(
+      path: "api/admin/encrypted-notes/\(noteID)/attachments"
+    )
+    return response.attachments
+  }
+
+  public func uploadAttachment(
+    _ payload: EncryptedAttachmentPayload,
+    encryptedBody: Data
+  ) async throws -> EncryptedAttachmentEnvelope {
+    guard let url = URL(
+      string: "api/admin/encrypted-notes/\(payload.noteId)/attachments/\(payload.id)",
+      relativeTo: baseURL
+    )?.absoluteURL else { throw NotesAPIError.invalidResponse }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.httpBody = encryptedBody
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    request.timeoutInterval = 60
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+    request.setValue(String(encryptedBody.count), forHTTPHeaderField: "Content-Length")
+    request.setValue(String(payload.version), forHTTPHeaderField: "X-Attachment-Version")
+    request.setValue(payload.ciphertext, forHTTPHeaderField: "X-Attachment-Ciphertext")
+    request.setValue(payload.nonce, forHTTPHeaderField: "X-Attachment-Nonce")
+    request.setValue(payload.isLocked ? "true" : "false", forHTTPHeaderField: "X-Attachment-Locked")
+    request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
+    if !csrfToken.isEmpty {
+      request.setValue(csrfToken, forHTTPHeaderField: "X-CSRF-Token")
+    }
+    let (data, response) = try await session.data(for: request)
+    let http = try validate(response: response, data: data, path: request.url?.path ?? "")
+    guard (200..<300).contains(http.statusCode) else { throw NotesAPIError.invalidResponse }
+    guard let value = try? JSONDecoder().decode(AttachmentResponse.self, from: data) else {
+      throw NotesAPIError.decoding
+    }
+    return value.attachment
+  }
+
+  public func downloadAttachment(noteID: String, id: String) async throws -> Data {
+    guard let url = URL(
+      string: "api/admin/encrypted-notes/\(noteID)/attachments/\(id)/content",
+      relativeTo: baseURL
+    )?.absoluteURL else { throw NotesAPIError.invalidResponse }
+    var request = URLRequest(url: url)
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    request.timeoutInterval = 60
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+    request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
+    let (data, response) = try await session.data(for: request)
+    _ = try validate(response: response, data: data, path: request.url?.path ?? "")
+    return data
+  }
+
+  public func deleteAttachment(noteID: String, id: String, revision: Int) async throws {
+    let _: OKResponse = try await request(
+      method: "DELETE",
+      path: "api/admin/encrypted-notes/\(noteID)/attachments/\(id)",
+      revision: revision
+    )
+  }
+
+  public func attachmentUsage() async throws -> AttachmentUsage {
+    let response: AttachmentUsageResponse = try await request(
+      path: "api/admin/encrypted-note-attachments/usage"
+    )
+    return response.usage
+  }
+
   private func request<Response: Decodable>(
     method: String = "GET",
     path: String,
@@ -228,6 +298,7 @@ public actor NotesAPIClient {
     request.cachePolicy = .reloadIgnoringLocalCacheData
     request.timeoutInterval = 25
     request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
     if body != nil {
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
@@ -239,7 +310,16 @@ public actor NotesAPIClient {
     }
 
     let (data, urlResponse) = try await session.data(for: request)
-    guard let response = urlResponse as? HTTPURLResponse else {
+    _ = try validate(response: urlResponse, data: data, path: path)
+    do {
+      return try JSONDecoder().decode(Response.self, from: data)
+    } catch {
+      throw NotesAPIError.decoding
+    }
+  }
+
+  private func validate(response: URLResponse, data: Data, path: String) throws -> HTTPURLResponse {
+    guard let response = response as? HTTPURLResponse else {
       throw NotesAPIError.invalidResponse
     }
     guard (200..<300).contains(response.statusCode) else {
@@ -249,11 +329,7 @@ public actor NotesAPIClient {
         ?? "请求失败，请稍后重试。"
       throw NotesAPIError.server(status: response.statusCode, message: message)
     }
-    do {
-      return try JSONDecoder().decode(Response.self, from: data)
-    } catch {
-      throw NotesAPIError.decoding
-    }
+    return response
   }
 }
 
@@ -286,5 +362,8 @@ private struct FolderResponse: Codable { let folder: EncryptedFolderEnvelope }
 private struct FolderAssignment: Codable { let folderId: String? }
 private struct FolderOrder: Codable { let folderIds: [String] }
 private struct MutationResponse: Codable { let note: NoteMutationState }
+private struct AttachmentsResponse: Codable { let attachments: [EncryptedAttachmentEnvelope] }
+private struct AttachmentResponse: Codable { let attachment: EncryptedAttachmentEnvelope }
+private struct AttachmentUsageResponse: Codable { let usage: AttachmentUsage }
 private struct OKResponse: Codable { let ok: Bool }
 private struct ErrorResponse: Codable { let error: String }

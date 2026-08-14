@@ -143,16 +143,32 @@ final class CryptoEngine {
 
   static Models.ProtectedBody encryptProtectedBody(SecretKey key, String id, String content)
     throws Exception {
+    return encryptProtectedBody(key, id, content, null);
+  }
+
+  static Models.ProtectedBody encryptProtectedBody(
+    SecretKey key,
+    String id,
+    String content,
+    String attachmentKey
+  ) throws Exception {
     String value = content == null ? "" : content;
     if (value.length() > Models.MAX_CONTENT_LENGTH) {
       value = value.substring(0, Models.MAX_CONTENT_LENGTH);
     }
+    byte[] plaintext = attachmentKey == null
+      ? value.getBytes(StandardCharsets.UTF_8)
+      : new JSONObject()
+        .put("content", value)
+        .put("attachmentKey", attachmentKey)
+        .toString()
+        .getBytes(StandardCharsets.UTF_8);
     byte[] nonce = randomBytes(NONCE_BYTES);
     byte[] encrypted = seal(
       key,
       nonce,
       protectedBodyAad(id),
-      value.getBytes(StandardCharsets.UTF_8)
+      plaintext
     );
     return new Models.ProtectedBody(1, encode(encrypted), encode(nonce));
   }
@@ -162,8 +178,16 @@ final class CryptoEngine {
     String id,
     Models.ProtectedBody protectedBody
   ) throws Exception {
+    return decryptProtectedPayload(key, id, protectedBody).content;
+  }
+
+  static Models.ProtectedPlaintext decryptProtectedPayload(
+    SecretKey key,
+    String id,
+    Models.ProtectedBody protectedBody
+  ) throws Exception {
     requireEnvelope(protectedBody.version, protectedBody.nonce, protectedBody.ciphertext);
-    return new String(
+    String value = new String(
       open(
         key,
         decode(protectedBody.nonce),
@@ -172,6 +196,118 @@ final class CryptoEngine {
       ),
       StandardCharsets.UTF_8
     );
+    if (value.startsWith("{")) {
+      try {
+        JSONObject json = new JSONObject(value);
+        if (json.has("content")) {
+          return new Models.ProtectedPlaintext(
+            json.optString("content"),
+            json.isNull("attachmentKey") ? null : json.optString("attachmentKey", null)
+          );
+        }
+      } catch (Exception ignored) {
+        // Legacy protected note bodies are plain UTF-8 strings.
+      }
+    }
+    return new Models.ProtectedPlaintext(value, null);
+  }
+
+  static String createMediaKey() {
+    return encode(randomBytes(KEY_BYTES));
+  }
+
+  static EncryptedAttachment encryptAttachment(
+    byte[] imageData,
+    String contentType,
+    int pixelWidth,
+    int pixelHeight,
+    String noteId,
+    String attachmentId,
+    boolean locked,
+    String mediaKeyValue
+  ) throws Exception {
+    if (!isSupportedImageType(contentType)) {
+      throw new IllegalArgumentException("仅支持 JPEG、PNG 和 WebP 图片。");
+    }
+    if (imageData == null || imageData.length == 0 || imageData.length > Models.MAX_IMAGE_BYTES) {
+      throw new IllegalArgumentException("单张图片不能超过 10 MiB。");
+    }
+    SecretKey mediaKey = importDataKey(mediaKeyValue);
+    byte[] attachmentKey = randomBytes(KEY_BYTES);
+    byte[] objectNonce = randomBytes(NONCE_BYTES);
+    byte[] encryptedBody = seal(
+      new SecretKeySpec(attachmentKey, "AES"),
+      objectNonce,
+      attachmentContentAad(noteId, attachmentId),
+      imageData
+    );
+    Models.AttachmentMetadata metadata = new Models.AttachmentMetadata(
+      contentType,
+      Math.max(1, pixelWidth),
+      Math.max(1, pixelHeight),
+      imageData.length,
+      encode(objectNonce),
+      encode(attachmentKey)
+    );
+    byte[] metadataNonce = randomBytes(NONCE_BYTES);
+    byte[] encryptedMetadata = seal(
+      mediaKey,
+      metadataNonce,
+      attachmentMetadataAad(noteId, attachmentId),
+      metadata.toJson().toString().getBytes(StandardCharsets.UTF_8)
+    );
+    JSONObject payload = new JSONObject()
+      .put("id", attachmentId)
+      .put("noteId", noteId)
+      .put("version", VERSION)
+      .put("ciphertext", encode(encryptedMetadata))
+      .put("nonce", encode(metadataNonce))
+      .put("isLocked", locked);
+    return new EncryptedAttachment(payload, encryptedBody, metadata);
+  }
+
+  static Models.AttachmentMetadata decryptAttachmentMetadata(
+    String mediaKeyValue,
+    Models.AttachmentEnvelope envelope
+  ) throws Exception {
+    requireEnvelope(envelope.version, envelope.nonce, envelope.ciphertext);
+    byte[] plaintext = open(
+      importDataKey(mediaKeyValue),
+      decode(envelope.nonce),
+      attachmentMetadataAad(envelope.noteId, envelope.id),
+      decode(envelope.ciphertext)
+    );
+    Models.AttachmentMetadata metadata = Models.AttachmentMetadata.fromJson(
+      new JSONObject(new String(plaintext, StandardCharsets.UTF_8))
+    );
+    if (!isSupportedImageType(metadata.contentType)
+      || metadata.plaintextBytes <= 0
+      || metadata.plaintextBytes > Models.MAX_IMAGE_BYTES
+      || decode(metadata.objectNonce).length != NONCE_BYTES
+      || decode(metadata.dataKey).length != KEY_BYTES) {
+      throw new IllegalArgumentException("加密图片格式无效。");
+    }
+    return metadata;
+  }
+
+  static byte[] decryptAttachmentBody(
+    byte[] encryptedBody,
+    Models.AttachmentEnvelope envelope,
+    Models.AttachmentMetadata metadata
+  ) throws Exception {
+    if (encryptedBody == null || encryptedBody.length != envelope.ciphertextBytes) {
+      throw new IllegalArgumentException("加密图片格式无效。");
+    }
+    byte[] plaintext = open(
+      new SecretKeySpec(decode(metadata.dataKey), "AES"),
+      decode(metadata.objectNonce),
+      attachmentContentAad(envelope.noteId, envelope.id),
+      encryptedBody
+    );
+    if (plaintext.length != metadata.plaintextBytes) {
+      throw new IllegalArgumentException("加密图片格式无效。");
+    }
+    return plaintext;
   }
 
   private static byte[] seal(SecretKey key, byte[] nonce, byte[] aad, byte[] plaintext)
@@ -223,6 +359,20 @@ final class CryptoEngine {
       .getBytes(StandardCharsets.UTF_8);
   }
 
+  private static byte[] attachmentMetadataAad(String noteId, String attachmentId) {
+    return ("my-notes:attachment-metadata:" + noteId + ":" + attachmentId + ":v1")
+      .getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static byte[] attachmentContentAad(String noteId, String attachmentId) {
+    return ("my-notes:attachment-content:" + noteId + ":" + attachmentId + ":v1")
+      .getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static boolean isSupportedImageType(String value) {
+    return "image/jpeg".equals(value) || "image/png".equals(value) || "image/webp".equals(value);
+  }
+
   private static byte[] randomBytes(int count) {
     byte[] result = new byte[count];
     RANDOM.nextBytes(result);
@@ -247,6 +397,18 @@ final class CryptoEngine {
     ProtectionSetup(JSONObject payload, SecretKey key) {
       this.payload = payload;
       this.key = key;
+    }
+  }
+
+  static final class EncryptedAttachment {
+    final JSONObject payload;
+    final byte[] body;
+    final Models.AttachmentMetadata metadata;
+
+    EncryptedAttachment(JSONObject payload, byte[] body, Models.AttachmentMetadata metadata) {
+      this.payload = payload;
+      this.body = body;
+      this.metadata = metadata;
     }
   }
 }

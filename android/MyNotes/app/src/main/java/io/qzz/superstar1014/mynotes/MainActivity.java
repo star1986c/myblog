@@ -2,10 +2,12 @@ package io.qzz.superstar1014.mynotes;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.pm.ApplicationInfo;
 import android.content.res.ColorStateList;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
@@ -16,6 +18,7 @@ import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.net.Uri;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -47,6 +50,8 @@ import android.window.OnBackInvokedDispatcher;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -62,6 +67,7 @@ import javax.crypto.SecretKey;
 
 public final class MainActivity extends Activity {
   private static final long AUTO_SAVE_DELAY_MS = 10_000L;
+  private static final int REQUEST_IMAGE = 1201;
   private static final String LOCATION_ALL = "all";
   private static final String LOCATION_UNFILED = "unfiled";
   private static final String LOCATION_TRASH = "trash";
@@ -73,6 +79,7 @@ public final class MainActivity extends Activity {
   private final List<Models.NoteDocument> trash = new ArrayList<>();
   private final List<Models.FolderDocument> folders = new ArrayList<>();
   private final List<Models.NoteDocument> visibleNotes = new ArrayList<>();
+  private final List<Models.AttachmentDocument> attachments = new ArrayList<>();
 
   private NotesApiClient api;
   private Models.User user;
@@ -88,12 +95,16 @@ public final class MainActivity extends Activity {
   private boolean dirty;
   private boolean saving;
   private boolean demoMode;
+  private boolean attachmentsLoading;
+  private String attachmentsNoteId;
 
   private EditText titleField;
   private EditText bodyField;
   private TextView saveStatus;
   private FrameLayout homeListContainer;
   private TextView homeCount;
+  private HorizontalScrollView attachmentScroller;
+  private LinearLayout attachmentGallery;
   private Runnable pendingAutoSave;
   private OnBackInvokedCallback backCallback;
 
@@ -111,6 +122,14 @@ public final class MainActivity extends Activity {
     api = new NotesApiClient(this, demoMode ? "http://127.0.0.1:9/" : NotesApiClient.PRODUCTION_BASE_URL);
     if (demoMode) loadDemoData();
     else restoreSession();
+  }
+
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode != REQUEST_IMAGE || resultCode != RESULT_OK || data == null) return;
+    Uri uri = data.getData();
+    if (uri != null) importImage(uri);
   }
 
   private void loadDemoData() {
@@ -401,6 +420,7 @@ public final class MainActivity extends Activity {
   private void renderHome() {
     editorVisible = false;
     selectedNote = null;
+    clearAttachments();
     protectionKey = null;
     handler.removeCallbacksAndMessages(null);
     dirty = false;
@@ -755,6 +775,11 @@ public final class MainActivity extends Activity {
     topBar.addView(context, contextParams);
 
     if (!LOCATION_TRASH.equals(location)) {
+      if (!selectedNote.envelope.locked || selectedNote.unlocked) {
+        ImageButton image = iconButton(R.drawable.ic_image_add, "添加图片", false);
+        image.setOnClickListener(view -> chooseImage());
+        topBar.addView(image, new LinearLayout.LayoutParams(dp(48), dp(48)));
+      }
       ImageButton save = iconButton(R.drawable.ic_save, "保存笔记", true);
       save.setOnClickListener(view -> saveSelected(null));
       topBar.addView(save, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -797,6 +822,18 @@ public final class MainActivity extends Activity {
     View divider = new View(this);
     divider.setBackgroundColor(getColor(R.color.divider));
     paper.addView(divider, matchHeight(dp(1), 20, 0, 20, 0));
+
+    attachmentGallery = horizontalLayout(Gravity.CENTER_VERTICAL);
+    attachmentGallery.setPadding(dp(8), dp(8), dp(8), dp(8));
+    attachmentScroller = new HorizontalScrollView(this);
+    attachmentScroller.setHorizontalScrollBarEnabled(false);
+    attachmentScroller.setFillViewport(false);
+    attachmentScroller.addView(attachmentGallery, new HorizontalScrollView.LayoutParams(
+      ViewGroup.LayoutParams.WRAP_CONTENT,
+      ViewGroup.LayoutParams.MATCH_PARENT
+    ));
+    paper.addView(attachmentScroller, matchHeight(dp(132), 12, 4, 12, 2));
+    renderAttachmentGallery();
 
     if (selectedNote.envelope.locked && !selectedNote.unlocked) {
       LinearLayout lockPanel = verticalLayout(0);
@@ -857,6 +894,7 @@ public final class MainActivity extends Activity {
 
     setContentView(applySystemInsets(root));
     bindingEditor = false;
+    ensureAttachmentsLoaded();
   }
 
   private TextWatcher editorWatcher(boolean title) {
@@ -886,8 +924,12 @@ public final class MainActivity extends Activity {
       if (afterSave != null) afterSave.run();
       return;
     }
-    if (!dirty || saving) {
-      if (afterSave != null && !saving) afterSave.run();
+    if (saving) {
+      if (afterSave != null) handler.postDelayed(() -> saveSelected(afterSave), 250);
+      return;
+    }
+    if (!dirty) {
+      if (afterSave != null) afterSave.run();
       return;
     }
     if (demoMode) {
@@ -910,6 +952,7 @@ public final class MainActivity extends Activity {
     String titleSnapshot = note.content.title;
     String bodySnapshot = note.content.content;
     Models.ProtectedBody protectedSnapshot = note.content.protectedContent;
+    String attachmentKeySnapshot = note.content.attachmentKey;
     SecretKey protectionSnapshot = protectionKey;
     int revision = note.envelope.revision;
     saving = true;
@@ -921,14 +964,16 @@ public final class MainActivity extends Activity {
       Models.NoteContent snapshot = new Models.NoteContent(
         titleSnapshot,
         bodySnapshot,
-        protectedSnapshot
+        protectedSnapshot,
+        attachmentKeySnapshot
       );
       if (note.envelope.locked && note.unlocked) {
         if (protectionSnapshot == null) throw new IllegalStateException("保护密码需要重新验证。");
         snapshot.protectedContent = CryptoEngine.encryptProtectedBody(
           protectionSnapshot,
           note.envelope.id,
-          bodySnapshot
+          bodySnapshot,
+          attachmentKeySnapshot
         );
       }
       Models.NoteEnvelope updated = api.updateNote(
@@ -969,8 +1014,10 @@ public final class MainActivity extends Activity {
     Runnable finish = () -> {
       if (selectedNote != null && selectedNote.envelope.locked && selectedNote.unlocked) {
         selectedNote.content.content = "";
+        selectedNote.content.attachmentKey = null;
         selectedNote.unlocked = false;
       }
+      clearAttachments();
       protectionKey = null;
       renderHome();
     };
@@ -1112,7 +1159,8 @@ public final class MainActivity extends Activity {
       selectedNote.content.protectedContent = CryptoEngine.encryptProtectedBody(
         protectionKey,
         selectedNote.envelope.id,
-        selectedNote.content.content
+        selectedNote.content.content,
+        selectedNote.content.attachmentKey
       );
       selectedNote.envelope.locked = true;
       selectedNote.unlocked = true;
@@ -1132,11 +1180,13 @@ public final class MainActivity extends Activity {
     showProtectionDialog(false, credentials -> unlockProtection(credentials.password, () -> {
       if (selectedNote == null || selectedNote.content.protectedContent == null) return;
       try {
-        selectedNote.content.content = CryptoEngine.decryptProtectedBody(
+        Models.ProtectedPlaintext plaintext = CryptoEngine.decryptProtectedPayload(
           protectionKey,
           selectedNote.envelope.id,
           selectedNote.content.protectedContent
         );
+        selectedNote.content.content = plaintext.content;
+        selectedNote.content.attachmentKey = plaintext.attachmentKey;
         selectedNote.unlocked = true;
         if (afterUnlock != null) afterUnlock.run();
         else renderEditor();
@@ -1230,6 +1280,300 @@ public final class MainActivity extends Activity {
         completion.accept(new ProtectionCredentials(value));
       }));
     dialog.show();
+  }
+
+  private void chooseImage() {
+    if (selectedNote == null || LOCATION_TRASH.equals(location)) return;
+    if (selectedNote.envelope.locked && !selectedNote.unlocked) {
+      toast("请先解锁受保护笔记。");
+      return;
+    }
+    if (attachments.size() >= 20) {
+      toast("每篇笔记最多添加 20 张图片。");
+      return;
+    }
+    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+    intent.addCategory(Intent.CATEGORY_OPENABLE);
+    intent.setType("image/*");
+    intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
+      "image/jpeg", "image/png", "image/webp"
+    });
+    startActivityForResult(intent, REQUEST_IMAGE);
+  }
+
+  private void importImage(Uri uri) {
+    Models.NoteDocument note = selectedNote;
+    if (note == null) return;
+    setSavingMessage("正在读取图片…");
+    runAsync(() -> {
+      String type = getContentResolver().getType(uri);
+      if ("image/jpg".equals(type)) type = "image/jpeg";
+      if (!("image/jpeg".equals(type) || "image/png".equals(type) || "image/webp".equals(type))) {
+        throw new IllegalArgumentException("仅支持 JPEG、PNG 和 WebP 图片。");
+      }
+      byte[] bytes;
+      try (InputStream input = getContentResolver().openInputStream(uri)) {
+        bytes = readBoundedImage(input);
+      }
+      BitmapFactory.Options bounds = new BitmapFactory.Options();
+      bounds.inJustDecodeBounds = true;
+      BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+      if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+        throw new IllegalArgumentException("无法识别这张图片。");
+      }
+      return new SelectedImage(bytes, type, bounds.outWidth, bounds.outHeight);
+    }, image -> {
+      if (selectedNote != note) return;
+      if (note.content.attachmentKey == null) {
+        note.content.attachmentKey = CryptoEngine.createMediaKey();
+        markDirty();
+      }
+      saveSelected(() -> uploadImage(note, image));
+    });
+  }
+
+  private void uploadImage(Models.NoteDocument note, SelectedImage image) {
+    if (selectedNote != note || note.content.attachmentKey == null) return;
+    String attachmentId = UUID.randomUUID().toString();
+    setSavingMessage("正在加密上传图片…");
+    runAsync(() -> {
+      CryptoEngine.EncryptedAttachment encrypted = CryptoEngine.encryptAttachment(
+        image.bytes,
+        image.contentType,
+        image.width,
+        image.height,
+        note.envelope.id,
+        attachmentId,
+        note.envelope.locked,
+        note.content.attachmentKey
+      );
+      Models.AttachmentEnvelope envelope;
+      if (demoMode) {
+        envelope = new Models.AttachmentEnvelope(
+          attachmentId,
+          note.envelope.id,
+          1,
+          1,
+          encrypted.payload.getString("ciphertext"),
+          encrypted.payload.getString("nonce"),
+          note.envelope.locked,
+          encrypted.body.length,
+          java.time.Instant.now().toString(),
+          java.time.Instant.now().toString()
+        );
+      } else {
+        envelope = api.uploadAttachment(encrypted.payload, encrypted.body);
+      }
+      return new Models.AttachmentDocument(envelope, encrypted.metadata, image.bytes);
+    }, document -> {
+      if (selectedNote != note) return;
+      for (Models.AttachmentDocument item : attachments) item.imageData = null;
+      attachments.add(document);
+      attachmentsNoteId = note.envelope.id;
+      renderAttachmentGallery();
+      if (saveStatus != null) {
+        saveStatus.setText("图片已加密保存");
+        saveStatus.setTextColor(getColor(R.color.brand_primary_dark));
+      }
+    });
+  }
+
+  private void ensureAttachmentsLoaded() {
+    Models.NoteDocument note = selectedNote;
+    if (note == null || (note.envelope.locked && !note.unlocked)) return;
+    if (note.envelope.id.equals(attachmentsNoteId)) return;
+    attachments.clear();
+    attachmentsNoteId = note.envelope.id;
+    if (note.content.attachmentKey == null || demoMode) {
+      renderAttachmentGallery();
+      return;
+    }
+    attachmentsLoading = true;
+    renderAttachmentGallery();
+    String mediaKey = note.content.attachmentKey;
+    runAsync(() -> {
+      List<Models.AttachmentDocument> result = new ArrayList<>();
+      for (Models.AttachmentEnvelope envelope : api.listAttachments(note.envelope.id)) {
+        result.add(new Models.AttachmentDocument(
+          envelope,
+          CryptoEngine.decryptAttachmentMetadata(mediaKey, envelope),
+          null
+        ));
+      }
+      return result;
+    }, loaded -> {
+      if (selectedNote != note || !note.envelope.id.equals(attachmentsNoteId)) return;
+      attachmentsLoading = false;
+      attachments.clear();
+      attachments.addAll(loaded);
+      renderAttachmentGallery();
+    }, error -> {
+      attachmentsLoading = false;
+      renderAttachmentGallery();
+      showError(error);
+    });
+  }
+
+  private void renderAttachmentGallery() {
+    if (attachmentGallery == null || attachmentScroller == null) return;
+    attachmentGallery.removeAllViews();
+    if (attachmentsLoading) {
+      TextView loading = text("正在读取加密图片…", 14, R.color.text_secondary);
+      loading.setGravity(Gravity.CENTER);
+      attachmentGallery.addView(loading, new LinearLayout.LayoutParams(dp(220), dp(112)));
+      attachmentScroller.setVisibility(View.VISIBLE);
+      return;
+    }
+    if (attachments.isEmpty()) {
+      attachmentScroller.setVisibility(View.GONE);
+      return;
+    }
+    attachmentScroller.setVisibility(View.VISIBLE);
+    for (Models.AttachmentDocument document : attachments) {
+      LinearLayout card = verticalLayout(0);
+      card.setPadding(dp(6), dp(6), dp(6), dp(5));
+      card.setBackground(roundedStrokeBackground(R.color.surface_variant, R.color.divider, 16, 1));
+      card.setContentDescription(document.imageData == null ? "加密图片，点击查看" : "已解密图片");
+
+      FrameLayout preview = new FrameLayout(this);
+      preview.setBackground(rippleBackground(R.color.surface, 12));
+      if (document.imageData == null) {
+        LinearLayout placeholder = verticalLayout(0);
+        placeholder.setGravity(Gravity.CENTER);
+        ImageView icon = iconView(R.drawable.ic_image_add, R.color.brand_primary_dark, null, 24);
+        placeholder.addView(icon, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        TextView label = text("点击解密", 12, R.color.text_secondary);
+        label.setGravity(Gravity.CENTER);
+        placeholder.addView(label, matchWrap(0, 2, 0, 0));
+        preview.addView(placeholder, frameMatch());
+      } else {
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setImageBitmap(decodeCardBitmap(document.imageData));
+        preview.addView(image, frameMatch());
+      }
+      preview.setOnClickListener(view -> {
+        if (document.imageData == null) loadAttachmentImage(document);
+        else showAttachmentPreview(document);
+      });
+      card.addView(preview, new LinearLayout.LayoutParams(dp(126), dp(82)));
+
+      LinearLayout footer = horizontalLayout(Gravity.CENTER_VERTICAL);
+      TextView size = text(formatBytes(document.metadata.plaintextBytes), 11, R.color.text_secondary);
+      footer.addView(size, new LinearLayout.LayoutParams(0, dp(30), 1));
+      ImageButton delete = iconButton(R.drawable.ic_trash, "删除图片", false);
+      delete.setPadding(dp(7), dp(7), dp(7), dp(7));
+      delete.setOnClickListener(view -> confirmDeleteAttachment(document));
+      footer.addView(delete, new LinearLayout.LayoutParams(dp(34), dp(34)));
+      card.addView(footer, new LinearLayout.LayoutParams(dp(126), dp(34)));
+
+      LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(dp(138), dp(122));
+      cardParams.setMargins(dp(4), 0, dp(4), 0);
+      attachmentGallery.addView(card, cardParams);
+    }
+  }
+
+  private void loadAttachmentImage(Models.AttachmentDocument document) {
+    Models.NoteDocument note = selectedNote;
+    if (note == null) return;
+    setSavingMessage("正在下载并解密图片…");
+    runAsync(() -> CryptoEngine.decryptAttachmentBody(
+      api.downloadAttachment(note.envelope.id, document.envelope.id),
+      document.envelope,
+      document.metadata
+    ), bytes -> {
+      if (selectedNote != note || !attachments.contains(document)) return;
+      for (Models.AttachmentDocument item : attachments) item.imageData = null;
+      document.imageData = bytes;
+      renderAttachmentGallery();
+      if (saveStatus != null) saveStatus.setText(saveStatusText());
+    });
+  }
+
+  private void showAttachmentPreview(Models.AttachmentDocument document) {
+    if (document.imageData == null) return;
+    ImageView image = new ImageView(this);
+    image.setAdjustViewBounds(true);
+    image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    image.setImageBitmap(BitmapFactory.decodeByteArray(
+      document.imageData,
+      0,
+      document.imageData.length
+    ));
+    int padding = dp(12);
+    FrameLayout wrapper = new FrameLayout(this);
+    wrapper.setPadding(padding, padding, padding, padding);
+    wrapper.addView(image, frameMatch());
+    new AlertDialog.Builder(this)
+      .setTitle("加密图片")
+      .setView(wrapper)
+      .setPositiveButton("关闭", null)
+      .show();
+  }
+
+  private void confirmDeleteAttachment(Models.AttachmentDocument document) {
+    new AlertDialog.Builder(this)
+      .setTitle("删除这张图片？")
+      .setMessage("图片会从云端永久删除，无法恢复。")
+      .setNegativeButton("取消", null)
+      .setPositiveButton("删除", (dialog, which) -> {
+        Models.NoteDocument note = selectedNote;
+        if (note == null) return;
+        if (demoMode) {
+          attachments.remove(document);
+          renderAttachmentGallery();
+          return;
+        }
+        setSavingMessage("正在删除图片…");
+        runAsync(() -> {
+          api.deleteAttachment(note.envelope.id, document.envelope.id, document.envelope.revision);
+          return true;
+        }, ignored -> {
+          attachments.remove(document);
+          renderAttachmentGallery();
+          if (saveStatus != null) saveStatus.setText("图片已删除");
+        });
+      })
+      .show();
+  }
+
+  private byte[] readBoundedImage(InputStream input) throws Exception {
+    if (input == null) throw new IllegalArgumentException("无法读取这张图片。");
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    byte[] buffer = new byte[16 * 1024];
+    int count;
+    while ((count = input.read(buffer)) != -1) {
+      if (output.size() + count > Models.MAX_IMAGE_BYTES) {
+        throw new IllegalArgumentException("单张图片不能超过 10 MiB。");
+      }
+      output.write(buffer, 0, count);
+    }
+    if (output.size() == 0) throw new IllegalArgumentException("图片内容为空。");
+    return output.toByteArray();
+  }
+
+  private android.graphics.Bitmap decodeCardBitmap(byte[] bytes) {
+    BitmapFactory.Options bounds = new BitmapFactory.Options();
+    bounds.inJustDecodeBounds = true;
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+    int sample = 1;
+    while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2;
+    BitmapFactory.Options options = new BitmapFactory.Options();
+    options.inSampleSize = sample;
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+  }
+
+  private String formatBytes(int bytes) {
+    if (bytes < 1024 * 1024) return String.format(Locale.getDefault(), "%.1f KB", bytes / 1024f);
+    return String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f));
+  }
+
+  private void clearAttachments() {
+    attachments.clear();
+    attachmentsNoteId = null;
+    attachmentsLoading = false;
+    attachmentScroller = null;
+    attachmentGallery = null;
   }
 
   private void createFolder() {
@@ -1462,6 +1806,7 @@ public final class MainActivity extends Activity {
     protectionKeyring = null;
     protectionKey = null;
     selectedNote = null;
+    clearAttachments();
     notes.clear();
     trash.clear();
     folders.clear();
@@ -1945,5 +2290,19 @@ public final class MainActivity extends Activity {
   private static final class ProtectionCredentials {
     final String password;
     ProtectionCredentials(String password) { this.password = password; }
+  }
+
+  private static final class SelectedImage {
+    final byte[] bytes;
+    final String contentType;
+    final int width;
+    final int height;
+
+    SelectedImage(byte[] bytes, String contentType, int width, int height) {
+      this.bytes = bytes;
+      this.contentType = contentType;
+      this.width = width;
+      this.height = height;
+    }
   }
 }

@@ -18,7 +18,9 @@ class FakeD1 {
     workspaceKeyring = null,
     encryptedNotes = [],
     encryptedFolders = [],
+    encryptedAttachments = [],
     noteProtectionKeyring = null,
+    deviceTokens = [],
   } = {}) {
     this.posts = posts;
     this.pages = pages;
@@ -28,7 +30,9 @@ class FakeD1 {
     this.workspaceKeyring = workspaceKeyring;
     this.encryptedNotes = encryptedNotes;
     this.encryptedFolders = encryptedFolders;
+    this.encryptedAttachments = encryptedAttachments;
     this.noteProtectionKeyring = noteProtectionKeyring;
+    this.deviceTokens = deviceTokens;
     this.settings = {
       session_secret: "test-session-secret",
       ...settings,
@@ -63,6 +67,19 @@ class FakeStatement {
   }
 
   async all() {
+    if (this.sql.includes("FROM encrypted_note_attachments")) {
+      const noteId = this.params.find((value) => (
+        typeof value === "string" && value.startsWith("note_")
+      ));
+      const attachments = noteId
+        ? this.db.encryptedAttachments.filter((item) => item.noteId === noteId)
+        : this.db.encryptedAttachments;
+      if (this.sql.includes("object_key AS objectKey")) {
+        return { results: attachments.map((item) => ({ objectKey: item.objectKey })) };
+      }
+      return { results: attachments };
+    }
+
     if (this.sql.includes("FROM encrypted_note_folders")) {
       const results = this.db.encryptedFolders
         .map((folder, originalIndex) => ({ folder, originalIndex }))
@@ -115,6 +132,33 @@ class FakeStatement {
   }
 
   async first() {
+    if (this.sql.includes("FROM admin_device_tokens")) {
+      const [id] = this.params;
+      return this.db.deviceTokens.find((item) => item.id === id) || null;
+    }
+
+    if (this.sql.includes("FROM encrypted_note_attachments")) {
+      if (this.sql.includes("COUNT(*) AS attachmentCount")) {
+        const noteId = this.params.find((value) => (
+          typeof value === "string" && value.startsWith("note_")
+        ));
+        const attachments = noteId
+          ? this.db.encryptedAttachments.filter((item) => item.noteId === noteId)
+          : this.db.encryptedAttachments;
+        return {
+          attachmentCount: attachments.length,
+          ciphertextBytes: attachments.reduce(
+            (total, attachment) => total + Number(attachment.ciphertextBytes || 0),
+            0,
+          ),
+        };
+      }
+      const [id, noteId] = this.params;
+      return this.db.encryptedAttachments.find(
+        (item) => item.id === id && item.noteId === noteId,
+      ) || null;
+    }
+
     if (this.sql.includes("FROM note_protection_keyrings")) {
       return this.db.noteProtectionKeyring;
     }
@@ -174,6 +218,101 @@ class FakeStatement {
   }
 
   async run() {
+    if (this.sql.includes("INSERT INTO admin_device_tokens")) {
+      const [id, accountId, tokenHash, expiresAt, lastUsedAt, createdAt] = this.params;
+      this.db.deviceTokens.push({ id, accountId, tokenHash, expiresAt, lastUsedAt, createdAt });
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (this.sql.includes("UPDATE admin_device_tokens")) {
+      const [tokenHash, expiresAt, lastUsedAt, id, previousHash] = this.params;
+      let changes = 0;
+      this.db.deviceTokens = this.db.deviceTokens.map((item) => {
+        if (item.id !== id || item.tokenHash !== previousHash) return item;
+        changes += 1;
+        return { ...item, tokenHash, expiresAt, lastUsedAt };
+      });
+      return { success: true, meta: { changes } };
+    }
+
+    if (this.sql.includes("DELETE FROM admin_device_tokens")) {
+      const previousLength = this.db.deviceTokens.length;
+      if (this.sql.includes("expires_at <=")) {
+        const [now] = this.params;
+        this.db.deviceTokens = this.db.deviceTokens.filter((item) => item.expiresAt > now);
+      } else if (this.sql.includes("id = ?") && this.sql.includes("token_hash = ?")) {
+        const [id, tokenHash] = this.params;
+        this.db.deviceTokens = this.db.deviceTokens.filter(
+          (item) => !(item.id === id && item.tokenHash === tokenHash),
+        );
+      } else if (this.sql.includes("account_id = ?") && !this.sql.includes("NOT IN")) {
+        const [accountId] = this.params;
+        this.db.deviceTokens = this.db.deviceTokens.filter((item) => item.accountId !== accountId);
+      }
+      return {
+        success: true,
+        meta: { changes: previousLength - this.db.deviceTokens.length },
+      };
+    }
+
+    if (this.sql.includes("INSERT INTO encrypted_note_attachments")) {
+      const [
+        id, noteId, , version, ciphertext, nonce, isLocked, ciphertextBytes,
+        objectKey, createdAt, updatedAt,
+      ] = this.params;
+      if (this.db.encryptedAttachments.some((item) => item.id === id)) {
+        throw new Error("UNIQUE constraint failed");
+      }
+      this.db.encryptedAttachments.push({
+        id,
+        noteId,
+        version,
+        revision: 1,
+        ciphertext,
+        nonce,
+        isLocked: Boolean(isLocked),
+        ciphertextBytes,
+        objectKey,
+        createdAt,
+        updatedAt,
+      });
+      return { success: true, meta: { changes: 1 } };
+    }
+
+    if (this.sql.includes("UPDATE encrypted_note_attachments")) {
+      const [version, ciphertext, nonce, isLocked, updatedAt, id, noteId, , revision] =
+        this.params;
+      const exists = this.db.encryptedAttachments.some(
+        (item) => item.id === id && item.noteId === noteId && item.revision === revision,
+      );
+      this.db.encryptedAttachments = this.db.encryptedAttachments.map((item) => (
+        item.id === id && item.noteId === noteId && exists
+          ? {
+              ...item,
+              version,
+              ciphertext,
+              nonce,
+              isLocked: Boolean(isLocked),
+              updatedAt,
+              revision: revision + 1,
+            }
+          : item
+      ));
+      return { success: true, meta: { changes: exists ? 1 : 0 } };
+    }
+
+    if (this.sql.includes("DELETE FROM encrypted_note_attachments")) {
+      const [id, noteId, , revision] = this.params;
+      const previousLength = this.db.encryptedAttachments.length;
+      this.db.encryptedAttachments = this.db.encryptedAttachments.filter(
+        (item) => !(item.id === id && item.noteId === noteId && item.revision === revision),
+      );
+      return {
+        success: true,
+        meta: { changes: previousLength === this.db.encryptedAttachments.length ? 0 : 1 },
+      };
+    }
+
     if (this.sql.includes("INSERT INTO note_protection_keyrings")) {
       if (this.db.noteProtectionKeyring) throw new Error("UNIQUE constraint failed");
       const [id, version, kdf, iterations, salt, wrappedKey, nonce, createdAt, updatedAt] =
@@ -419,6 +558,7 @@ function makeEnv(overrides = {}) {
     SESSION_SECRET: "test-session-secret",
     NOTES_KEY_ENCRYPTION_SECRET: "test-workspace-key-secret-that-is-at-least-32-characters",
     BLOG_DB: new FakeD1(),
+    NOTE_ATTACHMENTS: new FakeR2(),
     ASSETS: {
       async fetch() {
         return new Response("missing", { status: 404 });
@@ -441,6 +581,33 @@ function makeEnv(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+class FakeR2 {
+  constructor() {
+    this.objects = new Map();
+  }
+
+  async put(key, body, options = {}) {
+    if (options.onlyIf?.etagDoesNotMatch === "*" && this.objects.has(key)) return null;
+    const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+    this.objects.set(key, { bytes, options });
+    return { key, size: bytes.byteLength };
+  }
+
+  async get(key) {
+    const stored = this.objects.get(key);
+    if (!stored) return null;
+    return {
+      key,
+      size: stored.bytes.byteLength,
+      body: new Response(stored.bytes).body,
+    };
+  }
+
+  async delete(keys) {
+    for (const key of Array.isArray(keys) ? keys : [keys]) this.objects.delete(key);
+  }
 }
 
 function makeVisitorRequest(ip, cf = {}) {
@@ -483,6 +650,17 @@ function makeEncryptedFolder(id = "folder_12345678", seed = 40) {
     version: 1,
     ciphertext: bytesToBase64Url(new Uint8Array(64).fill(seed)),
     nonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 1)),
+  };
+}
+
+function makeEncryptedAttachment(id = "attach_12345678", noteId = "note_12345678", seed = 70) {
+  return {
+    id,
+    noteId,
+    version: 1,
+    ciphertext: bytesToBase64Url(new Uint8Array(96).fill(seed)),
+    nonce: bytesToBase64Url(new Uint8Array(12).fill(seed + 1)),
+    isLocked: false,
   };
 }
 
@@ -1008,6 +1186,71 @@ test("admin login uses the D1 account with a Worker session secret", async () =>
   assert.equal(session.username, "admin");
 });
 
+test("Android device token rotates sessions and can be revoked on logout", async () => {
+  const passwordHash = await createPasswordHash("default-password", {
+    iterations: 1000,
+    salt: new Uint8Array(16).fill(9),
+  });
+  const db = new FakeD1({
+    adminAccount: {
+      id: "default",
+      username: "admin",
+      passwordHash,
+      mustChangePassword: 0,
+    },
+  });
+  const env = makeEnv({ BLOG_DB: db });
+  const login = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: "admin",
+        password: "default-password",
+        rememberDevice: true,
+      }),
+    }),
+    env,
+  );
+  assert.equal(login.status, 200);
+  const firstToken = (await login.json()).deviceToken;
+  assert.match(firstToken, /^[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+  assert.equal(db.deviceTokens.length, 1);
+  assert.doesNotMatch(JSON.stringify(db.deviceTokens), new RegExp(firstToken.split(".")[1]));
+
+  const refresh = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/token", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${firstToken}` },
+    }),
+    env,
+  );
+  assert.equal(refresh.status, 200);
+  const refreshed = await refresh.json();
+  assert.equal(refreshed.user.username, "admin");
+  assert.notEqual(refreshed.deviceToken, firstToken);
+  assert.match(refresh.headers.get("Set-Cookie"), /^site_admin_session=/);
+
+  const replay = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/token", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${firstToken}` },
+    }),
+    env,
+  );
+  assert.equal(replay.status, 401);
+
+  const logout = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/auth/logout", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${refreshed.deviceToken}` },
+    }),
+    env,
+  );
+  assert.equal(logout.status, 200);
+  assert.equal(db.deviceTokens.length, 0);
+});
+
 test("admin login fails closed when the Worker session secret is missing", async () => {
   const passwordHash = await createPasswordHash("default-password", {
     iterations: 1000,
@@ -1110,6 +1353,14 @@ test("admin can change the default account password after login", async () => {
       passwordHash,
       mustChangePassword: 1,
     },
+    deviceTokens: [{
+      id: "remembered-device",
+      accountId: "default",
+      tokenHash: "a".repeat(64),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      lastUsedAt: "2026-08-14T00:00:00.000Z",
+      createdAt: "2026-08-14T00:00:00.000Z",
+    }],
   });
   const env = makeEnv({ BLOG_DB: db });
   const cookie = await signSession({
@@ -1140,6 +1391,7 @@ test("admin can change the default account password after login", async () => {
   assert.equal(db.updatedAdminAccount.username, "star");
   assert.equal(db.updatedAdminAccount.mustChangePassword, 0);
   assert.equal(await verifyPasswordHash("new-strong-password", db.updatedAdminAccount.passwordHash), true);
+  assert.equal(db.deviceTokens.length, 0);
 });
 
 test("workspace key API requires an authenticated administrator session", async () => {
@@ -1389,6 +1641,157 @@ test("administrator can create, update, trash, restore, and purge encrypted note
     env,
   );
   assert.equal(purgeResponse.status, 200);
+  assert.equal(db.encryptedNotes.length, 0);
+});
+
+test("administrator streams encrypted image attachments through private R2 with safety limits", async () => {
+  const note = { ...makeEncryptedNote(), revision: 1, deletedAt: null };
+  const db = new FakeD1({
+    workspaceKeyring: { id: "notes" },
+    encryptedNotes: [note],
+  });
+  const bucket = new FakeR2();
+  const env = makeEnv({ BLOG_DB: db, NOTE_ATTACHMENTS: bucket });
+  const csrfToken = "attachment-csrf-token";
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken,
+    now: 1_800_000_000_000,
+  });
+  const attachment = makeEncryptedAttachment();
+  const encryptedImage = new Uint8Array(128).fill(91);
+  const attachmentPath = `/api/admin/encrypted-notes/${note.id}/attachments/${attachment.id}`;
+
+  const upload = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io${attachmentPath}`, {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(encryptedImage.byteLength),
+        "X-Attachment-Version": "1",
+        "X-Attachment-Ciphertext": attachment.ciphertext,
+        "X-Attachment-Nonce": attachment.nonce,
+        "X-Attachment-Locked": "false",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: encryptedImage,
+    }),
+    env,
+  );
+  assert.equal(upload.status, 201);
+  const uploaded = (await upload.json()).attachment;
+  assert.equal(uploaded.id, attachment.id);
+  assert.equal(uploaded.ciphertextBytes, encryptedImage.byteLength);
+  assert.equal(db.encryptedAttachments.length, 1);
+  assert.equal(bucket.objects.size, 1);
+  assert.doesNotMatch(JSON.stringify(uploaded), /filename|image\/|data_key|plaintext/i);
+
+  const list = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/attachments`, {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.equal(list.status, 200);
+  assert.deepEqual((await list.json()).attachments.map((item) => item.id), [attachment.id]);
+
+  const download = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io${attachmentPath}/content`, {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get("Content-Type"), "application/octet-stream");
+  assert.equal(download.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(new Uint8Array(await download.arrayBuffer()), encryptedImage);
+
+  const changed = makeEncryptedAttachment(attachment.id, note.id, 80);
+  const mismatchedLock = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io${attachmentPath}`, {
+      method: "PUT",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+        "If-Match": '"1"',
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ ...changed, isLocked: true }),
+    }),
+    env,
+  );
+  assert.equal(mismatchedLock.status, 409);
+
+  const update = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io${attachmentPath}`, {
+      method: "PUT",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+        "If-Match": '"1"',
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ ...changed, isLocked: false }),
+    }),
+    env,
+  );
+  assert.equal(update.status, 200);
+  assert.equal((await update.json()).attachment.isLocked, false);
+  assert.equal(db.encryptedAttachments[0].revision, 2);
+
+  const usage = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-note-attachments/usage", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  const usageBody = (await usage.json()).usage;
+  assert.equal(usageBody.attachmentCount, 1);
+  assert.equal(usageBody.ciphertextBytes, encryptedImage.byteLength);
+  assert.equal(usageBody.maxCiphertextBytes, 8 * 1024 * 1024 * 1024);
+
+  const rejected = await worker.fetch(
+    new Request(
+      `https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/attachments/attach_too_large`,
+      {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(10 * 1024 * 1024 + 17),
+          "X-Attachment-Version": "1",
+          "X-Attachment-Ciphertext": attachment.ciphertext,
+          "X-Attachment-Nonce": attachment.nonce,
+          "X-Attachment-Locked": "false",
+          "X-CSRF-Token": csrfToken,
+        },
+        body: new Uint8Array(17),
+      },
+    ),
+    env,
+  );
+  assert.equal(rejected.status, 413);
+  assert.equal(bucket.objects.size, 1);
+
+  const trash = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, "If-Match": '"1"', "X-CSRF-Token": csrfToken },
+    }),
+    env,
+  );
+  assert.equal(trash.status, 200);
+  const purge = await worker.fetch(
+    new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/purge`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, "If-Match": '"2"', "X-CSRF-Token": csrfToken },
+    }),
+    env,
+  );
+  assert.equal(purge.status, 200);
+  assert.equal(bucket.objects.size, 0);
   assert.equal(db.encryptedNotes.length, 0);
 });
 

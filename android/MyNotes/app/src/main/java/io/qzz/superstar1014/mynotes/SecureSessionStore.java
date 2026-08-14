@@ -19,6 +19,7 @@ final class SecureSessionStore {
   private static final String KEY_ALIAS = "my-notes-session-cookie-v1";
   private static final String PREFS = "my_notes_secure_session";
   private static final String COOKIE_KEY = "encrypted_cookie";
+  private static final String TOKEN_KEY = "encrypted_device_token";
 
   private final SharedPreferences preferences;
   private final String keyAlias;
@@ -33,7 +34,15 @@ final class SecureSessionStore {
   }
 
   String load() {
-    String stored = preferences.getString(COOKIE_KEY, "");
+    return loadEncrypted(COOKIE_KEY, "my-notes:session-cookie:v1");
+  }
+
+  String loadDeviceToken() {
+    return loadEncrypted(TOKEN_KEY, "my-notes:device-token:v1");
+  }
+
+  private String loadEncrypted(String preferenceKey, String aad) {
+    String stored = preferences.getString(preferenceKey, "");
     if (stored.isEmpty()) return "";
     try {
       String[] parts = stored.split("\\.", 2);
@@ -44,34 +53,42 @@ final class SecureSessionStore {
         key(),
         new GCMParameterSpec(128, decode(parts[0]))
       );
-      cipher.updateAAD("my-notes:session-cookie:v1".getBytes(StandardCharsets.UTF_8));
+      cipher.updateAAD(aad.getBytes(StandardCharsets.UTF_8));
       return new String(cipher.doFinal(decode(parts[1])), StandardCharsets.UTF_8);
     } catch (Exception error) {
-      clear();
+      preferences.edit().remove(preferenceKey).apply();
       return "";
     }
   }
 
   void save(String cookie) {
-    if (cookie == null || cookie.isEmpty()) {
-      clear();
+    saveEncrypted(COOKIE_KEY, "my-notes:session-cookie:v1", cookie);
+  }
+
+  void saveDeviceToken(String token) {
+    saveEncrypted(TOKEN_KEY, "my-notes:device-token:v1", token);
+  }
+
+  private void saveEncrypted(String preferenceKey, String aad, String value) {
+    if (value == null || value.isEmpty()) {
+      preferences.edit().remove(preferenceKey).apply();
       return;
     }
     try {
       Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
       cipher.init(Cipher.ENCRYPT_MODE, key());
-      cipher.updateAAD("my-notes:session-cookie:v1".getBytes(StandardCharsets.UTF_8));
+      cipher.updateAAD(aad.getBytes(StandardCharsets.UTF_8));
       String stored = encode(cipher.getIV()) + "." + encode(
-        cipher.doFinal(cookie.getBytes(StandardCharsets.UTF_8))
+        cipher.doFinal(value.getBytes(StandardCharsets.UTF_8))
       );
-      preferences.edit().putString(COOKIE_KEY, stored).apply();
+      preferences.edit().putString(preferenceKey, stored).apply();
     } catch (Exception error) {
       throw new IllegalStateException("无法安全保存登录状态。", error);
     }
   }
 
   void clear() {
-    preferences.edit().remove(COOKIE_KEY).apply();
+    preferences.edit().remove(COOKIE_KEY).remove(TOKEN_KEY).apply();
   }
 
   private SecretKey key() throws Exception {

@@ -114,6 +114,190 @@ public enum NoteCrypto {
   }
 }
 
+public enum AttachmentCryptoError: LocalizedError, Equatable {
+  case unsupportedImage
+  case imageTooLarge
+  case invalidEnvelope
+  case decryptionFailed
+
+  public var errorDescription: String? {
+    switch self {
+    case .unsupportedImage: "仅支持 JPEG、PNG 和 WebP 图片。"
+    case .imageTooLarge: "单张图片不能超过 10 MiB。"
+    case .invalidEnvelope: "加密图片格式无效。"
+    case .decryptionFailed: "图片无法解密，请确认数据完整。"
+    }
+  }
+}
+
+public enum AttachmentCrypto {
+  public static let maxPlaintextBytes = 10 * 1024 * 1024
+  private static let version = 1
+  private static let nonceBytes = 12
+  private static let tagBytes = 16
+  private static let allowedContentTypes = ["image/jpeg", "image/png", "image/webp"]
+
+  public struct EncryptedImage: Equatable, Sendable {
+    public let payload: EncryptedAttachmentPayload
+    public let body: Data
+    public let metadata: AttachmentMetadata
+  }
+
+  public static func createMediaKey() -> String {
+    let key = SymmetricKey(size: .bits256)
+    return NoteCrypto.encodeBase64URL(key.withUnsafeBytes { Data($0) })
+  }
+
+  public static func encrypt(
+    _ imageData: Data,
+    contentType: String,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    noteID: String,
+    attachmentID: String,
+    isLocked: Bool,
+    mediaKeyValue: String
+  ) throws -> EncryptedImage {
+    guard allowedContentTypes.contains(contentType) else {
+      throw AttachmentCryptoError.unsupportedImage
+    }
+    guard !imageData.isEmpty, imageData.count <= maxPlaintextBytes else {
+      throw AttachmentCryptoError.imageTooLarge
+    }
+    let mediaKey = try NoteCrypto.importDataKey(mediaKeyValue)
+    let attachmentKey = SymmetricKey(size: .bits256)
+    let objectNonce = AES.GCM.Nonce()
+    let objectBox = try AES.GCM.seal(
+      imageData,
+      using: attachmentKey,
+      nonce: objectNonce,
+      authenticating: contentAdditionalData(noteID: noteID, attachmentID: attachmentID)
+    )
+    var encryptedBody = objectBox.ciphertext
+    encryptedBody.append(objectBox.tag)
+
+    let metadata = AttachmentMetadata(
+      contentType: contentType,
+      pixelWidth: max(1, pixelWidth),
+      pixelHeight: max(1, pixelHeight),
+      plaintextBytes: imageData.count,
+      objectNonce: NoteCrypto.encodeBase64URL(Data(objectNonce)),
+      dataKey: NoteCrypto.encodeBase64URL(attachmentKey.withUnsafeBytes { Data($0) })
+    )
+    let metadataNonce = AES.GCM.Nonce()
+    let metadataBox = try AES.GCM.seal(
+      JSONEncoder().encode(metadata),
+      using: mediaKey,
+      nonce: metadataNonce,
+      authenticating: metadataAdditionalData(noteID: noteID, attachmentID: attachmentID)
+    )
+    var encryptedMetadata = metadataBox.ciphertext
+    encryptedMetadata.append(metadataBox.tag)
+    return EncryptedImage(
+      payload: EncryptedAttachmentPayload(
+        id: attachmentID,
+        noteId: noteID,
+        ciphertext: NoteCrypto.encodeBase64URL(encryptedMetadata),
+        nonce: NoteCrypto.encodeBase64URL(Data(metadataNonce)),
+        isLocked: isLocked
+      ),
+      body: encryptedBody,
+      metadata: metadata
+    )
+  }
+
+  public static func decryptMetadata(
+    _ envelope: EncryptedAttachmentEnvelope,
+    mediaKeyValue: String
+  ) throws -> AttachmentMetadata {
+    guard envelope.version == version,
+      let nonce = NoteCrypto.decodeBase64URL(envelope.nonce), nonce.count == nonceBytes,
+      let encrypted = NoteCrypto.decodeBase64URL(envelope.ciphertext), encrypted.count > tagBytes
+    else { throw AttachmentCryptoError.invalidEnvelope }
+    do {
+      let mediaKey = try NoteCrypto.importDataKey(mediaKeyValue)
+      let box = try AES.GCM.SealedBox(
+        nonce: AES.GCM.Nonce(data: nonce),
+        ciphertext: encrypted.dropLast(tagBytes),
+        tag: encrypted.suffix(tagBytes)
+      )
+      let plaintext = try AES.GCM.open(
+        box,
+        using: mediaKey,
+        authenticating: metadataAdditionalData(
+          noteID: envelope.noteId,
+          attachmentID: envelope.id
+        )
+      )
+      let metadata = try JSONDecoder().decode(AttachmentMetadata.self, from: plaintext)
+      guard allowedContentTypes.contains(metadata.contentType),
+        metadata.plaintextBytes > 0,
+        metadata.plaintextBytes <= maxPlaintextBytes,
+        NoteCrypto.decodeBase64URL(metadata.objectNonce)?.count == nonceBytes,
+        NoteCrypto.decodeBase64URL(metadata.dataKey)?.count == 32
+      else { throw AttachmentCryptoError.invalidEnvelope }
+      return metadata
+    } catch let error as AttachmentCryptoError {
+      throw error
+    } catch {
+      throw AttachmentCryptoError.decryptionFailed
+    }
+  }
+
+  public static func decryptBody(
+    _ encryptedBody: Data,
+    envelope: EncryptedAttachmentEnvelope,
+    metadata: AttachmentMetadata
+  ) throws -> Data {
+    guard encryptedBody.count == envelope.ciphertextBytes,
+      encryptedBody.count > tagBytes,
+      let nonce = NoteCrypto.decodeBase64URL(metadata.objectNonce), nonce.count == nonceBytes,
+      let keyData = NoteCrypto.decodeBase64URL(metadata.dataKey), keyData.count == 32
+    else { throw AttachmentCryptoError.invalidEnvelope }
+    do {
+      let box = try AES.GCM.SealedBox(
+        nonce: AES.GCM.Nonce(data: nonce),
+        ciphertext: encryptedBody.dropLast(tagBytes),
+        tag: encryptedBody.suffix(tagBytes)
+      )
+      let plaintext = try AES.GCM.open(
+        box,
+        using: SymmetricKey(data: keyData),
+        authenticating: contentAdditionalData(
+          noteID: envelope.noteId,
+          attachmentID: envelope.id
+        )
+      )
+      guard plaintext.count == metadata.plaintextBytes else {
+        throw AttachmentCryptoError.invalidEnvelope
+      }
+      return plaintext
+    } catch let error as AttachmentCryptoError {
+      throw error
+    } catch {
+      throw AttachmentCryptoError.decryptionFailed
+    }
+  }
+
+  private static func metadataAdditionalData(noteID: String, attachmentID: String) -> Data {
+    Data("my-notes:attachment-metadata:\(noteID):\(attachmentID):v1".utf8)
+  }
+
+  private static func contentAdditionalData(noteID: String, attachmentID: String) -> Data {
+    Data("my-notes:attachment-content:\(noteID):\(attachmentID):v1".utf8)
+  }
+}
+
+public struct ProtectedNotePlaintext: Codable, Equatable, Sendable {
+  public var content: String
+  public var attachmentKey: String?
+
+  public init(content: String, attachmentKey: String? = nil) {
+    self.content = content
+    self.attachmentKey = attachmentKey
+  }
+}
+
 public enum NoteProtectionCrypto {
   public static let iterations = 310_000
   private static let keyBytes = 32
@@ -180,10 +364,22 @@ public enum NoteProtectionCrypto {
   public static func encryptBody(
     _ content: String,
     noteID: String,
+    attachmentKey: String? = nil,
     using key: SymmetricKey
   ) throws -> ProtectedNoteBodyEnvelope {
+    let plaintext: Data
+    if let attachmentKey {
+      plaintext = try JSONEncoder().encode(
+        ProtectedNotePlaintext(
+          content: String(content.prefix(500_000)),
+          attachmentKey: attachmentKey
+        )
+      )
+    } else {
+      plaintext = Data(content.prefix(500_000).utf8)
+    }
     let sealed = try seal(
-      Data(content.prefix(500_000).utf8),
+      plaintext,
       using: key,
       additionalData: bodyAdditionalData(noteID)
     )
@@ -195,6 +391,14 @@ public enum NoteProtectionCrypto {
     noteID: String,
     using key: SymmetricKey
   ) throws -> String {
+    try decryptPayload(envelope, noteID: noteID, using: key).content
+  }
+
+  public static func decryptPayload(
+    _ envelope: ProtectedNoteBodyEnvelope,
+    noteID: String,
+    using key: SymmetricKey
+  ) throws -> ProtectedNotePlaintext {
     guard envelope.version == 1,
       let nonce = NoteCrypto.decodeBase64URL(envelope.nonce), nonce.count == nonceBytes,
       let encrypted = NoteCrypto.decodeBase64URL(envelope.ciphertext), encrypted.count > tagBytes
@@ -206,10 +410,13 @@ public enum NoteProtectionCrypto {
         using: key,
         additionalData: bodyAdditionalData(noteID)
       )
+      if let payload = try? JSONDecoder().decode(ProtectedNotePlaintext.self, from: plaintext) {
+        return payload
+      }
       guard let value = String(data: plaintext, encoding: .utf8) else {
         throw NoteCryptoError.invalidEnvelope
       }
-      return value
+      return ProtectedNotePlaintext(content: value)
     } catch {
       throw NoteCryptoError.decryptionFailed
     }

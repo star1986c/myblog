@@ -87,6 +87,78 @@ func protectionPasswordRoundTrip() throws {
   }
 }
 
+@Test("Attachment metadata and image bytes stay encrypted and bound to the note")
+func attachmentRoundTripAndBinding() throws {
+  let noteID = "note_attachment_1234"
+  let attachmentID = "attachment_swift_1234"
+  let image = Data([1, 3, 3, 7, 9, 11])
+  let mediaKey = AttachmentCrypto.createMediaKey()
+  let encrypted = try AttachmentCrypto.encrypt(
+    image,
+    contentType: "image/png",
+    pixelWidth: 64,
+    pixelHeight: 32,
+    noteID: noteID,
+    attachmentID: attachmentID,
+    isLocked: true,
+    mediaKeyValue: mediaKey
+  )
+  #expect(!encrypted.payload.ciphertext.contains("image/png"))
+
+  let envelope = EncryptedAttachmentEnvelope(
+    id: attachmentID,
+    noteId: noteID,
+    version: 1,
+    ciphertext: encrypted.payload.ciphertext,
+    nonce: encrypted.payload.nonce,
+    isLocked: true,
+    ciphertextBytes: encrypted.body.count
+  )
+  let metadata = try AttachmentCrypto.decryptMetadata(envelope, mediaKeyValue: mediaKey)
+  #expect(metadata.contentType == "image/png")
+  #expect(
+    try AttachmentCrypto.decryptBody(
+      encrypted.body,
+      envelope: envelope,
+      metadata: metadata
+    ) == image
+  )
+
+  let moved = EncryptedAttachmentEnvelope(
+    id: attachmentID,
+    noteId: "note_attachment_other",
+    version: 1,
+    ciphertext: envelope.ciphertext,
+    nonce: envelope.nonce,
+    isLocked: true,
+    ciphertextBytes: envelope.ciphertextBytes
+  )
+  #expect(throws: AttachmentCryptoError.decryptionFailed) {
+    try AttachmentCrypto.decryptMetadata(moved, mediaKeyValue: mediaKey)
+  }
+}
+
+@Test("Protected note payload also protects the shared attachment media key")
+func protectedAttachmentKeyRoundTrip() throws {
+  let created = try NoteProtectionCrypto.createKeyring(
+    password: "correct horse battery staple"
+  )
+  let mediaKey = AttachmentCrypto.createMediaKey()
+  let envelope = try NoteProtectionCrypto.encryptBody(
+    "protected body",
+    noteID: "note_protected_media",
+    attachmentKey: mediaKey,
+    using: created.key
+  )
+  let payload = try NoteProtectionCrypto.decryptPayload(
+    envelope,
+    noteID: "note_protected_media",
+    using: created.key
+  )
+  #expect(payload.content == "protected body")
+  #expect(payload.attachmentKey == mediaKey)
+}
+
 @Test("Folder names are encrypted and bound to their folder id")
 func folderRoundTripAndBinding() throws {
   let key = SymmetricKey(size: .bits256)

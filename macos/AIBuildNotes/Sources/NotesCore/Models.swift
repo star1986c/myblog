@@ -152,6 +152,119 @@ public struct EncryptedFolderPayload: Codable, Equatable, Sendable {
   }
 }
 
+public struct EncryptedAttachmentEnvelope: Codable, Equatable, Identifiable, Sendable {
+  public let id: String
+  public let noteId: String
+  public let version: Int
+  public var revision: Int
+  public var ciphertext: String
+  public var nonce: String
+  public var isLocked: Bool
+  public let ciphertextBytes: Int
+  public let createdAt: String?
+  public var updatedAt: String?
+
+  public init(
+    id: String,
+    noteId: String,
+    version: Int,
+    revision: Int = 1,
+    ciphertext: String,
+    nonce: String,
+    isLocked: Bool,
+    ciphertextBytes: Int,
+    createdAt: String? = nil,
+    updatedAt: String? = nil
+  ) {
+    self.id = id
+    self.noteId = noteId
+    self.version = version
+    self.revision = revision
+    self.ciphertext = ciphertext
+    self.nonce = nonce
+    self.isLocked = isLocked
+    self.ciphertextBytes = ciphertextBytes
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct EncryptedAttachmentPayload: Codable, Equatable, Sendable {
+  public let id: String
+  public let noteId: String
+  public let version: Int
+  public let ciphertext: String
+  public let nonce: String
+  public let isLocked: Bool
+
+  public init(
+    id: String,
+    noteId: String,
+    version: Int = 1,
+    ciphertext: String,
+    nonce: String,
+    isLocked: Bool
+  ) {
+    self.id = id
+    self.noteId = noteId
+    self.version = version
+    self.ciphertext = ciphertext
+    self.nonce = nonce
+    self.isLocked = isLocked
+  }
+}
+
+public struct AttachmentMetadata: Codable, Equatable, Sendable {
+  public let contentType: String
+  public let pixelWidth: Int
+  public let pixelHeight: Int
+  public let plaintextBytes: Int
+  public let objectNonce: String
+  public let dataKey: String
+
+  public init(
+    contentType: String,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    plaintextBytes: Int,
+    objectNonce: String,
+    dataKey: String
+  ) {
+    self.contentType = contentType
+    self.pixelWidth = pixelWidth
+    self.pixelHeight = pixelHeight
+    self.plaintextBytes = plaintextBytes
+    self.objectNonce = objectNonce
+    self.dataKey = dataKey
+  }
+}
+
+public struct NoteAttachment: Equatable, Identifiable, Sendable {
+  public var envelope: EncryptedAttachmentEnvelope
+  public var metadata: AttachmentMetadata
+  public var imageData: Data?
+
+  public init(
+    envelope: EncryptedAttachmentEnvelope,
+    metadata: AttachmentMetadata,
+    imageData: Data? = nil
+  ) {
+    self.envelope = envelope
+    self.metadata = metadata
+    self.imageData = imageData
+  }
+
+  public var id: String { envelope.id }
+}
+
+public struct AttachmentUsage: Codable, Equatable, Sendable {
+  public let attachmentCount: Int
+  public let ciphertextBytes: Int
+  public let maxCiphertextBytes: Int
+  public let maxAttachmentBytes: Int
+  public let maxAttachmentsPerNote: Int
+}
+
 public struct FolderContent: Codable, Equatable, Sendable {
   public var name: String
 
@@ -259,19 +372,22 @@ public struct NoteContent: Codable, Equatable, Sendable {
   public var title: String
   public var content: String
   public var protectedContent: ProtectedNoteBodyEnvelope?
+  public var attachmentKey: String?
 
   public init(
     title: String,
     content: String,
-    protectedContent: ProtectedNoteBodyEnvelope? = nil
+    protectedContent: ProtectedNoteBodyEnvelope? = nil,
+    attachmentKey: String? = nil
   ) {
     self.title = title
     self.content = content
     self.protectedContent = protectedContent
+    self.attachmentKey = attachmentKey
   }
 
   private enum CodingKeys: String, CodingKey {
-    case title, content, protectedContent, isProtected
+    case title, content, protectedContent, attachmentKey, isProtected
   }
 
   public init(from decoder: Decoder) throws {
@@ -282,6 +398,7 @@ public struct NoteContent: Codable, Equatable, Sendable {
       ProtectedNoteBodyEnvelope.self,
       forKey: .protectedContent
     )
+    attachmentKey = try container.decodeIfPresent(String.self, forKey: .attachmentKey)
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -289,6 +406,9 @@ public struct NoteContent: Codable, Equatable, Sendable {
     try container.encode(title, forKey: .title)
     try container.encode(protectedContent == nil ? content : "", forKey: .content)
     try container.encodeIfPresent(protectedContent, forKey: .protectedContent)
+    if protectedContent == nil {
+      try container.encodeIfPresent(attachmentKey, forKey: .attachmentKey)
+    }
   }
 
   public func normalized() -> NoteContent {
@@ -296,7 +416,8 @@ public struct NoteContent: Codable, Equatable, Sendable {
     return NoteContent(
       title: String((trimmedTitle.isEmpty ? "无标题笔记" : trimmedTitle).prefix(200)),
       content: String(content.prefix(500_000)),
-      protectedContent: protectedContent
+      protectedContent: protectedContent,
+      attachmentKey: attachmentKey
     )
   }
 }

@@ -29,11 +29,29 @@ import {
   updateEncryptedNote,
 } from "./encrypted-note-repository.js";
 import {
+  deleteEncryptedNoteAttachment,
+  downloadEncryptedNoteAttachment,
+  encryptedAttachmentUsage,
+  listEncryptedNoteAttachments,
+  purgeEncryptedNoteAttachments,
+  requireAttachmentCapableClient,
+  updateEncryptedNoteAttachment,
+  uploadEncryptedNoteAttachment,
+} from "./encrypted-note-attachment-repository.js";
+import {
   createNoteProtectionKeyring,
   readNoteProtectionKeyring,
   updateNoteProtectionKeyring,
 } from "./note-protection-repository.js";
 import { readOrCreateWorkspaceDataKey } from "./workspace-key-repository.js";
+import {
+  bearerToken,
+  issueDeviceToken,
+  requireBearerToken,
+  revokeAllDeviceTokens,
+  revokeDeviceToken,
+  rotateDeviceToken,
+} from "./device-token-repository.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
@@ -152,7 +170,13 @@ async function handleApiRequest(request, env, ctx) {
     return await handleLogin(request, env);
   }
 
+  if (path === "/api/auth/token" && request.method === "POST") {
+    return await handleDeviceTokenRefresh(request, env);
+  }
+
   if (path === "/api/auth/logout" && request.method === "POST") {
+    const token = bearerToken(request);
+    if (token && env.BLOG_DB) await revokeDeviceToken(env.BLOG_DB, token);
     return jsonResponse(
       { ok: true },
       {
@@ -676,6 +700,7 @@ async function handleLogin(request, env) {
   const body = await readJson(request);
   const username = typeof body.username === "string" ? body.username : "";
   const password = typeof body.password === "string" ? body.password : "";
+  const rememberDevice = body.rememberDevice === true;
   const allowed = await allowAdminLoginRequest(request, env, username);
   if (!allowed) {
     return jsonResponse(
@@ -703,6 +728,9 @@ async function handleLogin(request, env) {
       ok: true,
       user: publicAdminAccount(credentials),
       csrfToken: session.csrfToken,
+      deviceToken: rememberDevice && account
+        ? await issueDeviceToken(db, account.id)
+        : null,
     },
     {
       headers: {
@@ -710,6 +738,57 @@ async function handleLogin(request, env) {
       },
     },
   );
+}
+
+async function handleDeviceTokenRefresh(request, env) {
+  const db = requireDatabase(env);
+  const sessionSecret = resolveSessionSecret(env);
+  if (!sessionSecret) {
+    return jsonResponse({ error: "Authentication is not configured." }, { status: 503 });
+  }
+  const token = requireBearerToken(request);
+  const allowed = await allowDeviceTokenRequest(request, env, token);
+  if (!allowed) {
+    return jsonResponse(
+      { error: "Too many token refresh attempts. Try again later." },
+      { status: 429, headers: { "Retry-After": "60" } },
+    );
+  }
+  const rotated = await rotateDeviceToken(db, token);
+  if (!rotated) return jsonResponse({ error: "Device token is invalid or expired." }, { status: 401 });
+  const account = await getAdminAccount(db);
+  if (!account || account.id !== rotated.accountId) {
+    await revokeDeviceToken(db, rotated.token);
+    return jsonResponse({ error: "Device token is invalid or expired." }, { status: 401 });
+  }
+  const cookie = await signSession({
+    secret: sessionSecret,
+    username: account.username,
+  });
+  const session = await readSession({
+    cookieHeader: cookie,
+    secret: sessionSecret,
+  });
+  return jsonResponse(
+    {
+      ok: true,
+      user: publicAdminAccount(account),
+      csrfToken: session.csrfToken,
+      deviceToken: rotated.token,
+    },
+    { headers: { "Set-Cookie": cookie } },
+  );
+}
+
+async function allowDeviceTokenRequest(request, env, token) {
+  const limiter = env.AUTH_LOGIN_RATE_LIMITER;
+  if (typeof limiter?.limit !== "function") {
+    throw new ServiceError("Authentication protection is unavailable.", 503);
+  }
+  const id = token.split(".", 1)[0] || "invalid";
+  const ip = visitorClientIp(request) || "unknown";
+  const key = await sha256Hex(`${ip}\n${id}`);
+  return (await limiter.limit({ key: `admin-token:${key}` })).success;
 }
 
 async function allowAdminLoginRequest(request, env, username) {
@@ -784,6 +863,10 @@ async function handleAdminApi(request, env, path) {
     return jsonResponse({ notes: await listDeletedEncryptedNotes(db) });
   }
 
+  if (path === "/api/admin/encrypted-note-attachments/usage" && request.method === "GET") {
+    return jsonResponse({ usage: await encryptedAttachmentUsage(db) });
+  }
+
   if (path === "/api/admin/encrypted-note-folders") {
     if (request.method === "GET") {
       return jsonResponse({ folders: await listEncryptedFolders(db) });
@@ -823,13 +906,79 @@ async function handleAdminApi(request, env, path) {
   if (path.startsWith("/api/admin/encrypted-notes/")) {
     const suffix = path.slice("/api/admin/encrypted-notes/".length);
     const parts = suffix.split("/");
-    if (!parts[0] || parts.length > 2) {
+    if (!parts[0]) {
       return jsonResponse({ error: "Not found" }, { status: 404 });
     }
     const id = decodeURIComponent(parts[0]);
+
+    if (parts[1] === "attachments") {
+      if (parts.length === 2 && request.method === "GET") {
+        return jsonResponse({
+          attachments: await listEncryptedNoteAttachments(db, id),
+        });
+      }
+      if (parts.length === 3) {
+        const attachmentId = decodeURIComponent(parts[2]);
+        if (request.method === "POST") {
+          return jsonResponse({
+            attachment: await uploadEncryptedNoteAttachment(
+              db,
+              env.NOTE_ATTACHMENTS,
+              request,
+              id,
+              attachmentId,
+            ),
+          }, { status: 201 });
+        }
+        if (request.method === "PUT") {
+          return jsonResponse({
+            attachment: await updateEncryptedNoteAttachment(
+              db,
+              id,
+              attachmentId,
+              await readJson(request),
+              readExpectedRevision(request),
+            ),
+          });
+        }
+        if (request.method === "DELETE") {
+          await deleteEncryptedNoteAttachment(
+            db,
+            env.NOTE_ATTACHMENTS,
+            id,
+            attachmentId,
+            readExpectedRevision(request),
+          );
+          return jsonResponse({ ok: true });
+        }
+      }
+      if (parts.length === 4 && parts[3] === "content" && request.method === "GET") {
+        const attachmentId = decodeURIComponent(parts[2]);
+        const { object } = await downloadEncryptedNoteAttachment(
+          db,
+          env.NOTE_ATTACHMENTS,
+          id,
+          attachmentId,
+        );
+        return new Response(object.body, {
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Length": String(object.size),
+            "Content-Type": "application/octet-stream",
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
+      return jsonResponse({ error: "Not found" }, { status: 404 });
+    }
+
+    if (parts.length > 2) {
+      return jsonResponse({ error: "Not found" }, { status: 404 });
+    }
     const action = parts[1] || "";
     const expectedRevision = readExpectedRevision(request);
     if (!action && request.method === "PUT") {
+      await requireAttachmentCapableClient(db, id, request);
       return jsonResponse({
         note: await updateEncryptedNote(db, id, await readJson(request), expectedRevision),
       });
@@ -852,6 +1001,12 @@ async function handleAdminApi(request, env, path) {
       });
     }
     if (action === "purge" && request.method === "DELETE") {
+      await purgeEncryptedNoteAttachments(
+        db,
+        env.NOTE_ATTACHMENTS,
+        id,
+        expectedRevision,
+      );
       await purgeEncryptedNote(db, id, expectedRevision);
       return jsonResponse({ ok: true });
     }
@@ -1012,6 +1167,7 @@ async function handleAccountUpdate(request, env, db) {
     passwordHash: await createPasswordHash(newPassword),
     mustChangePassword: 0,
   });
+  await revokeAllDeviceTokens(db, account.id);
   const sessionSecret = resolveSessionSecret(env);
   const cookie = await signSession({
     secret: sessionSecret,

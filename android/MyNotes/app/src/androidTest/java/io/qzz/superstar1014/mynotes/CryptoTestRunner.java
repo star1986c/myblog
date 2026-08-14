@@ -20,6 +20,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyWebCryptoFixture();
       verifyRoundTripsAndBinding();
       verifySharedProtectionPassword();
+      verifyEncryptedAttachments();
       verifySecureSessionStorage();
       result.putString(REPORT_KEY_STREAMRESULT, "My Notes crypto interoperability: PASS\n");
       finish(Activity.RESULT_OK, result);
@@ -133,7 +134,8 @@ public final class CryptoTestRunner extends Instrumentation {
     Models.ProtectedBody body = CryptoEngine.encryptProtectedBody(
       recovered,
       "note_protected_1234",
-      "server-password-123"
+      "server-password-123",
+      "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"
     );
     require(!body.ciphertext.contains("server-password-123"), "Protected plaintext leaked");
     require(
@@ -144,6 +146,17 @@ public final class CryptoTestRunner extends Instrumentation {
       )),
       "Protected body round trip failed"
     );
+    Models.ProtectedPlaintext protectedPlaintext = CryptoEngine.decryptProtectedPayload(
+      recovered,
+      "note_protected_1234",
+      body
+    );
+    require(
+      "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ".equals(
+        protectedPlaintext.attachmentKey
+      ),
+      "Protected attachment key round trip failed"
+    );
     boolean rejected = false;
     try {
       CryptoEngine.unlockProtectionKeyring(keyring, "wrong-password-value");
@@ -151,6 +164,60 @@ public final class CryptoTestRunner extends Instrumentation {
       rejected = true;
     }
     require(rejected, "Wrong protection password was accepted");
+  }
+
+  private static void verifyEncryptedAttachments() throws Exception {
+    byte[] image = new byte[] { 1, 3, 3, 7, 9, 11 };
+    String noteId = "note_attachment_1234";
+    String attachmentId = "attachment_android_1234";
+    String mediaKey = CryptoEngine.createMediaKey();
+    CryptoEngine.EncryptedAttachment encrypted = CryptoEngine.encryptAttachment(
+      image,
+      "image/png",
+      64,
+      32,
+      noteId,
+      attachmentId,
+      true,
+      mediaKey
+    );
+    require(!encrypted.payload.toString().contains("image/png"), "Attachment metadata leaked");
+    Models.AttachmentEnvelope envelope = new Models.AttachmentEnvelope(
+      attachmentId,
+      noteId,
+      1,
+      1,
+      encrypted.payload.getString("ciphertext"),
+      encrypted.payload.getString("nonce"),
+      true,
+      encrypted.body.length,
+      null,
+      null
+    );
+    Models.AttachmentMetadata metadata = CryptoEngine.decryptAttachmentMetadata(mediaKey, envelope);
+    require("image/png".equals(metadata.contentType), "Attachment metadata round trip failed");
+    byte[] decrypted = CryptoEngine.decryptAttachmentBody(encrypted.body, envelope, metadata);
+    require(java.util.Arrays.equals(image, decrypted), "Attachment body round trip failed");
+
+    Models.AttachmentEnvelope moved = new Models.AttachmentEnvelope(
+      attachmentId,
+      "note_attachment_other",
+      1,
+      1,
+      envelope.ciphertext,
+      envelope.nonce,
+      true,
+      envelope.ciphertextBytes,
+      null,
+      null
+    );
+    boolean rejected = false;
+    try {
+      CryptoEngine.decryptAttachmentMetadata(mediaKey, moved);
+    } catch (Exception expected) {
+      rejected = true;
+    }
+    require(rejected, "Attachment metadata was not bound to its note id");
   }
 
   private void verifySecureSessionStorage() {
@@ -161,12 +228,18 @@ public final class CryptoTestRunner extends Instrumentation {
     );
     store.clear();
     store.save("site_admin_session=test-token");
+    store.saveDeviceToken("device-id.device-secret");
     require(
       "site_admin_session=test-token".equals(store.load()),
       "Android Keystore session round trip failed"
     );
+    require(
+      "device-id.device-secret".equals(store.loadDeviceToken()),
+      "Android Keystore device token round trip failed"
+    );
     store.clear();
     require(store.load().isEmpty(), "Secure session clear failed");
+    require(store.loadDeviceToken().isEmpty(), "Secure device token clear failed");
   }
 
   private static void require(boolean condition, String message) {

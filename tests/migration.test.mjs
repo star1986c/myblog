@@ -43,6 +43,14 @@ const encryptedFolderOrderMigration = await readFile(
   new URL("../migrations/0011_encrypted_folder_order.sql", import.meta.url),
   "utf8",
 );
+const encryptedNoteAttachmentsMigration = await readFile(
+  new URL("../migrations/0012_encrypted_note_attachments.sql", import.meta.url),
+  "utf8",
+);
+const deviceTokenMigration = await readFile(
+  new URL("../migrations/0013_admin_device_tokens.sql", import.meta.url),
+  "utf8",
+);
 
 test("blog migration defaults posts and pages to private drafts", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS posts/);
@@ -68,6 +76,14 @@ test("default admin migration seeds a D1-backed login account", () => {
   assert.match(defaultAdminMigration, /INSERT INTO admin_accounts/);
   assert.match(defaultAdminMigration, /must_change_password/);
   assert.match(defaultAdminMigration, /session_secret/);
+});
+
+test("device token migration stores only hashed revocable tokens", () => {
+  assert.match(deviceTokenMigration, /CREATE TABLE IF NOT EXISTS admin_device_tokens/);
+  assert.match(deviceTokenMigration, /token_hash TEXT NOT NULL/);
+  assert.match(deviceTokenMigration, /expires_at TEXT NOT NULL/);
+  assert.match(deviceTokenMigration, /REFERENCES admin_accounts\(id\) ON DELETE CASCADE/);
+  assert.doesNotMatch(deviceTokenMigration, /token_secret|plaintext/);
 });
 
 test("password vault migration stores only versioned encrypted payloads", () => {
@@ -162,5 +178,20 @@ test("encrypted folder order migration preserves the previous deterministic orde
   assert.doesNotMatch(
     encryptedFolderOrderMigration,
     /(?:^|\s)(?:name|title|content|password|username)\s+TEXT/im,
+  );
+});
+
+test("encrypted attachment migration stores only opaque R2 metadata with hard byte limits", () => {
+  assert.match(encryptedNoteAttachmentsMigration, /CREATE TABLE encrypted_note_attachments/);
+  assert.match(encryptedNoteAttachmentsMigration, /ciphertext TEXT NOT NULL/);
+  assert.match(encryptedNoteAttachmentsMigration, /nonce TEXT NOT NULL/);
+  assert.match(encryptedNoteAttachmentsMigration, /ciphertext_bytes INTEGER NOT NULL/);
+  assert.match(encryptedNoteAttachmentsMigration, /object_key TEXT NOT NULL UNIQUE/);
+  assert.match(encryptedNoteAttachmentsMigration, /ON DELETE CASCADE/);
+  assert.match(encryptedNoteAttachmentsMigration, /CREATE TRIGGER sync_attachment_lock_state/);
+  assert.match(encryptedNoteAttachmentsMigration, /AFTER UPDATE OF is_locked ON encrypted_notes/);
+  assert.doesNotMatch(
+    encryptedNoteAttachmentsMigration,
+    /(?:^|\s)(?:filename|mime_type|title|content|password|data_key)\s+TEXT/im,
   );
 });

@@ -6,6 +6,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -34,6 +35,9 @@ final class NotesApiClient {
 
   SessionResult restoreSession() throws Exception {
     JSONObject json = request("GET", "api/auth/me", null, null);
+    if (!json.optBoolean("authenticated") && !sessionStore.loadDeviceToken().isEmpty()) {
+      json = refreshDeviceToken();
+    }
     csrfToken = json.optString("csrfToken");
     JSONObject user = json.optJSONObject("user");
     return new SessionResult(
@@ -46,17 +50,46 @@ final class NotesApiClient {
     JSONObject json = request(
       "POST",
       "api/auth/login",
-      new JSONObject().put("username", username).put("password", password),
+      new JSONObject()
+        .put("username", username)
+        .put("password", password)
+        .put("rememberDevice", true),
       null
     );
     csrfToken = json.optString("csrfToken");
+    sessionStore.saveDeviceToken(json.optString("deviceToken"));
     return Models.User.fromJson(json.getJSONObject("user"));
   }
 
   void logout() throws Exception {
-    request("POST", "api/auth/logout", new JSONObject(), null);
-    csrfToken = "";
-    sessionStore.clear();
+    try {
+      request("POST", "api/auth/logout", new JSONObject(), null);
+    } finally {
+      csrfToken = "";
+      sessionStore.clear();
+    }
+  }
+
+  private JSONObject refreshDeviceToken() throws Exception {
+    String token = sessionStore.loadDeviceToken();
+    HttpURLConnection connection = open("POST", "api/auth/token");
+    connection.setRequestProperty("Accept", "application/json");
+    connection.setRequestProperty("Authorization", "Bearer " + token);
+    connection.setFixedLengthStreamingMode(0);
+    connection.setDoOutput(true);
+    try (OutputStream ignored = connection.getOutputStream()) {
+      // An empty body makes this an explicit POST without exposing the token in JSON.
+    }
+    try {
+      JSONObject json = readJsonResponse(connection);
+      sessionStore.saveDeviceToken(json.getString("deviceToken"));
+      return new JSONObject(json.toString()).put("authenticated", true);
+    } catch (Exception error) {
+      if (error instanceof ApiException && ((ApiException) error).status == 401) {
+        sessionStore.clear();
+      }
+      throw error;
+    }
   }
 
   String workspaceKey() throws Exception {
@@ -162,6 +195,75 @@ final class NotesApiClient {
     );
   }
 
+  List<Models.AttachmentEnvelope> listAttachments(String noteId) throws Exception {
+    JSONArray values = request(
+      "GET",
+      "api/admin/encrypted-notes/" + noteId + "/attachments",
+      null,
+      null
+    ).getJSONArray("attachments");
+    List<Models.AttachmentEnvelope> result = new ArrayList<>();
+    for (int index = 0; index < values.length(); index++) {
+      result.add(Models.AttachmentEnvelope.fromJson(values.getJSONObject(index)));
+    }
+    return result;
+  }
+
+  Models.AttachmentEnvelope uploadAttachment(JSONObject payload, byte[] encryptedBody)
+    throws Exception {
+    String noteId = payload.getString("noteId");
+    String attachmentId = payload.getString("id");
+    HttpURLConnection connection = open(
+      "POST",
+      "api/admin/encrypted-notes/" + noteId + "/attachments/" + attachmentId
+    );
+    connection.setDoOutput(true);
+    connection.setFixedLengthStreamingMode(encryptedBody.length);
+    connection.setRequestProperty("Accept", "application/json");
+    connection.setRequestProperty("Content-Type", "application/octet-stream");
+    connection.setRequestProperty("X-Attachment-Version", String.valueOf(payload.getInt("version")));
+    connection.setRequestProperty("X-Attachment-Ciphertext", payload.getString("ciphertext"));
+    connection.setRequestProperty("X-Attachment-Nonce", payload.getString("nonce"));
+    connection.setRequestProperty("X-Attachment-Locked", String.valueOf(payload.getBoolean("isLocked")));
+    connection.setRequestProperty("X-Attachment-Support", "1");
+    if (!csrfToken.isEmpty()) connection.setRequestProperty("X-CSRF-Token", csrfToken);
+    try (OutputStream output = connection.getOutputStream()) {
+      output.write(encryptedBody);
+    }
+    JSONObject response = readJsonResponse(connection);
+    return Models.AttachmentEnvelope.fromJson(response.getJSONObject("attachment"));
+  }
+
+  byte[] downloadAttachment(String noteId, String attachmentId) throws Exception {
+    HttpURLConnection connection = open(
+      "GET",
+      "api/admin/encrypted-notes/" + noteId + "/attachments/" + attachmentId + "/content"
+    );
+    connection.setRequestProperty("Accept", "application/octet-stream");
+    connection.setRequestProperty("X-Attachment-Support", "1");
+    int status = connection.getResponseCode();
+    storeSessionCookie(connection.getHeaderFields());
+    if (status < 200 || status >= 300) {
+      String responseBody = readBody(connection.getErrorStream());
+      connection.disconnect();
+      JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
+      if (status == 401) csrfToken = "";
+      throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
+    }
+    byte[] data = readBytes(connection.getInputStream(), Models.MAX_IMAGE_BYTES + 16);
+    connection.disconnect();
+    return data;
+  }
+
+  void deleteAttachment(String noteId, String attachmentId, int revision) throws Exception {
+    request(
+      "DELETE",
+      "api/admin/encrypted-notes/" + noteId + "/attachments/" + attachmentId,
+      null,
+      revision
+    );
+  }
+
   private JSONObject request(String method, String path, JSONObject body, Integer revision)
     throws Exception {
     HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path)
@@ -171,10 +273,15 @@ final class NotesApiClient {
     connection.setReadTimeout(25_000);
     connection.setUseCaches(false);
     connection.setRequestProperty("Accept", "application/json");
+    connection.setRequestProperty("X-Attachment-Support", "1");
     String cookie = sessionStore.load();
     if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
     if (!"GET".equals(method) && !"HEAD".equals(method) && !csrfToken.isEmpty()) {
       connection.setRequestProperty("X-CSRF-Token", csrfToken);
+    }
+    if ("api/auth/logout".equals(path)) {
+      String token = sessionStore.loadDeviceToken();
+      if (!token.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + token);
     }
     if (revision != null) connection.setRequestProperty("If-Match", "\"" + revision + "\"");
     if (body != null) {
@@ -195,6 +302,33 @@ final class NotesApiClient {
     String responseBody = readBody(stream);
     connection.disconnect();
 
+    JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
+    if (status < 200 || status >= 300) {
+      if (status == 401) csrfToken = "";
+      throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
+    }
+    return response;
+  }
+
+  private HttpURLConnection open(String method, String path) throws Exception {
+    HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+    connection.setRequestMethod(method);
+    connection.setConnectTimeout(15_000);
+    connection.setReadTimeout(60_000);
+    connection.setUseCaches(false);
+    String cookie = sessionStore.load();
+    if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
+    return connection;
+  }
+
+  private JSONObject readJsonResponse(HttpURLConnection connection) throws Exception {
+    int status = connection.getResponseCode();
+    storeSessionCookie(connection.getHeaderFields());
+    InputStream stream = status >= 200 && status < 300
+      ? connection.getInputStream()
+      : connection.getErrorStream();
+    String responseBody = readBody(stream);
+    connection.disconnect();
     JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
     if (status < 200 || status >= 300) {
       if (status == 401) csrfToken = "";
@@ -228,6 +362,22 @@ final class NotesApiClient {
       while ((line = reader.readLine()) != null) result.append(line);
     }
     return result.toString();
+  }
+
+  private static byte[] readBytes(InputStream stream, int maximum) throws Exception {
+    if (stream == null) return new byte[0];
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    byte[] buffer = new byte[16 * 1024];
+    int count;
+    try (InputStream input = stream) {
+      while ((count = input.read(buffer)) != -1) {
+        if (output.size() + count > maximum) {
+          throw new IllegalArgumentException("加密图片超过 10 MiB 限制。");
+        }
+        output.write(buffer, 0, count);
+      }
+    }
+    return output.toByteArray();
   }
 
   static final class SessionResult {

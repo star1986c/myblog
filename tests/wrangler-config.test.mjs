@@ -6,9 +6,11 @@ const wrangler = JSON.parse(
   await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 );
 
-test("deployment config uses D1 without requiring R2", () => {
-  assert.equal(Object.hasOwn(wrangler, "r2_buckets"), false);
+test("deployment config binds the existing private notes R2 bucket", () => {
   assert.equal(wrangler.d1_databases[0].binding, "BLOG_DB");
+  assert.deepEqual(wrangler.r2_buckets, [
+    { binding: "NOTE_ATTACHMENTS", bucket_name: "notes" },
+  ]);
 });
 
 test("deployment requires both session and notes-key secrets", () => {

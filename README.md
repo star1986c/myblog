@@ -13,6 +13,8 @@ Cloudflare Workers Static Assets project for `https://superstar1014.qzz.io/`.
   and passwords are not stored automatically.
 - Provides a ciphertext-only notes backend for the native macOS and Android clients; there is no Web
   notes page or public notes entry.
+- Stores image attachment ciphertext in the private `notes` R2 bucket; filenames, media types,
+  dimensions, image keys, and image bytes are encrypted by the native client before upload.
 - Stores the random notes data key in D1 only after wrapping it with a Worker secret, so forgetting
   or changing the login password no longer makes notes unreadable.
 - Keeps the retired `/admin/` and former blog/article/page routes out of the notes product; they
@@ -76,8 +78,13 @@ replaces the forgotten master-password key relationship with `workspace_keyrings
 retired password-vault tables. Apply it only after confirming those legacy encrypted tables are empty.
 
 Migration `0011_encrypted_folder_order.sql` stores the manual folder order shared by both clients.
+Migration `0012_encrypted_note_attachments.sql` stores opaque attachment envelopes and private R2
+object keys. Migration `0013_admin_device_tokens.sql` stores revocable Android token hashes; token
+plaintext exists only in Android Keystore-encrypted app storage.
 
-R2 is not required for the native notes backend or production deployment.
+The Worker binds the existing private R2 bucket `notes` as `NOTE_ATTACHMENTS`. Do not enable an
+`r2.dev` URL or public custom domain for this bucket. The API enforces a 10 MiB plaintext limit per
+image, 20 images per note, 25,000 total attachments, and an 8 GiB ciphertext quota.
 
 ## macOS notes app
 
@@ -109,6 +116,10 @@ The native Android client lives in `android/MyNotes`. It uses the same authentic
 AES-256-GCM envelopes, folders, recoverable trash, and shared independent protection password as
 the macOS client. The user-visible product name is `My Notes`; historical cryptographic
 additional-data identifiers remain unchanged for ciphertext compatibility.
+
+Android requests a 90-day rolling device token after a password login. Every refresh rotates the
+token, the Worker stores only its SHA-256 digest, and logout or a password change revokes it. The
+device token and short-lived session cookie are encrypted with an Android Keystore AES-GCM key.
 
 The mobile UI is designed specifically for Android 16 (API 36) with edge-to-edge system bars,
 light/dark themes, visible folder filters, adaptive list/card layouts, and a consistent vector icon

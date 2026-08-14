@@ -16,6 +16,8 @@ public final class NotesStore: ObservableObject {
   @Published public private(set) var errorMessage: String?
   @Published public private(set) var protectionKeyring: NoteProtectionKeyring?
   @Published public private(set) var unlockedProtectedNoteID: String?
+  @Published public private(set) var selectedAttachments: [NoteAttachment] = []
+  @Published public private(set) var isAttachmentWorking = false
 
   private let api: NotesAPIClient
   private var dataKey: SymmetricKey?
@@ -226,6 +228,7 @@ public final class NotesStore: ObservableObject {
     searchQuery = ""
     selectedID = visibleNotes.first?.id
     saveState = .idle
+    selectedAttachments.removeAll()
   }
 
   public func updateSearchQuery(_ query: String) {
@@ -373,14 +376,15 @@ public final class NotesStore: ObservableObject {
       let keyring = protectionKeyring
     else { throw NoteUnlockError.notConfigured }
     let key = try NoteProtectionCrypto.unlockKeyring(keyring, password: password)
-    let plaintext = try NoteProtectionCrypto.decryptBody(
+    let plaintext = try NoteProtectionCrypto.decryptPayload(
       protectedContent,
       noteID: id,
       using: key
     )
     protectionKey = key
     unlockedProtectedNoteID = id
-    activeNotes[index].content.content = plaintext
+    activeNotes[index].content.content = plaintext.content
+    activeNotes[index].content.attachmentKey = plaintext.attachmentKey
   }
 
   public func unprotectSelected() async throws {
@@ -403,7 +407,9 @@ public final class NotesStore: ObservableObject {
     _ = await save(id: unlockedID)
     if let index = activeNotes.firstIndex(where: { $0.id == unlockedID }) {
       activeNotes[index].content.content = ""
+      activeNotes[index].content.attachmentKey = nil
     }
+    selectedAttachments.removeAll()
     protectionKey = nil
     unlockedProtectedNoteID = nil
   }
@@ -480,8 +486,153 @@ public final class NotesStore: ObservableObject {
     }
   }
 
+  public func loadSelectedAttachments() async {
+    guard let document = selectedDocument else {
+      selectedAttachments.removeAll()
+      return
+    }
+    let noteID = document.id
+    if document.isProtected && !isUnlocked(document) {
+      selectedAttachments.removeAll()
+      return
+    }
+    do {
+      let envelopes = try await api.listAttachments(noteID: noteID)
+      guard selectedID == noteID else { return }
+      if envelopes.isEmpty {
+        selectedAttachments.removeAll()
+        return
+      }
+      guard let mediaKey = selectedDocument?.content.attachmentKey else {
+        throw AttachmentCryptoError.invalidEnvelope
+      }
+      let attachments = try await Task.detached {
+        try envelopes.map { envelope in
+          NoteAttachment(
+            envelope: envelope,
+            metadata: try AttachmentCrypto.decryptMetadata(
+              envelope,
+              mediaKeyValue: mediaKey
+            )
+          )
+        }
+      }.value
+      guard selectedID == noteID else { return }
+      selectedAttachments = attachments
+    } catch {
+      guard selectedID == noteID else { return }
+      selectedAttachments.removeAll()
+      errorMessage = friendlyMessage(error)
+    }
+  }
+
+  public func addImage(
+    data: Data,
+    contentType: String,
+    pixelWidth: Int,
+    pixelHeight: Int
+  ) async {
+    guard !location.isTrash,
+      !isAttachmentWorking,
+      let noteID = selectedID,
+      let index = activeNotes.firstIndex(where: { $0.id == noteID })
+    else { return }
+    if activeNotes[index].isProtected && !isUnlocked(activeNotes[index]) { return }
+    guard selectedAttachments.count < 20 else {
+      errorMessage = "每篇笔记最多可以添加 20 张图片。"
+      return
+    }
+
+    isAttachmentWorking = true
+    defer { isAttachmentWorking = false }
+    do {
+      if activeNotes[index].content.attachmentKey == nil {
+        activeNotes[index].content.attachmentKey = AttachmentCrypto.createMediaKey()
+        dirtyNoteIDs.insert(noteID)
+        guard await save(id: noteID) else { return }
+      }
+      guard selectedID == noteID,
+        let current = activeNotes.firstIndex(where: { $0.id == noteID }),
+        let mediaKey = activeNotes[current].content.attachmentKey
+      else { return }
+      let attachmentID = UUID().uuidString.lowercased()
+      let isLocked = activeNotes[current].isProtected
+      let encrypted = try await Task.detached {
+        try AttachmentCrypto.encrypt(
+          data,
+          contentType: contentType,
+          pixelWidth: pixelWidth,
+          pixelHeight: pixelHeight,
+          noteID: noteID,
+          attachmentID: attachmentID,
+          isLocked: isLocked,
+          mediaKeyValue: mediaKey
+        )
+      }.value
+      let envelope = try await api.uploadAttachment(
+        encrypted.payload,
+        encryptedBody: encrypted.body
+      )
+      guard selectedID == noteID else { return }
+      selectedAttachments.append(
+        NoteAttachment(envelope: envelope, metadata: encrypted.metadata, imageData: data)
+      )
+    } catch {
+      errorMessage = friendlyMessage(error)
+    }
+  }
+
+  public func loadAttachmentImage(id: String) async {
+    guard let noteID = selectedID,
+      let index = selectedAttachments.firstIndex(where: { $0.id == id }),
+      selectedAttachments[index].imageData == nil
+    else { return }
+    let envelope = selectedAttachments[index].envelope
+    let metadata = selectedAttachments[index].metadata
+    do {
+      let encrypted = try await api.downloadAttachment(noteID: noteID, id: id)
+      let image = try await Task.detached {
+        try AttachmentCrypto.decryptBody(
+          encrypted,
+          envelope: envelope,
+          metadata: metadata
+        )
+      }.value
+      guard selectedID == noteID,
+        let current = selectedAttachments.firstIndex(where: { $0.id == id })
+      else { return }
+      selectedAttachments[current].imageData = image
+    } catch {
+      errorMessage = friendlyMessage(error)
+    }
+  }
+
+  public func deleteAttachment(id: String) async {
+    guard let noteID = selectedID,
+      let index = selectedAttachments.firstIndex(where: { $0.id == id }),
+      !isAttachmentWorking
+    else { return }
+    isAttachmentWorking = true
+    defer { isAttachmentWorking = false }
+    do {
+      try await api.deleteAttachment(
+        noteID: noteID,
+        id: id,
+        revision: selectedAttachments[index].envelope.revision
+      )
+      guard selectedID == noteID else { return }
+      selectedAttachments.removeAll { $0.id == id }
+    } catch {
+      handleMutationError(error)
+    }
+  }
+
   public func clearError() {
     errorMessage = nil
+  }
+
+  public func report(_ error: Error) {
+    errorMessage = friendlyMessage(error)
   }
 
   private func loadWorkspace() async throws {
@@ -513,6 +664,7 @@ public final class NotesStore: ObservableObject {
     }
     selectedID = visibleNotes.first?.id
     saveState = .idle
+    selectedAttachments.removeAll()
   }
 
   private func updateSelected(_ mutation: (inout NoteContent) -> Void) {
@@ -571,6 +723,7 @@ public final class NotesStore: ObservableObject {
         snapshot.protectedContent = try NoteProtectionCrypto.encryptBody(
           snapshot.content,
           noteID: id,
+          attachmentKey: snapshot.attachmentKey,
           using: protectionKey
         )
       } catch {
@@ -654,6 +807,8 @@ public final class NotesStore: ObservableObject {
     searchQuery = ""
     location = .allNotes
     saveState = .idle
+    selectedAttachments.removeAll()
+    isAttachmentWorking = false
   }
 
   private func protectSelected(using key: SymmetricKey) async throws {
@@ -664,6 +819,7 @@ public final class NotesStore: ObservableObject {
     activeNotes[index].content.protectedContent = try NoteProtectionCrypto.encryptBody(
       activeNotes[index].content.content,
       noteID: id,
+      attachmentKey: activeNotes[index].content.attachmentKey,
       using: key
     )
     activeNotes[index].envelope.isLocked = true

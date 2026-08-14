@@ -22,6 +22,12 @@
       "migrations_dir": "./migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "NOTE_ATTACHMENTS",
+      "bucket_name": "notes"
+    }
+  ],
   "ratelimits": [
     {
       "name": "IP_INFO_CLIENT_RATE_LIMITER",

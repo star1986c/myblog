@@ -13,6 +13,7 @@ final class Models {
 
   static final int MAX_TITLE_LENGTH = 200;
   static final int MAX_CONTENT_LENGTH = 500_000;
+  static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
   static final class User {
     final String username;
@@ -59,11 +60,22 @@ final class Models {
     String title;
     String content;
     ProtectedBody protectedContent;
+    String attachmentKey;
 
     NoteContent(String title, String content, ProtectedBody protectedContent) {
+      this(title, content, protectedContent, null);
+    }
+
+    NoteContent(
+      String title,
+      String content,
+      ProtectedBody protectedContent,
+      String attachmentKey
+    ) {
       this.title = title;
       this.content = content;
       this.protectedContent = protectedContent;
+      this.attachmentKey = attachmentKey;
     }
 
     NoteContent normalized() {
@@ -76,7 +88,7 @@ final class Models {
       if (normalizedContent.length() > MAX_CONTENT_LENGTH) {
         normalizedContent = normalizedContent.substring(0, MAX_CONTENT_LENGTH);
       }
-      return new NoteContent(normalizedTitle, normalizedContent, protectedContent);
+      return new NoteContent(normalizedTitle, normalizedContent, protectedContent, attachmentKey);
     }
 
     static NoteContent fromJson(JSONObject json) {
@@ -84,7 +96,8 @@ final class Models {
       return new NoteContent(
         json.optString("title"),
         json.optString("content"),
-        protectedJson == null ? null : ProtectedBody.fromJson(protectedJson)
+        protectedJson == null ? null : ProtectedBody.fromJson(protectedJson),
+        nullableString(json, "attachmentKey")
       ).normalized();
     }
 
@@ -95,8 +108,130 @@ final class Models {
         .put("content", normalized.protectedContent == null ? normalized.content : "");
       if (normalized.protectedContent != null) {
         json.put("protectedContent", normalized.protectedContent.toJson());
+      } else if (normalized.attachmentKey != null) {
+        json.put("attachmentKey", normalized.attachmentKey);
       }
       return json;
+    }
+  }
+
+  static final class ProtectedPlaintext {
+    final String content;
+    final String attachmentKey;
+
+    ProtectedPlaintext(String content, String attachmentKey) {
+      this.content = content;
+      this.attachmentKey = attachmentKey;
+    }
+  }
+
+  static final class AttachmentEnvelope {
+    final String id;
+    final String noteId;
+    final int version;
+    int revision;
+    String ciphertext;
+    String nonce;
+    boolean locked;
+    final int ciphertextBytes;
+    final String createdAt;
+    String updatedAt;
+
+    AttachmentEnvelope(
+      String id,
+      String noteId,
+      int version,
+      int revision,
+      String ciphertext,
+      String nonce,
+      boolean locked,
+      int ciphertextBytes,
+      String createdAt,
+      String updatedAt
+    ) {
+      this.id = id;
+      this.noteId = noteId;
+      this.version = version;
+      this.revision = revision;
+      this.ciphertext = ciphertext;
+      this.nonce = nonce;
+      this.locked = locked;
+      this.ciphertextBytes = ciphertextBytes;
+      this.createdAt = createdAt;
+      this.updatedAt = updatedAt;
+    }
+
+    static AttachmentEnvelope fromJson(JSONObject json) {
+      return new AttachmentEnvelope(
+        json.optString("id"),
+        json.optString("noteId"),
+        json.optInt("version"),
+        json.optInt("revision", 1),
+        json.optString("ciphertext"),
+        json.optString("nonce"),
+        json.optBoolean("isLocked"),
+        json.optInt("ciphertextBytes"),
+        nullableString(json, "createdAt"),
+        nullableString(json, "updatedAt")
+      );
+    }
+  }
+
+  static final class AttachmentMetadata {
+    final String contentType;
+    final int pixelWidth;
+    final int pixelHeight;
+    final int plaintextBytes;
+    final String objectNonce;
+    final String dataKey;
+
+    AttachmentMetadata(
+      String contentType,
+      int pixelWidth,
+      int pixelHeight,
+      int plaintextBytes,
+      String objectNonce,
+      String dataKey
+    ) {
+      this.contentType = contentType;
+      this.pixelWidth = pixelWidth;
+      this.pixelHeight = pixelHeight;
+      this.plaintextBytes = plaintextBytes;
+      this.objectNonce = objectNonce;
+      this.dataKey = dataKey;
+    }
+
+    JSONObject toJson() throws JSONException {
+      return new JSONObject()
+        .put("contentType", contentType)
+        .put("pixelWidth", pixelWidth)
+        .put("pixelHeight", pixelHeight)
+        .put("plaintextBytes", plaintextBytes)
+        .put("objectNonce", objectNonce)
+        .put("dataKey", dataKey);
+    }
+
+    static AttachmentMetadata fromJson(JSONObject json) {
+      return new AttachmentMetadata(
+        json.optString("contentType"),
+        json.optInt("pixelWidth"),
+        json.optInt("pixelHeight"),
+        json.optInt("plaintextBytes"),
+        json.optString("objectNonce"),
+        json.optString("dataKey")
+      );
+    }
+  }
+
+  static final class AttachmentDocument {
+    final AttachmentEnvelope envelope;
+    final AttachmentMetadata metadata;
+    byte[] imageData;
+
+    AttachmentDocument(AttachmentEnvelope envelope, AttachmentMetadata metadata, byte[] imageData) {
+      this.envelope = envelope;
+      this.metadata = metadata;
+      this.imageData = imageData;
     }
   }
 
