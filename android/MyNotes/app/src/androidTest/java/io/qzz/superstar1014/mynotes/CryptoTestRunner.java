@@ -27,7 +27,8 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyEncryptedAttachments();
       verifyAttachmentDiskCache();
       verifySecureSessionStorage();
-      result.putString(REPORT_KEY_STREAMRESULT, "My Notes crypto interoperability: PASS\n");
+      verifyBiometricProtectionEnvelope();
+      result.putString(REPORT_KEY_STREAMRESULT, "My Notes crypto and biometric storage: PASS\n");
       finish(Activity.RESULT_OK, result);
     } catch (Throwable error) {
       result.putString(
@@ -251,6 +252,52 @@ public final class CryptoTestRunner extends Instrumentation {
     store.clear();
     require(store.load().isEmpty(), "Secure session clear failed");
     require(store.loadDeviceToken().isEmpty(), "Secure device token clear failed");
+  }
+
+  private static void verifyBiometricProtectionEnvelope() {
+    byte[] iv = new byte[12];
+    byte[] encryptedKey = new byte[48];
+    Arrays.fill(iv, (byte) 0x21);
+    Arrays.fill(encryptedKey, (byte) 0x4B);
+    String stored = BiometricProtectionStore.encodePayload(iv, encryptedKey);
+    require(stored.startsWith("v1."), "Biometric payload version is missing");
+    BiometricProtectionStore.WrappedPayload decoded = BiometricProtectionStore.decodePayload(stored);
+    require(Arrays.equals(iv, decoded.iv), "Biometric IV round trip failed");
+    require(Arrays.equals(encryptedKey, decoded.ciphertext), "Biometric ciphertext round trip failed");
+
+    Models.ProtectionKeyring keyring = new Models.ProtectionKeyring(
+      "notes-protection",
+      1,
+      "PBKDF2-SHA256",
+      310_000,
+      "salt",
+      "wrapped-key-v1",
+      "nonce",
+      4
+    );
+    Models.ProtectionKeyring changed = new Models.ProtectionKeyring(
+      "notes-protection",
+      1,
+      "PBKDF2-SHA256",
+      310_000,
+      "salt",
+      "wrapped-key-v2",
+      "nonce",
+      5
+    );
+    require(
+      !BiometricProtectionStore.bindingFor(keyring).equals(
+        BiometricProtectionStore.bindingFor(changed)
+      ),
+      "Biometric binding ignored protection keyring changes"
+    );
+    boolean rejected = false;
+    try {
+      BiometricProtectionStore.decodePayload("v1.invalid");
+    } catch (IllegalArgumentException expected) {
+      rejected = true;
+    }
+    require(rejected, "Malformed biometric payload was accepted");
   }
 
   private void verifyAttachmentDiskCache() {

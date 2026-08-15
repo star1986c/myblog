@@ -83,6 +83,7 @@ public final class MainActivity extends Activity {
 
   private NotesApiClient api;
   private AttachmentDiskCache attachmentCache;
+  private BiometricProtectionStore biometricStore;
   private Models.User user;
   private SecretKey dataKey;
   private Models.ProtectionKeyring protectionKeyring;
@@ -122,6 +123,7 @@ public final class MainActivity extends Activity {
     );
     api = new NotesApiClient(this, demoMode ? "http://127.0.0.1:9/" : NotesApiClient.PRODUCTION_BASE_URL);
     attachmentCache = new AttachmentDiskCache(this);
+    biometricStore = new BiometricProtectionStore(this);
     if (demoMode) loadDemoData();
     else restoreSession();
   }
@@ -164,13 +166,25 @@ public final class MainActivity extends Activity {
         "可以搜索标题和正文，并按文件夹筛选笔记。",
         false
       ));
-      notes.add(demoNote(
+      CryptoEngine.ProtectionSetup demoProtection = CryptoEngine.createProtectionKeyring(
+        "demo-protection-2026"
+      );
+      protectionKeyring = Models.ProtectionKeyring.fromJson(
+        new JSONObject(demoProtection.payload.toString()).put("revision", 1)
+      );
+      Models.NoteDocument protectedDemo = demoNote(
         "note_demo_protected",
         "folder_demo_account",
         "账号安全约定",
         "",
         true
-      ));
+      );
+      protectedDemo.content.protectedContent = CryptoEngine.encryptProtectedBody(
+        demoProtection.key,
+        protectedDemo.envelope.id,
+        "这是仅用于 Android 界面验证的受保护示例正文。"
+      );
+      notes.add(protectedDemo);
       trash.clear();
       Models.NoteDocument deleted = demoNote(
         "note_demo_deleted",
@@ -431,7 +445,7 @@ public final class MainActivity extends Activity {
     boolean landscape = getResources().getConfiguration().orientation
       == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
     boolean largeText = getResources().getConfiguration().fontScale >= 1.2f;
-    int summaryHeight = landscape ? (largeText ? 64 : 52) : (largeText ? 72 : 60);
+    int summaryHeight = landscape ? (largeText ? 64 : 54) : (largeText ? 72 : 62);
 
     FrameLayout root = new FrameLayout(this);
     root.setBackgroundColor(getColor(R.color.background));
@@ -439,7 +453,7 @@ public final class MainActivity extends Activity {
     root.addView(column, frameMatch());
 
     LinearLayout topBar = horizontalLayout(Gravity.CENTER_VERTICAL);
-    topBar.setPadding(dp(18), landscape ? dp(6) : dp(12), dp(14), landscape ? dp(4) : dp(8));
+    topBar.setPadding(dp(18), landscape ? dp(6) : dp(10), dp(14), landscape ? dp(4) : dp(6));
     ImageView brandIcon = iconView(R.drawable.ic_note, R.color.on_brand, "My Notes", 22);
     brandIcon.setBackground(roundedBackground(R.color.brand_primary, 14));
     brandIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -458,21 +472,12 @@ public final class MainActivity extends Activity {
     ImageButton refresh = iconButton(R.drawable.ic_refresh, "刷新笔记", false);
     refresh.setOnClickListener(view -> loadAllData());
     topBar.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    ImageButton locationButton = iconButton(R.drawable.ic_folder, "文件夹和账户菜单", true);
-    locationButton.setOnClickListener(this::showLocationMenu);
-    LinearLayout.LayoutParams locationParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-    locationParams.setMarginStart(dp(8));
-    topBar.addView(locationButton, locationParams);
-    if (landscape && !LOCATION_TRASH.equals(location)) {
-      ImageButton newNote = iconButton(R.drawable.ic_add, getString(R.string.new_note), false);
-      newNote.setImageTintList(ColorStateList.valueOf(getColor(R.color.on_brand)));
-      newNote.setBackground(rippleBackground(R.color.brand_primary, 16));
-      newNote.setOnClickListener(view -> createNote());
-      LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-      addParams.setMarginStart(dp(8));
-      topBar.addView(newNote, addParams);
-    }
-    column.addView(topBar, matchHeight(dp(landscape ? 60 : 72), 0, 0, 0, 0));
+    ImageButton profile = iconButton(R.drawable.ic_person, "账户与安全", true);
+    profile.setOnClickListener(this::showAccountMenu);
+    LinearLayout.LayoutParams profileParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+    profileParams.setMarginStart(dp(6));
+    topBar.addView(profile, profileParams);
+    column.addView(topBar, matchHeight(dp(landscape ? 60 : 68), 0, 0, 0, 0));
 
     EditText search = editText(getString(R.string.search_notes), false);
     search.setSingleLine(true);
@@ -481,7 +486,7 @@ public final class MainActivity extends Activity {
     searchIcon.setTint(getColor(R.color.text_secondary));
     search.setCompoundDrawablesWithIntrinsicBounds(searchIcon, null, null, null);
     search.setCompoundDrawablePadding(dp(10));
-    search.setBackground(roundedStrokeBackground(R.color.surface, R.color.divider, 18, 1));
+    search.setBackground(roundedStrokeBackground(R.color.surface, R.color.divider, 24, 1));
     search.setPadding(dp(16), dp(8), dp(16), dp(8));
     search.addTextChangedListener(new SimpleTextWatcher() {
       @Override public void afterTextChanged(Editable editable) {
@@ -492,38 +497,41 @@ public final class MainActivity extends Activity {
     LinearLayout.LayoutParams searchParams = matchHeight(
       dp(landscape ? 48 : 56),
       18,
-      landscape ? 0 : 4,
+      landscape ? 0 : 2,
       18,
-      landscape ? 6 : 12
+      landscape ? 6 : 10
     );
     column.addView(search, searchParams);
 
-    HorizontalScrollView folderScroll = new HorizontalScrollView(this);
-    folderScroll.setHorizontalScrollBarEnabled(false);
-    folderScroll.setClipToPadding(false);
-    folderScroll.setPadding(dp(14), 0, dp(14), 0);
-    LinearLayout folderRail = horizontalLayout(Gravity.CENTER_VERTICAL);
-    addFolderChip(folderRail, "全部", LOCATION_ALL, R.drawable.ic_note);
-    addFolderChip(folderRail, "未分类", LOCATION_UNFILED, R.drawable.ic_unfiled);
-    for (Models.FolderDocument folder : folders) {
-      addFolderChip(
-        folderRail,
-        folder.name,
-        LOCATION_FOLDER_PREFIX + folder.envelope.id,
-        R.drawable.ic_folder
-      );
+    if (!landscape && !largeText) {
+      LinearLayout shortcuts = horizontalLayout(Gravity.CENTER_VERTICAL);
+      shortcuts.setPadding(dp(14), 0, dp(14), 0);
+      Button quickNote = shortcutButton("新建笔记", R.drawable.ic_edit);
+      quickNote.setOnClickListener(view -> createNote());
+      shortcuts.addView(quickNote, shortcutParams());
+      Button quickFolder = shortcutButton("新建文件夹", R.drawable.ic_folder);
+      quickFolder.setOnClickListener(view -> createFolder());
+      shortcuts.addView(quickFolder, shortcutParams());
+      Button quickManage = shortcutButton("文件夹管理", R.drawable.ic_sort);
+      quickManage.setOnClickListener(view -> manageFolders());
+      shortcuts.addView(quickManage, shortcutParams());
+      Button quickTrash = shortcutButton("回收站", R.drawable.ic_trash);
+      quickTrash.setOnClickListener(view -> {
+        location = LOCATION_TRASH;
+        searchQuery = "";
+        renderHome();
+      });
+      shortcuts.addView(quickTrash, shortcutParams());
+      column.addView(shortcuts, matchHeight(dp(96), 0, 0, 0, 10));
     }
-    addFolderChip(folderRail, "回收站", LOCATION_TRASH, R.drawable.ic_trash);
-    folderScroll.addView(folderRail, new HorizontalScrollView.LayoutParams(
-      ViewGroup.LayoutParams.WRAP_CONTENT,
-      dp(landscape ? 42 : 48)
-    ));
-    column.addView(folderScroll, matchHeight(dp(landscape ? 42 : 48), 0, 0, 0, landscape ? 4 : 8));
+
+    LinearLayout contentSheet = verticalLayout(0);
+    contentSheet.setBackground(roundedBackground(R.color.surface, 28));
 
     LinearLayout summary = horizontalLayout(Gravity.CENTER_VERTICAL);
     summary.setPadding(dp(20), 0, dp(14), 0);
     LinearLayout summaryText = verticalLayout(0);
-    TextView locationTitle = text(locationTitle(), 20, R.color.text_primary);
+    TextView locationTitle = text(locationTitle(), 21, R.color.text_primary);
     locationTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
     summaryText.addView(locationTitle, matchWrap(0, 0, 0, 0));
     int count = visibleNotes.size();
@@ -534,28 +542,145 @@ public final class MainActivity extends Activity {
     );
     summaryText.addView(homeCount, matchWrap(0, 0, 0, 0));
     summary.addView(summaryText, new LinearLayout.LayoutParams(0, dp(summaryHeight), 1));
-    ImageButton mode = iconButton(modeIcon(), "切换笔记列表显示方式，当前" + modeTitle(), true);
+    ImageButton mode = iconButton(modeIcon(), "切换笔记列表显示方式，当前" + modeTitle(), false);
     mode.setOnClickListener(this::showModeMenu);
     summary.addView(mode, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    column.addView(summary, matchHeight(dp(summaryHeight), 0, 0, 0, 0));
+    contentSheet.addView(summary, matchHeight(dp(summaryHeight), 0, 0, 0, 0));
+
+    HorizontalScrollView folderScroll = new HorizontalScrollView(this);
+    folderScroll.setHorizontalScrollBarEnabled(false);
+    folderScroll.setClipToPadding(false);
+    folderScroll.setPadding(dp(14), 0, dp(14), 0);
+    LinearLayout folderRail = horizontalLayout(Gravity.CENTER_VERTICAL);
+    addFolderChip(folderRail, "全部", LOCATION_ALL, R.drawable.ic_home);
+    addFolderChip(folderRail, "未分类", LOCATION_UNFILED, R.drawable.ic_unfiled);
+    for (Models.FolderDocument folder : folders) {
+      addFolderChip(
+        folderRail,
+        folder.name,
+        LOCATION_FOLDER_PREFIX + folder.envelope.id,
+        R.drawable.ic_folder
+      );
+    }
+    folderScroll.addView(folderRail, new HorizontalScrollView.LayoutParams(
+      ViewGroup.LayoutParams.WRAP_CONTENT,
+      dp(landscape ? 42 : 48)
+    ));
+    contentSheet.addView(folderScroll, matchHeight(dp(landscape ? 42 : 48), 0, 0, 0, 4));
 
     homeListContainer = new FrameLayout(this);
     homeListContainer.setId(View.generateViewId());
-    column.addView(homeListContainer, new LinearLayout.LayoutParams(
+    contentSheet.addView(homeListContainer, new LinearLayout.LayoutParams(
       ViewGroup.LayoutParams.MATCH_PARENT,
       0,
       1
     ));
     populateListContainer(homeListContainer);
 
-    if (!LOCATION_TRASH.equals(location)) {
-      if (!landscape) {
-        IconTextButton newNote = primaryIconButton(getString(R.string.new_note), R.drawable.ic_add);
-        newNote.setOnClickListener(view -> createNote());
-        column.addView(newNote, matchHeight(dp(56), 18, 10, 18, 16));
-      }
-    }
+    LinearLayout.LayoutParams sheetParams = new LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT,
+      0,
+      1
+    );
+    sheetParams.setMargins(dp(10), 0, dp(10), dp(6));
+    column.addView(contentSheet, sheetParams);
+
+    column.addView(buildBottomNavigation(), matchHeight(dp(landscape ? 68 : 78), 0, 0, 0, 0));
     setContentView(applySystemInsets(root));
+  }
+
+  private LinearLayout buildBottomNavigation() {
+    LinearLayout navigation = horizontalLayout(Gravity.CENTER);
+    navigation.setPadding(dp(6), dp(4), dp(6), dp(4));
+    navigation.setBackground(roundedBackground(R.color.surface, 24));
+
+    Button recent = navigationButton("最新", R.drawable.ic_home, LOCATION_ALL.equals(location));
+    recent.setOnClickListener(view -> {
+      location = LOCATION_ALL;
+      searchQuery = "";
+      renderHome();
+    });
+    navigation.addView(recent, weightedNavigationParams());
+
+    Button folder = navigationButton(
+      "文件夹",
+      R.drawable.ic_folder,
+      LOCATION_UNFILED.equals(location) || location.startsWith(LOCATION_FOLDER_PREFIX)
+    );
+    folder.setOnClickListener(this::showLocationMenu);
+    navigation.addView(folder, weightedNavigationParams());
+
+    ImageButton add = iconButton(R.drawable.ic_add, getString(R.string.new_note), false);
+    add.setImageTintList(ColorStateList.valueOf(getColor(R.color.on_brand)));
+    add.setBackground(rippleBackground(R.color.brand_primary, 28));
+    add.setOnClickListener(view -> createNote());
+    LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(dp(58), dp(58));
+    addParams.setMargins(dp(8), dp(4), dp(8), dp(4));
+    navigation.addView(add, addParams);
+
+    Button trashButton = navigationButton("回收站", R.drawable.ic_trash, LOCATION_TRASH.equals(location));
+    trashButton.setOnClickListener(view -> {
+      location = LOCATION_TRASH;
+      searchQuery = "";
+      renderHome();
+    });
+    navigation.addView(trashButton, weightedNavigationParams());
+
+    Button accountButton = navigationButton("我的", R.drawable.ic_person, false);
+    accountButton.setOnClickListener(this::showAccountMenu);
+    navigation.addView(accountButton, weightedNavigationParams());
+    return navigation;
+  }
+
+  private Button shortcutButton(String label, int iconRes) {
+    Button button = new Button(this);
+    button.setText(label);
+    button.setTextSize(12);
+    button.setTextColor(getColor(R.color.text_primary));
+    button.setAllCaps(false);
+    button.setGravity(Gravity.CENTER);
+    button.setPadding(dp(5), dp(8), dp(5), dp(8));
+    button.setMinHeight(dp(84));
+    Drawable icon = getDrawable(iconRes);
+    icon.setTint(getColor(R.color.brand_primary_dark));
+    icon.setBounds(0, 0, dp(26), dp(26));
+    button.setCompoundDrawablePadding(dp(8));
+    button.setCompoundDrawables(null, icon, null, null);
+    button.setBackground(rippleStrokeBackground(R.color.surface, R.color.divider, 20));
+    return button;
+  }
+
+  private Button navigationButton(String label, int iconRes, boolean selected) {
+    Button button = new Button(this);
+    button.setText(label);
+    button.setTextSize(11);
+    button.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+    button.setTextColor(getColor(selected ? R.color.brand_primary_dark : R.color.text_secondary));
+    button.setAllCaps(false);
+    button.setGravity(Gravity.CENTER);
+    button.setPadding(dp(4), dp(5), dp(4), dp(3));
+    button.setMinHeight(dp(56));
+    Drawable icon = getDrawable(iconRes);
+    icon.setTint(getColor(selected ? R.color.brand_primary_dark : R.color.text_secondary));
+    icon.setBounds(0, 0, dp(23), dp(23));
+    button.setCompoundDrawablePadding(dp(3));
+    button.setCompoundDrawables(null, icon, null, null);
+    button.setBackground(rippleBackground(selected ? R.color.surface_tonal : R.color.surface, 16));
+    button.setSelected(selected);
+    button.setContentDescription(label + (selected ? "，已选择" : ""));
+    return button;
+  }
+
+  private LinearLayout.LayoutParams shortcutParams() {
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(88), 1);
+    params.setMargins(dp(4), 0, dp(4), 0);
+    return params;
+  }
+
+  private LinearLayout.LayoutParams weightedNavigationParams() {
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(64), 1);
+    params.setMargins(dp(2), 0, dp(2), 0);
+    return params;
   }
 
   private void addFolderChip(LinearLayout rail, String label, String value, int iconRes) {
@@ -674,27 +799,17 @@ public final class MainActivity extends Activity {
     }
     menu.getMenu().add(2, 3, 1_000, "新建文件夹").setIcon(R.drawable.ic_add);
     if (!folders.isEmpty()) menu.getMenu().add(2, 6, 1_001, "文件夹排序与管理").setIcon(R.drawable.ic_sort);
-    menu.getMenu().add(2, 4, 1_002, "回收站（" + trash.size() + "）").setIcon(R.drawable.ic_trash);
-    menu.getMenu().add(3, 7, 2_000, "修改登录密码").setIcon(R.drawable.ic_key);
-    menu.getMenu().add(3, 5, 2_001, "退出登录").setIcon(R.drawable.ic_logout);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 1) location = LOCATION_ALL;
       else if (item.getItemId() == 2) location = LOCATION_UNFILED;
       else if (item.getItemId() == 3) {
         createFolder();
         return true;
-      } else if (item.getItemId() == 4) location = LOCATION_TRASH;
-      else if (item.getItemId() == 6) {
+      } else if (item.getItemId() == 6) {
         manageFolders();
         return true;
       }
-      else if (item.getItemId() == 5) {
-        logout();
-        return true;
-      } else if (item.getItemId() == 7) {
-        showChangePasswordDialog();
-        return true;
-      } else if (item.getGroupId() == 1) {
+      else if (item.getGroupId() == 1) {
         int index = item.getItemId() - 100;
         if (index >= 0 && index < folders.size()) {
           location = LOCATION_FOLDER_PREFIX + folders.get(index).envelope.id;
@@ -703,6 +818,39 @@ public final class MainActivity extends Activity {
       searchQuery = "";
       renderHome();
       return true;
+    });
+    menu.show();
+  }
+
+  private void showAccountMenu(View anchor) {
+    PopupMenu menu = new PopupMenu(this, anchor);
+    boolean fingerprintConfigured = biometricStore.isConfiguredFor(protectionKeyring);
+    android.view.MenuItem fingerprint = menu.getMenu().add(
+      0,
+      8,
+      0,
+      fingerprintConfigured ? "关闭指纹解锁" : "启用指纹解锁"
+    ).setIcon(R.drawable.ic_fingerprint);
+    if (!fingerprintConfigured && !biometricStore.isAvailable()) {
+      fingerprint.setTitle("指纹解锁不可用");
+    }
+    menu.getMenu().add(0, 7, 1, "修改登录密码").setIcon(R.drawable.ic_key);
+    menu.getMenu().add(0, 5, 2, "退出登录").setIcon(R.drawable.ic_logout);
+    menu.setOnMenuItemClickListener(item -> {
+      if (item.getItemId() == 8) {
+        if (fingerprintConfigured) disableBiometric();
+        else enableBiometricFromSettings();
+        return true;
+      }
+      if (item.getItemId() == 7) {
+        showChangePasswordDialog();
+        return true;
+      }
+      if (item.getItemId() == 5) {
+        logout();
+        return true;
+      }
+      return false;
     });
     menu.show();
   }
@@ -853,16 +1001,31 @@ public final class MainActivity extends Activity {
       lockTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
       lockTitle.setGravity(Gravity.CENTER);
       lockPanel.addView(lockTitle, matchWrap(0, 22, 0, 8));
-      TextView description = text("输入独立保护密码后，才能在这台设备上查看正文。", 15, R.color.text_secondary);
+      boolean fingerprintReady = biometricStore.isConfiguredFor(protectionKeyring);
+      TextView description = text(
+        fingerprintReady
+          ? "使用手机指纹快速解锁，保护密码和正文不会交给系统。"
+          : "输入独立保护密码后，才能在这台设备上查看正文。",
+        15,
+        R.color.text_secondary
+      );
       description.setGravity(Gravity.CENTER);
       description.setLineSpacing(0, 1.25f);
       lockPanel.addView(description, matchWrap(0, 0, 0, 24));
-      IconTextButton unlock = primaryIconButton(getString(R.string.unlock), R.drawable.ic_lock);
+      IconTextButton unlock = primaryIconButton(
+        fingerprintReady ? "使用指纹解锁" : getString(R.string.unlock),
+        fingerprintReady ? R.drawable.ic_fingerprint : R.drawable.ic_lock
+      );
       unlock.setOnClickListener(view -> unlockSelected(null));
       lockPanel.addView(unlock, new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         dp(56)
       ));
+      if (fingerprintReady) {
+        Button passwordUnlock = secondaryButton("改用保护密码");
+        passwordUnlock.setOnClickListener(view -> unlockSelectedWithPassword(null));
+        lockPanel.addView(passwordUnlock, matchHeight(dp(52), 0, 10, 0, 0));
+      }
       paper.addView(lockPanel, new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         0,
@@ -1184,24 +1347,110 @@ public final class MainActivity extends Activity {
       toast("尚未设置保护密码。");
       return;
     }
+    if (protectionKey != null) {
+      completeSelectedUnlock(afterUnlock);
+      return;
+    }
+    if (biometricStore.isConfiguredFor(protectionKeyring)) {
+      biometricStore.unlock(
+        protectionKeyring,
+        key -> {
+          protectionKey = key;
+          completeSelectedUnlock(afterUnlock);
+        },
+        () -> {},
+        error -> {
+          toast(error.getMessage() == null ? "指纹解锁失败，请使用保护密码。" : error.getMessage());
+          renderEditor();
+        }
+      );
+      return;
+    }
+    unlockSelectedWithPassword(afterUnlock);
+  }
+
+  private void unlockSelectedWithPassword(Runnable afterUnlock) {
     showProtectionDialog(false, credentials -> unlockProtection(credentials.password, () -> {
-      if (selectedNote == null || selectedNote.content.protectedContent == null) return;
-      try {
-        Models.ProtectedPlaintext plaintext = CryptoEngine.decryptProtectedPayload(
-          protectionKey,
-          selectedNote.envelope.id,
-          selectedNote.content.protectedContent
-        );
-        selectedNote.content.content = plaintext.content;
-        selectedNote.content.attachmentKey = plaintext.attachmentKey;
-        selectedNote.unlocked = true;
-        if (afterUnlock != null) afterUnlock.run();
-        else renderEditor();
-      } catch (Exception error) {
-        protectionKey = null;
-        showError(error);
+      if (completeSelectedUnlock(afterUnlock) && afterUnlock == null) {
+        handler.post(this::maybeOfferBiometricEnrollment);
       }
     }));
+  }
+
+  private boolean completeSelectedUnlock(Runnable afterUnlock) {
+    if (selectedNote == null || selectedNote.content.protectedContent == null || protectionKey == null) {
+      return false;
+    }
+    try {
+      Models.ProtectedPlaintext plaintext = CryptoEngine.decryptProtectedPayload(
+        protectionKey,
+        selectedNote.envelope.id,
+        selectedNote.content.protectedContent
+      );
+      selectedNote.content.content = plaintext.content;
+      selectedNote.content.attachmentKey = plaintext.attachmentKey;
+      selectedNote.unlocked = true;
+      if (afterUnlock != null) afterUnlock.run();
+      else renderEditor();
+      return true;
+    } catch (Exception error) {
+      protectionKey = null;
+      showError(error);
+      return false;
+    }
+  }
+
+  private void maybeOfferBiometricEnrollment() {
+    if (protectionKey == null || protectionKeyring == null
+      || !biometricStore.isAvailable() || biometricStore.isConfiguredFor(protectionKeyring)) return;
+    new AlertDialog.Builder(this)
+      .setTitle("启用指纹快速解锁？")
+      .setMessage("以后可用手机指纹查看所有受保护笔记。本机只保存由 Android Keystore 加密的共享保护密钥，不保存保护密码。")
+      .setNegativeButton("以后再说", null)
+      .setPositiveButton("启用", (dialog, which) -> enrollBiometric())
+      .show();
+  }
+
+  private void enrollBiometric() {
+    if (protectionKeyring == null || protectionKey == null) {
+      toast("请先输入独立保护密码。" );
+      return;
+    }
+    biometricStore.enroll(
+      protectionKeyring,
+      protectionKey,
+      () -> toast("已启用指纹快速解锁"),
+      () -> {},
+      error -> toast(error.getMessage() == null ? "无法启用指纹解锁。" : error.getMessage())
+    );
+  }
+
+  private void enableBiometricFromSettings() {
+    if (!biometricStore.isAvailable()) {
+      toast("请先在手机系统中设置可用的强指纹。" );
+      return;
+    }
+    if (protectionKeyring == null) {
+      toast("请先为一条笔记设置独立保护密码。" );
+      return;
+    }
+    showProtectionDialog(false, credentials -> unlockProtection(
+      credentials.password,
+      this::enrollBiometric
+    ));
+  }
+
+  private void disableBiometric() {
+    new AlertDialog.Builder(this)
+      .setTitle("关闭指纹解锁？")
+      .setMessage("关闭后仍可使用独立保护密码解锁，不会修改服务端上的加密笔记。")
+      .setNegativeButton("取消", null)
+      .setPositiveButton("关闭", (dialog, which) -> {
+        biometricStore.clear();
+        protectionKey = null;
+        toast("已关闭指纹快速解锁");
+      })
+      .show();
   }
 
   private void unlockProtection(String password, Runnable success) {
@@ -2219,6 +2468,19 @@ public final class MainActivity extends Activity {
 
   private IconTextButton primaryIconButton(String label, int drawableRes) {
     return new IconTextButton(label, drawableRes);
+  }
+
+  private Button secondaryButton(String label) {
+    Button button = new Button(this);
+    button.setText(label);
+    button.setTextSize(15);
+    button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    button.setTextColor(getColor(R.color.brand_primary_dark));
+    button.setAllCaps(false);
+    button.setGravity(Gravity.CENTER);
+    button.setMinHeight(dp(48));
+    button.setBackground(rippleStrokeBackground(R.color.surface, R.color.brand_primary, 18));
+    return button;
   }
 
   private Button chipButton(String label, int drawableRes, boolean selected) {
