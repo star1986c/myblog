@@ -18,7 +18,8 @@ final class AttachmentDiskCache {
   private final File directory;
 
   AttachmentDiskCache(Context context) {
-    this(new File(context.getCacheDir(), "encrypted-attachment-cache-v1"));
+    this.directory = new File(context.getNoBackupFilesDir(), "encrypted-attachment-cache-v1");
+    migrateLegacyCache(new File(context.getCacheDir(), "encrypted-attachment-cache-v1"));
   }
 
   AttachmentDiskCache(File directory) {
@@ -93,6 +94,37 @@ final class AttachmentDiskCache {
         file.delete();
       }
     }
+  }
+
+  private synchronized void migrateLegacyCache(File legacyDirectory) {
+    if (!legacyDirectory.exists() || legacyDirectory.equals(directory)) return;
+    File[] files = legacyDirectory.listFiles();
+    if (files == null || (!directory.exists() && !directory.mkdirs())) return;
+    for (File file : files) {
+      if (!file.isFile() || !file.getName().endsWith(".bin")) continue;
+      File destination = new File(directory, file.getName());
+      try {
+        if (destination.exists()) {
+          Files.deleteIfExists(file.toPath());
+        } else {
+          Files.move(
+            file.toPath(),
+            destination.toPath(),
+            StandardCopyOption.ATOMIC_MOVE
+          );
+        }
+      } catch (Exception ignored) {
+        try {
+          Files.move(
+            file.toPath(),
+            destination.toPath(),
+            StandardCopyOption.REPLACE_EXISTING
+          );
+        } catch (Exception ignoredFallback) {}
+      }
+    }
+    File[] remaining = legacyDirectory.listFiles();
+    if (remaining != null && remaining.length == 0) legacyDirectory.delete();
   }
 
   private File fileFor(Models.AttachmentEnvelope envelope) {

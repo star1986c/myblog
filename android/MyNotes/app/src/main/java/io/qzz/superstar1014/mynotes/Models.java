@@ -14,6 +14,7 @@ final class Models {
   static final int MAX_TITLE_LENGTH = 200;
   static final int MAX_CONTENT_LENGTH = 500_000;
   static final int MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+  static final int UNKNOWN_ATTACHMENT_COUNT = -1;
 
   static final class User {
     final String username;
@@ -253,6 +254,7 @@ final class Models {
     String updatedAt;
     String deletedAt;
     boolean locked;
+    int attachmentCount;
 
     NoteEnvelope(
       String id,
@@ -266,6 +268,34 @@ final class Models {
       String deletedAt,
       boolean locked
     ) {
+      this(
+        id,
+        folderId,
+        version,
+        revision,
+        ciphertext,
+        nonce,
+        createdAt,
+        updatedAt,
+        deletedAt,
+        locked,
+        UNKNOWN_ATTACHMENT_COUNT
+      );
+    }
+
+    NoteEnvelope(
+      String id,
+      String folderId,
+      int version,
+      int revision,
+      String ciphertext,
+      String nonce,
+      String createdAt,
+      String updatedAt,
+      String deletedAt,
+      boolean locked,
+      int attachmentCount
+    ) {
       this.id = id;
       this.folderId = folderId;
       this.version = version;
@@ -276,6 +306,7 @@ final class Models {
       this.updatedAt = updatedAt;
       this.deletedAt = deletedAt;
       this.locked = locked;
+      this.attachmentCount = attachmentCount < 0 ? UNKNOWN_ATTACHMENT_COUNT : attachmentCount;
     }
 
     static NoteEnvelope fromJson(JSONObject json) {
@@ -289,8 +320,13 @@ final class Models {
         nullableString(json, "createdAt"),
         nullableString(json, "updatedAt"),
         nullableString(json, "deletedAt"),
-        json.optBoolean("isLocked")
+        json.optBoolean("isLocked"),
+        json.has("attachmentCount") ? Math.max(0, json.optInt("attachmentCount")) : UNKNOWN_ATTACHMENT_COUNT
       );
+    }
+
+    boolean shouldRequestAttachments(NoteContent content, boolean demoMode) {
+      return !demoMode && attachmentCount != 0 && content.attachmentKey != null;
     }
 
     String displayDate() {

@@ -24,6 +24,10 @@ const NOTE_COLUMNS = [
   "created_at AS createdAt",
   "updated_at AS updatedAt",
   "deleted_at AS deletedAt",
+  `(SELECT COUNT(*)
+    FROM encrypted_note_attachments AS attachments
+    WHERE attachments.note_id = encrypted_notes.id
+      AND attachments.keyring_id = encrypted_notes.keyring_id) AS attachmentCount`,
 ].join(", ");
 
 class EncryptedNoteError extends Error {
@@ -115,7 +119,11 @@ async function listDeletedEncryptedNotes(db) {
 }
 
 function publicEnvelope(note) {
-  return { ...note, isLocked: Number(note.isLocked) === 1 || note.isLocked === true };
+  return {
+    ...note,
+    isLocked: Number(note.isLocked) === 1 || note.isLocked === true,
+    attachmentCount: Math.max(0, Number(note.attachmentCount) || 0),
+  };
 }
 
 async function createEncryptedNote(db, input) {
@@ -154,6 +162,7 @@ async function createEncryptedNote(db, input) {
     updatedAt: now,
     deletedAt: null,
     isLocked: note.isLocked === true,
+    attachmentCount: 0,
   };
 }
 

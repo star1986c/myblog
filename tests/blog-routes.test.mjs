@@ -67,7 +67,10 @@ class FakeStatement {
   }
 
   async all() {
-    if (this.sql.includes("FROM encrypted_note_attachments")) {
+    if (
+      this.sql.includes("FROM encrypted_note_attachments")
+      && !this.sql.includes("FROM encrypted_notes")
+    ) {
       const noteId = this.params.find((value) => (
         typeof value === "string" && value.startsWith("note_")
       ));
@@ -97,7 +100,18 @@ class FakeStatement {
         if (this.sql.includes("deleted_at IS NULL")) return !note.deletedAt;
         return true;
       });
-      return { results: notes };
+      return {
+        results: notes.map((note) => (
+          this.sql.includes("AS attachmentCount")
+            ? {
+                ...note,
+                attachmentCount: this.db.encryptedAttachments.filter(
+                  (attachment) => attachment.noteId === note.id,
+                ).length,
+              }
+            : note
+        )),
+      };
     }
 
     if (this.sql.includes("FROM media_assets")) {
@@ -1663,6 +1677,15 @@ test("administrator streams encrypted image attachments through private R2 with 
   const encryptedImage = new Uint8Array(128).fill(91);
   const attachmentPath = `/api/admin/encrypted-notes/${note.id}/attachments/${attachment.id}`;
 
+  const emptyNotes = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.equal(emptyNotes.status, 200);
+  assert.equal((await emptyNotes.json()).notes[0].attachmentCount, 0);
+
   const upload = await worker.fetch(
     new Request(`https://superstar1014.qzz.io${attachmentPath}`, {
       method: "POST",
@@ -1687,6 +1710,15 @@ test("administrator streams encrypted image attachments through private R2 with 
   assert.equal(db.encryptedAttachments.length, 1);
   assert.equal(bucket.objects.size, 1);
   assert.doesNotMatch(JSON.stringify(uploaded), /filename|image\/|data_key|plaintext/i);
+
+  const populatedNotes = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/encrypted-notes", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.equal(populatedNotes.status, 200);
+  assert.equal((await populatedNotes.json()).notes[0].attachmentCount, 1);
 
   const list = await worker.fetch(
     new Request(`https://superstar1014.qzz.io/api/admin/encrypted-notes/${note.id}/attachments`, {

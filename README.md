@@ -99,12 +99,15 @@ derives a wrapping key, while a random AES-256-GCM key encrypts protected note b
 macOS and Android share the format, show locked notes without exposing the body, and require the same
 independent protection password to reveal any protected note.
 
-Downloaded attachment bodies are cached in each app's private cache directory. The cache contains
-only the AES-GCM ciphertext returned by R2; decrypted image/audio bytes are never persisted as a
-long-lived cache. Cache keys include
+Downloaded attachment bodies are cached in app-private storage. Android keeps the encrypted cache in
+its no-backup files directory so normal cache eviction does not cause repeated R2 downloads, while
+macOS uses its private cache directory. Existing Android cache entries are migrated during upgrade.
+The cache contains only the AES-GCM ciphertext returned by R2; decrypted image/audio bytes are never
+persisted as a long-lived cache. Cache keys include
 the attachment revision and encrypted metadata fingerprint, so changed or damaged entries are removed
 and fetched again automatically. Deleting an attachment or permanently deleting a note also clears its
-local cached ciphertext.
+local cached ciphertext. Note-list responses include only an opaque attachment count, allowing Android
+to skip attachment-list requests entirely for notes known to have no attachments.
 
 Run its focused tests and build an ad-hoc signed app bundle:
 

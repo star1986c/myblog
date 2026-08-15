@@ -25,6 +25,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyRoundTripsAndBinding();
       verifySharedProtectionPassword();
       verifyEncryptedAttachments();
+      verifyAttachmentRequestHints();
       verifyAttachmentDiskCache();
       verifySecureSessionStorage();
       verifyBiometricProtectionEnvelope();
@@ -362,7 +363,11 @@ public final class CryptoTestRunner extends Instrumentation {
     );
 
     cache.write(envelope, encrypted);
-    require(Arrays.equals(encrypted, cache.read(envelope)), "Encrypted image cache round trip failed");
+    AttachmentDiskCache reopenedCache = new AttachmentDiskCache(directory);
+    require(
+      Arrays.equals(encrypted, reopenedCache.read(envelope)),
+      "Encrypted image cache did not persist across cache instances"
+    );
 
     Models.AttachmentEnvelope changed = new Models.AttachmentEnvelope(
       envelope.id,
@@ -384,6 +389,47 @@ public final class CryptoTestRunner extends Instrumentation {
     cache.removeNote(envelope.noteId);
     require(cache.read(changed) == null, "Deleted note retained encrypted image cache");
     directory.delete();
+  }
+
+  private static void verifyAttachmentRequestHints() throws Exception {
+    Models.NoteContent content = new Models.NoteContent("附件提示", "", null, "media-key");
+    Models.NoteEnvelope empty = Models.NoteEnvelope.fromJson(new org.json.JSONObject()
+      .put("id", "note_empty_attachments")
+      .put("version", 1)
+      .put("revision", 1)
+      .put("ciphertext", "ciphertext")
+      .put("nonce", "nonce")
+      .put("isLocked", false)
+      .put("attachmentCount", 0));
+    require(
+      !empty.shouldRequestAttachments(content, false),
+      "Known-empty note requested its attachment list"
+    );
+
+    Models.NoteEnvelope populated = Models.NoteEnvelope.fromJson(new org.json.JSONObject()
+      .put("id", "note_with_attachments")
+      .put("version", 1)
+      .put("revision", 1)
+      .put("ciphertext", "ciphertext")
+      .put("nonce", "nonce")
+      .put("isLocked", false)
+      .put("attachmentCount", 2));
+    require(
+      populated.shouldRequestAttachments(content, false),
+      "Note with attachments skipped its attachment list"
+    );
+
+    Models.NoteEnvelope legacy = Models.NoteEnvelope.fromJson(new org.json.JSONObject()
+      .put("id", "note_legacy_attachments")
+      .put("version", 1)
+      .put("revision", 1)
+      .put("ciphertext", "ciphertext")
+      .put("nonce", "nonce")
+      .put("isLocked", false));
+    require(
+      legacy.shouldRequestAttachments(content, false),
+      "Legacy server response lost attachment compatibility"
+    );
   }
 
   private static void require(boolean condition, String message) {

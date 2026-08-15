@@ -1896,6 +1896,7 @@ public final class MainActivity extends Activity {
       if (selectedNote != note) return;
       for (Models.AttachmentDocument item : attachments) item.mediaData = null;
       attachments.add(document);
+      note.envelope.attachmentCount = attachments.size();
       attachmentsNoteId = note.envelope.id;
       renderAttachmentGallery();
       if (saveStatus != null) {
@@ -1914,7 +1915,10 @@ public final class MainActivity extends Activity {
     if (note.envelope.id.equals(attachmentsNoteId)) return;
     attachments.clear();
     attachmentsNoteId = note.envelope.id;
-    if (note.content.attachmentKey == null || demoMode) {
+    if (!note.envelope.shouldRequestAttachments(note.content, demoMode)) {
+      if (note.envelope.attachmentCount == 0) {
+        executor.execute(() -> attachmentCache.removeNote(note.envelope.id));
+      }
       renderAttachmentGallery();
       return;
     }
@@ -1938,6 +1942,7 @@ public final class MainActivity extends Activity {
       attachmentsLoading = false;
       attachments.clear();
       attachments.addAll(loaded);
+      note.envelope.attachmentCount = loaded.size();
       renderAttachmentGallery();
     }, error -> {
       attachmentsLoading = false;
@@ -2173,6 +2178,7 @@ public final class MainActivity extends Activity {
         if (demoMode) {
           attachmentCache.remove(document.envelope);
           attachments.remove(document);
+          note.envelope.attachmentCount = attachments.size();
           renderAttachmentGallery();
           return;
         }
@@ -2183,6 +2189,7 @@ public final class MainActivity extends Activity {
         }, ignored -> {
           attachmentCache.remove(document.envelope);
           attachments.remove(document);
+          note.envelope.attachmentCount = attachments.size();
           renderAttachmentGallery();
           if (document.envelope.id.equals(playingAttachmentId)) stopAudioPlayback();
           if (saveStatus != null) saveStatus.setText("附件已删除");
@@ -2698,6 +2705,9 @@ public final class MainActivity extends Activity {
     target.updatedAt = source.updatedAt;
     target.deletedAt = source.deletedAt;
     target.locked = source.locked;
+    if (source.attachmentCount != Models.UNKNOWN_ATTACHMENT_COUNT) {
+      target.attachmentCount = source.attachmentCount;
+    }
   }
 
   private <T> void runAsync(Callable<T> work, Consumer<T> success) {
