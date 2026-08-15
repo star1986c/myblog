@@ -1128,6 +1128,7 @@ private struct AttachmentCard: View {
   @EnvironmentObject private var store: NotesStore
   let attachment: NoteAttachment
   let allowsDeletion: Bool
+  @State private var showsImagePreview = false
 
   var body: some View {
     ZStack(alignment: .topTrailing) {
@@ -1143,10 +1144,19 @@ private struct AttachmentCard: View {
               .font(.caption2)
               .foregroundStyle(.secondary)
           }
+          .accessibilityLabel("加密录音")
         } else if let data = attachment.imageData, let image = NSImage(data: data) {
-          Image(nsImage: image)
-            .resizable()
-            .scaledToFill()
+          Button {
+            showsImagePreview = true
+          } label: {
+            Image(nsImage: image)
+              .resizable()
+              .scaledToFill()
+          }
+          .buttonStyle(.plain)
+          .help("点击放大图片")
+          .accessibilityLabel("打开图片预览")
+          .accessibilityHint("在预览中可以缩放和拖动图片")
         } else {
           VStack(spacing: 8) {
             ProgressView()
@@ -1189,7 +1199,184 @@ private struct AttachmentCard: View {
         await store.loadAttachmentImage(id: attachment.id)
       }
     }
-    .accessibilityLabel(attachment.metadata.contentType == "audio/mp4" ? "加密录音" : "加密图片")
+    .sheet(isPresented: $showsImagePreview) {
+      if let data = attachment.imageData, let image = NSImage(data: data) {
+        ImageZoomViewer(image: image)
+      }
+    }
+    .accessibilityElement(children: .contain)
+  }
+}
+
+private struct ImageZoomViewer: View {
+  @Environment(\.dismiss) private var dismiss
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  let image: NSImage
+
+  @State private var scale: CGFloat = 1
+  @State private var gestureScale: CGFloat = 1
+  @State private var offset: CGSize = .zero
+  @State private var dragTranslation: CGSize = .zero
+  @State private var viewportSize: CGSize = .zero
+
+  private let minimumScale: CGFloat = 1
+  private let maximumScale: CGFloat = 6
+
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack(spacing: 8) {
+        Text("图片预览")
+          .font(.headline)
+        Spacer()
+        zoomButton("minus.magnifyingglass", help: "缩小（⌘-）", shortcut: "-") {
+          changeScale(by: 1 / 1.25)
+        }
+        Button {
+          resetZoom()
+        } label: {
+          Text("\(Int((effectiveScale * 100).rounded()))%")
+            .font(.caption.monospacedDigit())
+            .frame(minWidth: 54)
+        }
+        .buttonStyle(.bordered)
+        .keyboardShortcut("0", modifiers: .command)
+        .help("恢复适合窗口（⌘0）")
+        .accessibilityLabel("恢复适合窗口，当前缩放 \(Int((effectiveScale * 100).rounded()))%")
+        zoomButton("plus.magnifyingglass", help: "放大（⌘+）", shortcut: "+") {
+          changeScale(by: 1.25)
+        }
+        Divider()
+          .frame(height: 20)
+          .padding(.horizontal, 4)
+        Button("完成") { dismiss() }
+          .keyboardShortcut(.cancelAction)
+      }
+      .padding(.horizontal, 16)
+      .frame(height: 52)
+      .background(Color(nsColor: .windowBackgroundColor))
+
+      Divider()
+
+      GeometryReader { geometry in
+        ZStack {
+          Color(nsColor: .underPageBackgroundColor)
+
+          Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .scaleEffect(effectiveScale)
+            .offset(effectiveOffset)
+            .gesture(dragGesture(in: geometry.size))
+            .simultaneousGesture(magnifyGesture(in: geometry.size))
+            .onTapGesture(count: 2) {
+              if effectiveScale > minimumScale {
+                setScale(minimumScale, in: geometry.size)
+              } else {
+                setScale(2, in: geometry.size)
+              }
+            }
+            .accessibilityLabel("图片预览")
+            .accessibilityHint("双击可切换放大，放大后可拖动查看")
+        }
+        .clipped()
+        .onAppear { viewportSize = geometry.size }
+        .onChange(of: geometry.size) { _, newSize in
+          viewportSize = newSize
+          offset = constrained(offset, in: newSize, at: effectiveScale)
+        }
+      }
+    }
+    .frame(minWidth: 640, idealWidth: 900, minHeight: 480, idealHeight: 680)
+  }
+
+  private var effectiveScale: CGFloat {
+    min(maximumScale, max(minimumScale, scale * gestureScale))
+  }
+
+  private var effectiveOffset: CGSize {
+    CGSize(width: offset.width + dragTranslation.width, height: offset.height + dragTranslation.height)
+  }
+
+  private func zoomButton(
+    _ systemImage: String,
+    help: String,
+    shortcut: KeyEquivalent,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Image(systemName: systemImage)
+        .frame(width: 20, height: 20)
+    }
+    .buttonStyle(.bordered)
+    .keyboardShortcut(shortcut, modifiers: .command)
+    .help(help)
+    .accessibilityLabel(help)
+  }
+
+  private func magnifyGesture(in viewport: CGSize) -> some Gesture {
+    MagnifyGesture()
+      .onChanged { value in
+        gestureScale = value.magnification
+      }
+      .onEnded { value in
+        scale = min(maximumScale, max(minimumScale, scale * value.magnification))
+        gestureScale = 1
+        offset = constrained(offset, in: viewport, at: scale)
+        if scale == minimumScale { offset = .zero }
+      }
+  }
+
+  private func dragGesture(in viewport: CGSize) -> some Gesture {
+    DragGesture(minimumDistance: 3)
+      .onChanged { value in
+        guard effectiveScale > minimumScale else { return }
+        dragTranslation = value.translation
+      }
+      .onEnded { value in
+        guard effectiveScale > minimumScale else {
+          dragTranslation = .zero
+          offset = .zero
+          return
+        }
+        let proposed = CGSize(
+          width: offset.width + value.translation.width,
+          height: offset.height + value.translation.height
+        )
+        offset = constrained(proposed, in: viewport, at: effectiveScale)
+        dragTranslation = .zero
+      }
+  }
+
+  private func changeScale(by factor: CGFloat) {
+    setScale(scale * factor, in: viewportSize)
+  }
+
+  private func resetZoom() {
+    setScale(minimumScale, in: viewportSize)
+  }
+
+  private func setScale(_ proposedScale: CGFloat, in viewport: CGSize) {
+    let newScale = min(maximumScale, max(minimumScale, proposedScale))
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+      scale = newScale
+      gestureScale = 1
+      if newScale == minimumScale {
+        offset = .zero
+        dragTranslation = .zero
+      } else if viewport != .zero {
+        offset = constrained(offset, in: viewport, at: newScale)
+      }
+    }
+  }
+
+  private func constrained(_ proposed: CGSize, in viewport: CGSize, at currentScale: CGFloat) -> CGSize {
+    guard currentScale > minimumScale, viewport != .zero else { return currentScale > minimumScale ? proposed : .zero }
+    let horizontalLimit = viewport.width * (currentScale - 1) / 2
+    let verticalLimit = viewport.height * (currentScale - 1) / 2
+    return CGSize(
+      width: min(horizontalLimit, max(-horizontalLimit, proposed.width)),
+      height: min(verticalLimit, max(-verticalLimit, proposed.height))
+    )
   }
 }
 

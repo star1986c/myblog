@@ -91,6 +91,32 @@ public final class NotesStore: ObservableObject {
         )
       ]
       store.selectedID = store.activeNotes.first?.id
+      if let imageData = Data(
+        base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+      ) {
+        store.selectedAttachments = [
+          NoteAttachment(
+            envelope: EncryptedAttachmentEnvelope(
+              id: "preview_attachment",
+              noteId: "preview_0001",
+              version: 1,
+              ciphertext: "preview",
+              nonce: "preview",
+              isLocked: false,
+              ciphertextBytes: imageData.count
+            ),
+            metadata: AttachmentMetadata(
+              contentType: "image/png",
+              pixelWidth: 1,
+              pixelHeight: 1,
+              plaintextBytes: imageData.count,
+              objectNonce: "preview",
+              dataKey: "preview"
+            ),
+            imageData: imageData
+          )
+        ]
+      }
       return store
     }
 
@@ -529,6 +555,9 @@ public final class NotesStore: ObservableObject {
   }
 
   public func loadSelectedAttachments() async {
+    #if DEBUG
+      if dataKey == nil { return }
+    #endif
     guard let document = selectedDocument else {
       selectedAttachments.removeAll()
       return
