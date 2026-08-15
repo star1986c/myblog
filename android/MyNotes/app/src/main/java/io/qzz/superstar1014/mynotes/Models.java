@@ -13,7 +13,7 @@ final class Models {
 
   static final int MAX_TITLE_LENGTH = 200;
   static final int MAX_CONTENT_LENGTH = 500_000;
-  static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  static final int MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
   static final class User {
     final String username;
@@ -182,6 +182,7 @@ final class Models {
     final int pixelWidth;
     final int pixelHeight;
     final int plaintextBytes;
+    final int durationMillis;
     final String objectNonce;
     final String dataKey;
 
@@ -190,6 +191,7 @@ final class Models {
       int pixelWidth,
       int pixelHeight,
       int plaintextBytes,
+      int durationMillis,
       String objectNonce,
       String dataKey
     ) {
@@ -197,6 +199,7 @@ final class Models {
       this.pixelWidth = pixelWidth;
       this.pixelHeight = pixelHeight;
       this.plaintextBytes = plaintextBytes;
+      this.durationMillis = durationMillis;
       this.objectNonce = objectNonce;
       this.dataKey = dataKey;
     }
@@ -207,6 +210,7 @@ final class Models {
         .put("pixelWidth", pixelWidth)
         .put("pixelHeight", pixelHeight)
         .put("plaintextBytes", plaintextBytes)
+        .put("durationMillis", durationMillis)
         .put("objectNonce", objectNonce)
         .put("dataKey", dataKey);
     }
@@ -217,6 +221,7 @@ final class Models {
         json.optInt("pixelWidth"),
         json.optInt("pixelHeight"),
         json.optInt("plaintextBytes"),
+        json.optInt("durationMillis"),
         json.optString("objectNonce"),
         json.optString("dataKey")
       );
@@ -226,13 +231,15 @@ final class Models {
   static final class AttachmentDocument {
     final AttachmentEnvelope envelope;
     final AttachmentMetadata metadata;
-    byte[] imageData;
+    byte[] mediaData;
 
-    AttachmentDocument(AttachmentEnvelope envelope, AttachmentMetadata metadata, byte[] imageData) {
+    AttachmentDocument(AttachmentEnvelope envelope, AttachmentMetadata metadata, byte[] mediaData) {
       this.envelope = envelope;
       this.metadata = metadata;
-      this.imageData = imageData;
+      this.mediaData = mediaData;
     }
+
+    boolean isAudio() { return "audio/mp4".equals(metadata.contentType); }
   }
 
   static final class NoteEnvelope {

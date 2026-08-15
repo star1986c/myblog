@@ -1,11 +1,14 @@
 package io.qzz.superstar1014.mynotes;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -18,7 +21,11 @@ import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.net.Uri;
+import android.media.MediaPlayer;
+import android.media.MediaRecorder;
+import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -51,7 +58,12 @@ import android.window.OnBackInvokedDispatcher;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -68,6 +80,9 @@ import javax.crypto.SecretKey;
 public final class MainActivity extends Activity {
   private static final long AUTO_SAVE_DELAY_MS = 10_000L;
   private static final int REQUEST_IMAGE = 1201;
+  private static final int REQUEST_CAMERA = 1202;
+  private static final int REQUEST_RECORD_AUDIO_PERMISSION = 1203;
+  private static final long MAX_RECORDING_DURATION_MS = 5 * 60 * 1000L;
   private static final String LOCATION_ALL = "all";
   private static final String LOCATION_UNFILED = "unfiled";
   private static final String LOCATION_TRASH = "trash";
@@ -99,6 +114,18 @@ public final class MainActivity extends Activity {
   private boolean demoMode;
   private boolean attachmentsLoading;
   private String attachmentsNoteId;
+  private long folderOrderGeneration;
+  private String pendingCameraPath;
+  private MediaRecorder recorder;
+  private File recordingFile;
+  private long recordingStartedAt;
+  private AlertDialog recordingDialog;
+  private TextView recordingTime;
+  private Runnable recordingTicker;
+  private MediaPlayer audioPlayer;
+  private File playbackFile;
+  private String playingAttachmentId;
+  private String pendingPlaybackAttachmentId;
 
   private EditText titleField;
   private EditText bodyField;
@@ -124,6 +151,7 @@ public final class MainActivity extends Activity {
     api = new NotesApiClient(this, demoMode ? "http://127.0.0.1:9/" : NotesApiClient.PRODUCTION_BASE_URL);
     attachmentCache = new AttachmentDiskCache(this);
     biometricStore = new BiometricProtectionStore(this);
+    if (savedInstanceState != null) pendingCameraPath = savedInstanceState.getString("cameraPath");
     if (demoMode) loadDemoData();
     else restoreSession();
   }
@@ -131,9 +159,44 @@ public final class MainActivity extends Activity {
   @Override
   protected void onActivityResult(int requestCode, int resultCode, Intent data) {
     super.onActivityResult(requestCode, resultCode, data);
-    if (requestCode != REQUEST_IMAGE || resultCode != RESULT_OK || data == null) return;
-    Uri uri = data.getData();
-    if (uri != null) importImage(uri);
+    if (requestCode == REQUEST_IMAGE) {
+      if (resultCode != RESULT_OK || data == null) return;
+      Uri uri = data.getData();
+      if (uri != null) importImage(uri, null);
+      return;
+    }
+    if (requestCode == REQUEST_CAMERA) {
+      File captured = pendingCameraPath == null ? null : new File(pendingCameraPath);
+      pendingCameraPath = null;
+      if (resultCode != RESULT_OK || captured == null || !captured.isFile()) {
+        deleteTemporaryFile(captured);
+        return;
+      }
+      try {
+        Uri uri = CameraFileProvider.uriFor(this, captured);
+        createNote(captureTitle("拍照记事"), false, note -> importImage(uri, () -> deleteTemporaryFile(captured)));
+      } catch (Exception error) {
+        deleteTemporaryFile(captured);
+        showError(error);
+      }
+    }
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    if (requestCode != REQUEST_RECORD_AUDIO_PERMISSION) return;
+    if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+      beginRecording();
+    } else {
+      toast("需要麦克风权限才能直接录音。可在系统设置中重新允许。");
+    }
+  }
+
+  @Override
+  protected void onSaveInstanceState(Bundle state) {
+    super.onSaveInstanceState(state);
+    if (pendingCameraPath != null) state.putString("cameraPath", pendingCameraPath);
   }
 
   private void loadDemoData() {
@@ -247,6 +310,8 @@ public final class MainActivity extends Activity {
     if (backCallback != null) {
       getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
     }
+    discardActiveRecording();
+    stopAudioPlayback();
     handler.removeCallbacksAndMessages(null);
     executor.shutdownNow();
     super.onDestroy();
@@ -509,19 +574,15 @@ public final class MainActivity extends Activity {
       Button quickNote = shortcutButton("新建笔记", R.drawable.ic_edit);
       quickNote.setOnClickListener(view -> createNote());
       shortcuts.addView(quickNote, shortcutParams());
-      Button quickFolder = shortcutButton("新建文件夹", R.drawable.ic_folder);
-      quickFolder.setOnClickListener(view -> createFolder());
+      Button quickVoice = shortcutButton("语音记事", R.drawable.ic_mic);
+      quickVoice.setOnClickListener(view -> startVoiceNote());
+      shortcuts.addView(quickVoice, shortcutParams());
+      Button quickPhoto = shortcutButton("拍照记事", R.drawable.ic_camera);
+      quickPhoto.setOnClickListener(view -> startPhotoNote());
+      shortcuts.addView(quickPhoto, shortcutParams());
+      Button quickFolder = shortcutButton("文件夹", R.drawable.ic_folder);
+      quickFolder.setOnClickListener(this::showLocationMenu);
       shortcuts.addView(quickFolder, shortcutParams());
-      Button quickManage = shortcutButton("文件夹管理", R.drawable.ic_sort);
-      quickManage.setOnClickListener(view -> manageFolders());
-      shortcuts.addView(quickManage, shortcutParams());
-      Button quickTrash = shortcutButton("回收站", R.drawable.ic_trash);
-      quickTrash.setOnClickListener(view -> {
-        location = LOCATION_TRASH;
-        searchQuery = "";
-        renderHome();
-      });
-      shortcuts.addView(quickTrash, shortcutParams());
       column.addView(shortcuts, matchHeight(dp(96), 0, 0, 0, 10));
     }
 
@@ -553,7 +614,6 @@ public final class MainActivity extends Activity {
     folderScroll.setPadding(dp(14), 0, dp(14), 0);
     LinearLayout folderRail = horizontalLayout(Gravity.CENTER_VERTICAL);
     addFolderChip(folderRail, "全部", LOCATION_ALL, R.drawable.ic_home);
-    addFolderChip(folderRail, "未分类", LOCATION_UNFILED, R.drawable.ic_unfiled);
     for (Models.FolderDocument folder : folders) {
       addFolderChip(
         folderRail,
@@ -605,7 +665,7 @@ public final class MainActivity extends Activity {
     Button folder = navigationButton(
       "文件夹",
       R.drawable.ic_folder,
-      LOCATION_UNFILED.equals(location) || location.startsWith(LOCATION_FOLDER_PREFIX)
+      location.startsWith(LOCATION_FOLDER_PREFIX)
     );
     folder.setOnClickListener(this::showLocationMenu);
     navigation.addView(folder, weightedNavigationParams());
@@ -613,7 +673,7 @@ public final class MainActivity extends Activity {
     ImageButton add = iconButton(R.drawable.ic_add, getString(R.string.new_note), false);
     add.setImageTintList(ColorStateList.valueOf(getColor(R.color.on_brand)));
     add.setBackground(rippleBackground(R.color.brand_primary, 28));
-    add.setOnClickListener(view -> createNote());
+    add.setOnClickListener(this::showCreateMenu);
     LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(dp(58), dp(58));
     addParams.setMargins(dp(8), dp(4), dp(8), dp(4));
     navigation.addView(add, addParams);
@@ -630,6 +690,21 @@ public final class MainActivity extends Activity {
     accountButton.setOnClickListener(this::showAccountMenu);
     navigation.addView(accountButton, weightedNavigationParams());
     return navigation;
+  }
+
+  private void showCreateMenu(View anchor) {
+    PopupMenu menu = new PopupMenu(this, anchor);
+    menu.getMenu().add(0, 1, 0, "新建笔记").setIcon(R.drawable.ic_edit);
+    menu.getMenu().add(0, 2, 1, "语音记事").setIcon(R.drawable.ic_mic);
+    menu.getMenu().add(0, 3, 2, "拍照记事").setIcon(R.drawable.ic_camera);
+    menu.setForceShowIcon(true);
+    menu.setOnMenuItemClickListener(item -> {
+      if (item.getItemId() == 1) createNote();
+      else if (item.getItemId() == 2) startVoiceNote();
+      else if (item.getItemId() == 3) startPhotoNote();
+      return true;
+    });
+    menu.show();
   }
 
   private Button shortcutButton(String label, int iconRes) {
@@ -712,9 +787,10 @@ public final class MainActivity extends Activity {
   private void filterVisibleNotes() {
     visibleNotes.clear();
     List<Models.NoteDocument> source = LOCATION_TRASH.equals(location) ? trash : notes;
+    boolean globalSearch = !LOCATION_TRASH.equals(location) && !searchQuery.trim().isEmpty();
     for (Models.NoteDocument note : source) {
       boolean matchesLocation;
-      if (LOCATION_ALL.equals(location) || LOCATION_TRASH.equals(location)) {
+      if (globalSearch || LOCATION_ALL.equals(location) || LOCATION_TRASH.equals(location)) {
         matchesLocation = true;
       } else if (LOCATION_UNFILED.equals(location)) {
         matchesLocation = note.envelope.folderId == null;
@@ -786,9 +862,6 @@ public final class MainActivity extends Activity {
   private void showLocationMenu(View anchor) {
     PopupMenu menu = new PopupMenu(this, anchor);
     menu.getMenu().add(0, 1, 0, "全部笔记（" + notes.size() + "）").setIcon(R.drawable.ic_note);
-    int unfiled = 0;
-    for (Models.NoteDocument note : notes) if (note.envelope.folderId == null) unfiled++;
-    menu.getMenu().add(0, 2, 1, "未分类（" + unfiled + "）").setIcon(R.drawable.ic_unfiled);
     int nextId = 100;
     for (Models.FolderDocument folder : folders) {
       int count = 0;
@@ -801,7 +874,6 @@ public final class MainActivity extends Activity {
     if (!folders.isEmpty()) menu.getMenu().add(2, 6, 1_001, "文件夹排序与管理").setIcon(R.drawable.ic_sort);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 1) location = LOCATION_ALL;
-      else if (item.getItemId() == 2) location = LOCATION_UNFILED;
       else if (item.getItemId() == 3) {
         createFolder();
         return true;
@@ -869,21 +941,30 @@ public final class MainActivity extends Activity {
   }
 
   private void createNote() {
+    createNote("无标题笔记", true, null);
+  }
+
+  private void createNote(
+    String initialTitle,
+    boolean focusTitle,
+    Consumer<Models.NoteDocument> completion
+  ) {
     String id = UUID.randomUUID().toString();
     String targetFolder = location.startsWith(LOCATION_FOLDER_PREFIX)
       ? location.substring(LOCATION_FOLDER_PREFIX.length())
-      : null;
+      : folders.isEmpty() ? null : folders.get(0).envelope.id;
     if (demoMode) {
-      Models.NoteDocument document = demoNote(id, targetFolder, "无标题笔记", "", false);
+      Models.NoteDocument document = demoNote(id, targetFolder, initialTitle, "", false);
       notes.add(0, document);
       selectedNote = document;
       renderEditor();
-      titleField.selectAll();
+      if (focusTitle) titleField.selectAll();
+      if (completion != null) completion.accept(document);
       return;
     }
     showLoading("正在创建笔记…");
     runAsync(() -> {
-      Models.NoteContent content = new Models.NoteContent("无标题笔记", "", null);
+      Models.NoteContent content = new Models.NoteContent(initialTitle, "", null);
       Models.NoteEnvelope envelope = api.createNote(CryptoEngine.encryptNote(dataKey, id, content));
       if (targetFolder != null) {
         JSONObject moved = api.moveNote(envelope.id, targetFolder, envelope.revision);
@@ -894,9 +975,12 @@ public final class MainActivity extends Activity {
       notes.add(0, document);
       selectedNote = document;
       renderEditor();
-      titleField.selectAll();
-      titleField.requestFocus();
-      keyboard(titleField, true);
+      if (focusTitle) {
+        titleField.selectAll();
+        titleField.requestFocus();
+        keyboard(titleField, true);
+      }
+      if (completion != null) completion.accept(document);
     });
   }
 
@@ -1538,6 +1622,179 @@ public final class MainActivity extends Activity {
     dialog.show();
   }
 
+  private void startVoiceNote() {
+    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(
+        new String[] { Manifest.permission.RECORD_AUDIO },
+        REQUEST_RECORD_AUDIO_PERMISSION
+      );
+      return;
+    }
+    beginRecording();
+  }
+
+  private void beginRecording() {
+    if (recorder != null) return;
+    try {
+      File directory = new File(getCacheDir(), "voice-captures");
+      if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建录音缓存。");
+      purgeTemporaryFiles(directory);
+      recordingFile = File.createTempFile("voice-", ".m4a", directory);
+      recorder = new MediaRecorder(this);
+      recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+      recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+      recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+      recorder.setAudioEncodingBitRate(64_000);
+      recorder.setAudioSamplingRate(44_100);
+      recorder.setMaxDuration((int) MAX_RECORDING_DURATION_MS);
+      recorder.setMaxFileSize(Models.MAX_ATTACHMENT_BYTES);
+      recorder.setOutputFile(recordingFile);
+      recorder.setOnInfoListener((source, what, extra) -> {
+        if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED
+          || what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED) {
+          handler.post(() -> finishRecording(true, true));
+        }
+      });
+      recorder.prepare();
+      recorder.start();
+      recordingStartedAt = SystemClock.elapsedRealtime();
+      showRecordingDialog();
+    } catch (Exception error) {
+      discardActiveRecording();
+      showError(error);
+    }
+  }
+
+  private void showRecordingDialog() {
+    LinearLayout panel = verticalLayout(0);
+    panel.setGravity(Gravity.CENTER);
+    panel.setPadding(dp(28), dp(24), dp(28), dp(10));
+    ImageView mic = iconView(R.drawable.ic_mic, R.color.warning, "正在录音", 34);
+    mic.setPadding(dp(20), dp(20), dp(20), dp(20));
+    mic.setBackground(roundedBackground(R.color.surface_tonal, 38));
+    panel.addView(mic, new LinearLayout.LayoutParams(dp(84), dp(84)));
+    TextView title = text("正在录音", 20, R.color.text_primary);
+    title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    title.setGravity(Gravity.CENTER);
+    panel.addView(title, matchWrap(0, 18, 0, 4));
+    recordingTime = text("00:00 / 05:00", 16, R.color.text_secondary);
+    recordingTime.setGravity(Gravity.CENTER);
+    panel.addView(recordingTime, matchWrap(0, 0, 0, 4));
+    TextView privacy = text("原声只暂存在本机，完成后加密同步；不会转换成文字。", 13, R.color.text_secondary);
+    privacy.setGravity(Gravity.CENTER);
+    panel.addView(privacy, matchWrap(0, 4, 0, 4));
+
+    recordingDialog = new AlertDialog.Builder(this)
+      .setView(panel)
+      .setNegativeButton("取消", null)
+      .setPositiveButton("完成录音", null)
+      .setCancelable(false)
+      .create();
+    recordingDialog.setOnShowListener(ignored -> {
+      recordingDialog.getButton(DialogInterface.BUTTON_NEGATIVE)
+        .setOnClickListener(view -> finishRecording(false, false));
+      recordingDialog.getButton(DialogInterface.BUTTON_POSITIVE)
+        .setOnClickListener(view -> finishRecording(true, false));
+    });
+    recordingDialog.show();
+    recordingTicker = new Runnable() {
+      @Override public void run() {
+        if (recorder == null || recordingTime == null) return;
+        long elapsed = Math.min(MAX_RECORDING_DURATION_MS,
+          SystemClock.elapsedRealtime() - recordingStartedAt);
+        recordingTime.setText(formatDuration(elapsed) + " / 05:00");
+        handler.postDelayed(this, 250);
+      }
+    };
+    handler.post(recordingTicker);
+  }
+
+  private void finishRecording(boolean keep, boolean reachedLimit) {
+    if (recorder == null) return;
+    long duration = Math.min(MAX_RECORDING_DURATION_MS,
+      Math.max(0, SystemClock.elapsedRealtime() - recordingStartedAt));
+    File completed = recordingFile;
+    MediaRecorder active = recorder;
+    recorder = null;
+    recordingFile = null;
+    if (recordingTicker != null) handler.removeCallbacks(recordingTicker);
+    recordingTicker = null;
+    try {
+      active.stop();
+    } catch (RuntimeException error) {
+      keep = false;
+    } finally {
+      active.release();
+    }
+    if (recordingDialog != null) recordingDialog.dismiss();
+    recordingDialog = null;
+    recordingTime = null;
+    if (!keep || duration < 500) {
+      deleteTemporaryFile(completed);
+      if (keep) toast("录音时间太短，请重新录制。");
+      return;
+    }
+    final int durationMillis = (int) duration;
+    runAsync(() -> {
+      try {
+        byte[] bytes = Files.readAllBytes(completed.toPath());
+        if (bytes.length == 0 || bytes.length > Models.MAX_ATTACHMENT_BYTES) {
+          throw new IllegalArgumentException("单段录音不能超过 10 MiB。");
+        }
+        return new SelectedMedia(bytes, "audio/mp4", 1, 1, durationMillis);
+      } finally {
+        deleteTemporaryFile(completed);
+      }
+    }, media -> {
+      if (reachedLimit) toast("录音已达到安全上限并自动结束。");
+      createNote(captureTitle("语音记事"), false, note -> {
+        note.content.attachmentKey = CryptoEngine.createMediaKey();
+        markDirty();
+        saveSelected(() -> uploadAttachment(note, media));
+      });
+    });
+  }
+
+  private void discardActiveRecording() {
+    if (recorder == null) {
+      deleteTemporaryFile(recordingFile);
+      recordingFile = null;
+      return;
+    }
+    MediaRecorder active = recorder;
+    recorder = null;
+    try { active.stop(); } catch (Exception ignored) {}
+    active.release();
+    deleteTemporaryFile(recordingFile);
+    recordingFile = null;
+    if (recordingDialog != null) recordingDialog.dismiss();
+    recordingDialog = null;
+  }
+
+  private void startPhotoNote() {
+    Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+    if (intent.resolveActivity(getPackageManager()) == null) {
+      toast("没有找到可用的相机应用。");
+      return;
+    }
+    try {
+      File directory = new File(getCacheDir(), "camera-captures");
+      if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建拍照缓存。");
+      purgeTemporaryFiles(directory);
+      File target = File.createTempFile("photo-", ".jpg", directory);
+      Uri uri = CameraFileProvider.uriFor(this, target);
+      pendingCameraPath = target.getAbsolutePath();
+      intent.putExtra(MediaStore.EXTRA_OUTPUT, uri);
+      intent.setClipData(ClipData.newRawUri("My Notes photo", uri));
+      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+      startActivityForResult(intent, REQUEST_CAMERA);
+    } catch (Exception error) {
+      if (pendingCameraPath != null) deleteTemporaryFile(new File(pendingCameraPath));
+      pendingCameraPath = null;
+      showError(error);
+    }
+  }
+
   private void chooseImage() {
     if (selectedNote == null || LOCATION_TRASH.equals(location)) return;
     if (selectedNote.envelope.locked && !selectedNote.unlocked) {
@@ -1545,7 +1802,7 @@ public final class MainActivity extends Activity {
       return;
     }
     if (attachments.size() >= 20) {
-      toast("每篇笔记最多添加 20 张图片。");
+      toast("每篇笔记最多添加 20 个附件。");
       return;
     }
     Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -1557,7 +1814,7 @@ public final class MainActivity extends Activity {
     startActivityForResult(intent, REQUEST_IMAGE);
   }
 
-  private void importImage(Uri uri) {
+  private void importImage(Uri uri, Runnable cleanup) {
     Models.NoteDocument note = selectedNote;
     if (note == null) return;
     setSavingMessage("正在读取图片…");
@@ -1577,27 +1834,39 @@ public final class MainActivity extends Activity {
       if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
         throw new IllegalArgumentException("无法识别这张图片。");
       }
-      return new SelectedImage(bytes, type, bounds.outWidth, bounds.outHeight);
+      return new SelectedMedia(bytes, type, bounds.outWidth, bounds.outHeight, 0);
     }, image -> {
-      if (selectedNote != note) return;
+      if (cleanup != null) cleanup.run();
+      if (selectedNote != note) {
+        return;
+      }
       if (note.content.attachmentKey == null) {
         note.content.attachmentKey = CryptoEngine.createMediaKey();
         markDirty();
       }
-      saveSelected(() -> uploadImage(note, image));
+      saveSelected(() -> uploadAttachment(note, image));
+    }, error -> {
+      if (cleanup != null) cleanup.run();
+      showError(error);
     });
   }
 
-  private void uploadImage(Models.NoteDocument note, SelectedImage image) {
+  private void uploadAttachment(Models.NoteDocument note, SelectedMedia media) {
+    uploadAttachment(note, media, null);
+  }
+
+  private void uploadAttachment(Models.NoteDocument note, SelectedMedia media, Runnable cleanup) {
     if (selectedNote != note || note.content.attachmentKey == null) return;
     String attachmentId = UUID.randomUUID().toString();
-    setSavingMessage("正在加密上传图片…");
+    boolean audio = "audio/mp4".equals(media.contentType);
+    setSavingMessage(audio ? "正在加密上传录音…" : "正在加密上传图片…");
     runAsync(() -> {
       CryptoEngine.EncryptedAttachment encrypted = CryptoEngine.encryptAttachment(
-        image.bytes,
-        image.contentType,
-        image.width,
-        image.height,
+        media.bytes,
+        media.contentType,
+        media.width,
+        media.height,
+        media.durationMillis,
         note.envelope.id,
         attachmentId,
         note.envelope.locked,
@@ -1621,17 +1890,21 @@ public final class MainActivity extends Activity {
         envelope = api.uploadAttachment(encrypted.payload, encrypted.body);
       }
       attachmentCache.write(envelope, encrypted.body);
-      return new Models.AttachmentDocument(envelope, encrypted.metadata, image.bytes);
+      return new Models.AttachmentDocument(envelope, encrypted.metadata, media.bytes);
     }, document -> {
+      if (cleanup != null) cleanup.run();
       if (selectedNote != note) return;
-      for (Models.AttachmentDocument item : attachments) item.imageData = null;
+      for (Models.AttachmentDocument item : attachments) item.mediaData = null;
       attachments.add(document);
       attachmentsNoteId = note.envelope.id;
       renderAttachmentGallery();
       if (saveStatus != null) {
-        saveStatus.setText("图片已加密保存");
+        saveStatus.setText(audio ? "录音已加密保存" : "图片已加密保存");
         saveStatus.setTextColor(getColor(R.color.brand_primary_dark));
       }
+    }, error -> {
+      if (cleanup != null) cleanup.run();
+      showError(error);
     });
   }
 
@@ -1677,7 +1950,7 @@ public final class MainActivity extends Activity {
     if (attachmentGallery == null || attachmentScroller == null) return;
     attachmentGallery.removeAllViews();
     if (attachmentsLoading) {
-      TextView loading = text("正在读取加密图片…", 14, R.color.text_secondary);
+      TextView loading = text("正在读取加密附件…", 14, R.color.text_secondary);
       loading.setGravity(Gravity.CENTER);
       attachmentGallery.addView(loading, new LinearLayout.LayoutParams(dp(220), dp(112)));
       attachmentScroller.setVisibility(View.VISIBLE);
@@ -1689,14 +1962,37 @@ public final class MainActivity extends Activity {
     }
     attachmentScroller.setVisibility(View.VISIBLE);
     for (Models.AttachmentDocument document : attachments) {
+      boolean audio = document.isAudio();
       LinearLayout card = verticalLayout(0);
       card.setPadding(dp(6), dp(6), dp(6), dp(5));
       card.setBackground(roundedStrokeBackground(R.color.surface_variant, R.color.divider, 16, 1));
-      card.setContentDescription(document.imageData == null ? "加密图片，点击查看" : "已解密图片");
+      card.setContentDescription(audio ? "加密录音附件" : "加密图片附件");
 
       FrameLayout preview = new FrameLayout(this);
       preview.setBackground(rippleBackground(R.color.surface, 12));
-      if (document.imageData == null) {
+      if (audio) {
+        LinearLayout audioPanel = verticalLayout(0);
+        audioPanel.setGravity(Gravity.CENTER);
+        boolean playing = document.envelope.id.equals(playingAttachmentId)
+          && audioPlayer != null && audioPlayer.isPlaying();
+        ImageView icon = iconView(
+          playing ? R.drawable.ic_pause : R.drawable.ic_play,
+          R.color.brand_primary_dark,
+          playing ? "暂停录音" : "播放录音",
+          26
+        );
+        icon.setPadding(dp(10), dp(10), dp(10), dp(10));
+        icon.setBackground(roundedBackground(R.color.surface_tonal, 24));
+        audioPanel.addView(icon, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        TextView label = text(
+          playing ? "正在播放" : "语音 · " + formatDuration(document.metadata.durationMillis),
+          12,
+          R.color.text_secondary
+        );
+        label.setGravity(Gravity.CENTER);
+        audioPanel.addView(label, matchWrap(0, 4, 0, 0));
+        preview.addView(audioPanel, frameMatch());
+      } else if (document.mediaData == null) {
         LinearLayout placeholder = verticalLayout(0);
         placeholder.setGravity(Gravity.CENTER);
         ImageView icon = iconView(R.drawable.ic_image_add, R.color.brand_primary_dark, null, 24);
@@ -1708,11 +2004,12 @@ public final class MainActivity extends Activity {
       } else {
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setImageBitmap(decodeCardBitmap(document.imageData));
+        image.setImageBitmap(decodeCardBitmap(document.mediaData));
         preview.addView(image, frameMatch());
       }
       preview.setOnClickListener(view -> {
-        if (document.imageData == null) loadAttachmentImage(document);
+        if (document.mediaData == null) loadAttachmentMedia(document);
+        else if (audio) playAudioAttachment(document);
         else showAttachmentPreview(document);
       });
       card.addView(preview, new LinearLayout.LayoutParams(dp(126), dp(82)));
@@ -1720,7 +2017,7 @@ public final class MainActivity extends Activity {
       LinearLayout footer = horizontalLayout(Gravity.CENTER_VERTICAL);
       TextView size = text(formatBytes(document.metadata.plaintextBytes), 11, R.color.text_secondary);
       footer.addView(size, new LinearLayout.LayoutParams(0, dp(30), 1));
-      ImageButton delete = iconButton(R.drawable.ic_trash, "删除图片", false);
+      ImageButton delete = iconButton(R.drawable.ic_trash, audio ? "删除录音" : "删除图片", false);
       delete.setPadding(dp(7), dp(7), dp(7), dp(7));
       delete.setOnClickListener(view -> confirmDeleteAttachment(document));
       footer.addView(delete, new LinearLayout.LayoutParams(dp(34), dp(34)));
@@ -1732,10 +2029,10 @@ public final class MainActivity extends Activity {
     }
   }
 
-  private void loadAttachmentImage(Models.AttachmentDocument document) {
+  private void loadAttachmentMedia(Models.AttachmentDocument document) {
     Models.NoteDocument note = selectedNote;
     if (note == null) return;
-    setSavingMessage("正在下载并解密图片…");
+    setSavingMessage(document.isAudio() ? "正在下载并解密录音…" : "正在下载并解密图片…");
     runAsync(() -> {
       byte[] encrypted = attachmentCache.read(document.envelope);
       if (encrypted != null) {
@@ -1759,22 +2056,26 @@ public final class MainActivity extends Activity {
       return decrypted;
     }, bytes -> {
       if (selectedNote != note || !attachments.contains(document)) return;
-      for (Models.AttachmentDocument item : attachments) item.imageData = null;
-      document.imageData = bytes;
+      for (Models.AttachmentDocument item : attachments) {
+        if (!item.envelope.id.equals(playingAttachmentId)) item.mediaData = null;
+      }
+      document.mediaData = bytes;
       renderAttachmentGallery();
       if (saveStatus != null) saveStatus.setText(saveStatusText());
+      if (document.isAudio()) playAudioAttachment(document);
+      else showAttachmentPreview(document);
     });
   }
 
   private void showAttachmentPreview(Models.AttachmentDocument document) {
-    if (document.imageData == null) return;
+    if (document.mediaData == null || document.isAudio()) return;
     ImageView image = new ImageView(this);
     image.setAdjustViewBounds(true);
     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
     image.setImageBitmap(BitmapFactory.decodeByteArray(
-      document.imageData,
+      document.mediaData,
       0,
-      document.imageData.length
+      document.mediaData.length
     ));
     int padding = dp(12);
     FrameLayout wrapper = new FrameLayout(this);
@@ -1787,10 +2088,84 @@ public final class MainActivity extends Activity {
       .show();
   }
 
+  private void playAudioAttachment(Models.AttachmentDocument document) {
+    if (!document.isAudio() || document.mediaData == null) return;
+    if (document.envelope.id.equals(playingAttachmentId) && audioPlayer != null) {
+      if (audioPlayer.isPlaying()) audioPlayer.pause();
+      else audioPlayer.start();
+      renderAttachmentGallery();
+      return;
+    }
+    if (document.envelope.id.equals(pendingPlaybackAttachmentId)) return;
+    stopAudioPlayback();
+    pendingPlaybackAttachmentId = document.envelope.id;
+    setSavingMessage("正在准备播放录音…");
+    byte[] audioBytes = document.mediaData;
+    runAsync(() -> {
+      File directory = new File(getCacheDir(), "audio-playback");
+      if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建播放缓存。");
+      File temporary = File.createTempFile("play-", ".m4a", directory);
+      try (FileOutputStream output = new FileOutputStream(temporary)) {
+        output.write(audioBytes);
+      }
+      return temporary;
+    }, temporary -> {
+      if (!document.envelope.id.equals(pendingPlaybackAttachmentId)
+        || selectedNote == null || !attachments.contains(document)) {
+        deleteTemporaryFile(temporary);
+        return;
+      }
+      pendingPlaybackAttachmentId = null;
+      playbackFile = temporary;
+      try {
+      MediaPlayer player = new MediaPlayer();
+      player.setDataSource(playbackFile.getAbsolutePath());
+      player.setOnPreparedListener(prepared -> {
+        if (prepared != audioPlayer) return;
+        prepared.start();
+        if (saveStatus != null) saveStatus.setText(saveStatusText());
+        renderAttachmentGallery();
+      });
+      player.setOnCompletionListener(ignored -> {
+        stopAudioPlayback();
+        renderAttachmentGallery();
+      });
+      player.setOnErrorListener((ignored, what, extra) -> {
+        stopAudioPlayback();
+        toast("无法播放这段录音。");
+        renderAttachmentGallery();
+        return true;
+      });
+      audioPlayer = player;
+      playingAttachmentId = document.envelope.id;
+      player.prepareAsync();
+      } catch (Exception error) {
+        stopAudioPlayback();
+        showError(error);
+      }
+    }, error -> {
+      pendingPlaybackAttachmentId = null;
+      stopAudioPlayback();
+      showError(error);
+    });
+  }
+
+  private void stopAudioPlayback() {
+    if (audioPlayer != null) {
+      try { audioPlayer.stop(); } catch (Exception ignored) {}
+      audioPlayer.release();
+    }
+    audioPlayer = null;
+    playingAttachmentId = null;
+    pendingPlaybackAttachmentId = null;
+    deleteQuietly(playbackFile);
+    playbackFile = null;
+  }
+
   private void confirmDeleteAttachment(Models.AttachmentDocument document) {
     new AlertDialog.Builder(this)
-      .setTitle("删除这张图片？")
-      .setMessage("图片会从云端永久删除，无法恢复。")
+      .setTitle(document.isAudio() ? "删除这段录音？" : "删除这张图片？")
+      .setMessage("附件会从云端永久删除，无法恢复。")
       .setNegativeButton("取消", null)
       .setPositiveButton("删除", (dialog, which) -> {
         Models.NoteDocument note = selectedNote;
@@ -1801,7 +2176,7 @@ public final class MainActivity extends Activity {
           renderAttachmentGallery();
           return;
         }
-        setSavingMessage("正在删除图片…");
+        setSavingMessage("正在删除附件…");
         runAsync(() -> {
           api.deleteAttachment(note.envelope.id, document.envelope.id, document.envelope.revision);
           return true;
@@ -1809,7 +2184,8 @@ public final class MainActivity extends Activity {
           attachmentCache.remove(document.envelope);
           attachments.remove(document);
           renderAttachmentGallery();
-          if (saveStatus != null) saveStatus.setText("图片已删除");
+          if (document.envelope.id.equals(playingAttachmentId)) stopAudioPlayback();
+          if (saveStatus != null) saveStatus.setText("附件已删除");
         });
       })
       .show();
@@ -1821,7 +2197,7 @@ public final class MainActivity extends Activity {
     byte[] buffer = new byte[16 * 1024];
     int count;
     while ((count = input.read(buffer)) != -1) {
-      if (output.size() + count > Models.MAX_IMAGE_BYTES) {
+      if (output.size() + count > Models.MAX_ATTACHMENT_BYTES) {
         throw new IllegalArgumentException("单张图片不能超过 10 MiB。");
       }
       output.write(buffer, 0, count);
@@ -1846,7 +2222,41 @@ public final class MainActivity extends Activity {
     return String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f));
   }
 
+  private String formatDuration(long millis) {
+    long seconds = Math.max(0, millis / 1000);
+    return String.format(Locale.getDefault(), "%02d:%02d", seconds / 60, seconds % 60);
+  }
+
+  private String captureTitle(String prefix) {
+    return prefix + " " + new SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(new Date());
+  }
+
+  private static void deleteQuietly(File file) {
+    if (file == null || !file.exists()) return;
+    if (file.delete()) return;
+    try { Files.deleteIfExists(file.toPath()); } catch (Exception ignored) {}
+  }
+
+  private void deleteTemporaryFile(File file) {
+    deleteTemporaryFile(file, 6);
+  }
+
+  private void deleteTemporaryFile(File file, int attemptsRemaining) {
+    deleteQuietly(file);
+    if (file == null || !file.exists() || attemptsRemaining <= 1) return;
+    handler.postDelayed(() -> deleteTemporaryFile(file, attemptsRemaining - 1), 250);
+  }
+
+  private static void purgeTemporaryFiles(File directory) {
+    File[] files = directory.listFiles();
+    if (files == null) return;
+    for (File file : files) {
+      if (file.isFile()) deleteQuietly(file);
+    }
+  }
+
   private void clearAttachments() {
+    stopAudioPlayback();
     attachments.clear();
     attachmentsNoteId = null;
     attachmentsLoading = false;
@@ -2085,25 +2495,32 @@ public final class MainActivity extends Activity {
     int source = folders.indexOf(folder);
     int destination = source + offset;
     if (source < 0 || destination < 0 || destination >= folders.size()) return;
-    List<Models.FolderDocument> ordered = new ArrayList<>(folders);
+    List<Models.FolderDocument> previous = new ArrayList<>(folders);
+    List<Models.FolderDocument> ordered = new ArrayList<>(previous);
     Collections.swap(ordered, source, destination);
+    folders.clear();
+    folders.addAll(ordered);
+    renderHome();
     if (demoMode) {
-      folders.clear();
-      folders.addAll(ordered);
-      renderHome();
       return;
     }
+    long generation = ++folderOrderGeneration;
     List<String> folderIds = new ArrayList<>();
     for (Models.FolderDocument item : ordered) folderIds.add(item.envelope.id);
-    showLoading("正在保存文件夹顺序…");
     runAsync(() -> {
       api.reorderFolders(folderIds);
       return true;
     }, ignored -> {
-      folders.clear();
-      folders.addAll(ordered);
-      renderHome();
-      Toast.makeText(this, "文件夹顺序已保存", Toast.LENGTH_SHORT).show();
+      if (generation == folderOrderGeneration) {
+        Toast.makeText(this, "文件夹顺序已同步", Toast.LENGTH_SHORT).show();
+      }
+    }, error -> {
+      if (generation == folderOrderGeneration) {
+        folders.clear();
+        folders.addAll(previous);
+        renderHome();
+        toast("文件夹排序同步失败，已恢复原顺序：" + error.getMessage());
+      }
     });
   }
 
@@ -2229,8 +2646,9 @@ public final class MainActivity extends Activity {
   }
 
   private String locationTitle() {
+    if (!LOCATION_TRASH.equals(location) && !searchQuery.trim().isEmpty()) return "搜索全部笔记";
     if (LOCATION_ALL.equals(location)) return "全部笔记";
-    if (LOCATION_UNFILED.equals(location)) return "未分类";
+    if (LOCATION_UNFILED.equals(location)) return "全部笔记";
     if (LOCATION_TRASH.equals(location)) return "回收站";
     String id = location.substring(LOCATION_FOLDER_PREFIX.length());
     for (Models.FolderDocument folder : folders) {
@@ -2240,7 +2658,7 @@ public final class MainActivity extends Activity {
   }
 
   private String folderName(String id) {
-    if (id == null) return "未分类";
+    if (id == null) return "无文件夹";
     for (Models.FolderDocument folder : folders) {
       if (folder.envelope.id.equals(id)) return folder.name;
     }
@@ -2696,17 +3114,19 @@ public final class MainActivity extends Activity {
     ProtectionCredentials(String password) { this.password = password; }
   }
 
-  private static final class SelectedImage {
+  private static final class SelectedMedia {
     final byte[] bytes;
     final String contentType;
     final int width;
     final int height;
+    final int durationMillis;
 
-    SelectedImage(byte[] bytes, String contentType, int width, int height) {
+    SelectedMedia(byte[] bytes, String contentType, int width, int height, int durationMillis) {
       this.bytes = bytes;
       this.contentType = contentType;
       this.width = width;
       this.height = height;
+      this.durationMillis = durationMillis;
     }
   }
 }

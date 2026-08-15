@@ -217,20 +217,24 @@ final class CryptoEngine {
   }
 
   static EncryptedAttachment encryptAttachment(
-    byte[] imageData,
+    byte[] mediaData,
     String contentType,
     int pixelWidth,
     int pixelHeight,
+    int durationMillis,
     String noteId,
     String attachmentId,
     boolean locked,
     String mediaKeyValue
   ) throws Exception {
-    if (!isSupportedImageType(contentType)) {
-      throw new IllegalArgumentException("仅支持 JPEG、PNG 和 WebP 图片。");
+    if (!isSupportedAttachmentType(contentType)) {
+      throw new IllegalArgumentException("不支持这种附件格式。");
     }
-    if (imageData == null || imageData.length == 0 || imageData.length > Models.MAX_IMAGE_BYTES) {
-      throw new IllegalArgumentException("单张图片不能超过 10 MiB。");
+    if (mediaData == null || mediaData.length == 0 || mediaData.length > Models.MAX_ATTACHMENT_BYTES) {
+      throw new IllegalArgumentException("单个附件不能超过 10 MiB。");
+    }
+    if ("audio/mp4".equals(contentType) && (durationMillis <= 0 || durationMillis > 300_000)) {
+      throw new IllegalArgumentException("单段录音最长 5 分钟。");
     }
     SecretKey mediaKey = importDataKey(mediaKeyValue);
     byte[] attachmentKey = randomBytes(KEY_BYTES);
@@ -239,13 +243,14 @@ final class CryptoEngine {
       new SecretKeySpec(attachmentKey, "AES"),
       objectNonce,
       attachmentContentAad(noteId, attachmentId),
-      imageData
+      mediaData
     );
     Models.AttachmentMetadata metadata = new Models.AttachmentMetadata(
       contentType,
       Math.max(1, pixelWidth),
       Math.max(1, pixelHeight),
-      imageData.length,
+      mediaData.length,
+      Math.max(0, durationMillis),
       encode(objectNonce),
       encode(attachmentKey)
     );
@@ -280,12 +285,14 @@ final class CryptoEngine {
     Models.AttachmentMetadata metadata = Models.AttachmentMetadata.fromJson(
       new JSONObject(new String(plaintext, StandardCharsets.UTF_8))
     );
-    if (!isSupportedImageType(metadata.contentType)
+    if (!isSupportedAttachmentType(metadata.contentType)
       || metadata.plaintextBytes <= 0
-      || metadata.plaintextBytes > Models.MAX_IMAGE_BYTES
+      || metadata.plaintextBytes > Models.MAX_ATTACHMENT_BYTES
+      || ("audio/mp4".equals(metadata.contentType)
+        && (metadata.durationMillis <= 0 || metadata.durationMillis > 300_000))
       || decode(metadata.objectNonce).length != NONCE_BYTES
       || decode(metadata.dataKey).length != KEY_BYTES) {
-      throw new IllegalArgumentException("加密图片格式无效。");
+      throw new IllegalArgumentException("加密附件格式无效。");
     }
     return metadata;
   }
@@ -296,7 +303,7 @@ final class CryptoEngine {
     Models.AttachmentMetadata metadata
   ) throws Exception {
     if (encryptedBody == null || encryptedBody.length != envelope.ciphertextBytes) {
-      throw new IllegalArgumentException("加密图片格式无效。");
+      throw new IllegalArgumentException("加密附件格式无效。");
     }
     byte[] plaintext = open(
       new SecretKeySpec(decode(metadata.dataKey), "AES"),
@@ -305,7 +312,7 @@ final class CryptoEngine {
       encryptedBody
     );
     if (plaintext.length != metadata.plaintextBytes) {
-      throw new IllegalArgumentException("加密图片格式无效。");
+      throw new IllegalArgumentException("加密附件格式无效。");
     }
     return plaintext;
   }
@@ -369,8 +376,9 @@ final class CryptoEngine {
       .getBytes(StandardCharsets.UTF_8);
   }
 
-  private static boolean isSupportedImageType(String value) {
-    return "image/jpeg".equals(value) || "image/png".equals(value) || "image/webp".equals(value);
+  private static boolean isSupportedAttachmentType(String value) {
+    return "image/jpeg".equals(value) || "image/png".equals(value)
+      || "image/webp".equals(value) || "audio/mp4".equals(value);
   }
 
   private static byte[] randomBytes(int count) {

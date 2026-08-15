@@ -270,7 +270,7 @@ final class NotesApiClient {
       if (status == 401) csrfToken = "";
       throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
     }
-    byte[] data = readBytes(connection.getInputStream(), Models.MAX_IMAGE_BYTES + 16);
+    byte[] data = readBytes(connection.getInputStream(), Models.MAX_ATTACHMENT_BYTES + 16);
     connection.disconnect();
     return data;
   }

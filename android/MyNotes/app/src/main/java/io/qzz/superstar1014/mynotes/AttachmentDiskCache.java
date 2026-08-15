@@ -14,7 +14,7 @@ import java.util.Set;
 
 /** Stores only encrypted R2 object bytes in the app-private cache directory. */
 final class AttachmentDiskCache {
-  private static final int MAX_CIPHERTEXT_BYTES = Models.MAX_IMAGE_BYTES + 16;
+  private static final int MAX_CIPHERTEXT_BYTES = Models.MAX_ATTACHMENT_BYTES + 16;
   private final File directory;
 
   AttachmentDiskCache(Context context) {

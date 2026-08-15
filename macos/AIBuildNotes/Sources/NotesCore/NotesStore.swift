@@ -137,6 +137,11 @@ public final class NotesStore: ObservableObject {
   }
 
   public var visibleNotes: [NoteDocument] {
+    let normalizedSearch = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !normalizedSearch.isEmpty {
+      let searchable = location.isTrash ? trashedNotes : activeNotes
+      return searchable.filter { $0.matches(search: normalizedSearch) }
+    }
     let scoped: [NoteDocument]
     switch location {
     case .allNotes:
@@ -165,15 +170,15 @@ public final class NotesStore: ObservableObject {
   public var locationTitle: String {
     switch location {
     case .allNotes: "全部笔记"
-    case .unfiled: "未分类"
+    case .unfiled: "全部笔记"
     case .folder(let id): folderName(for: id)
     case .trash: "回收站"
     }
   }
 
   public func folderName(for id: String?) -> String {
-    guard let id else { return "未分类" }
-    return folders.first(where: { $0.id == id })?.name ?? "未分类"
+    guard let id else { return "无文件夹" }
+    return folders.first(where: { $0.id == id })?.name ?? "无文件夹"
   }
 
   public func noteCount(in folderId: String?) -> Int {
@@ -276,7 +281,13 @@ public final class NotesStore: ObservableObject {
     do {
       let payload = try NoteCrypto.encrypt(content, id: id, using: dataKey)
       var envelope = try await api.create(payload)
-      if case .folder(let folderId) = location {
+      let targetFolderID: String?
+      if case .folder(let folderID) = location {
+        targetFolderID = folderID
+      } else {
+        targetFolderID = folders.first?.id
+      }
+      if let folderId = targetFolderID {
         let state = try await api.moveNote(
           id: id,
           folderId: folderId,

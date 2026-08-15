@@ -182,6 +182,7 @@ public final class CryptoTestRunner extends Instrumentation {
       "image/png",
       64,
       32,
+      0,
       noteId,
       attachmentId,
       true,
@@ -224,6 +225,45 @@ public final class CryptoTestRunner extends Instrumentation {
       rejected = true;
     }
     require(rejected, "Attachment metadata was not bound to its note id");
+
+    byte[] audio = new byte[] { 0, 0, 0, 24, 102, 116, 121, 112, 77, 52, 65, 32 };
+    String audioId = "attachment_audio_1234";
+    CryptoEngine.EncryptedAttachment encryptedAudio = CryptoEngine.encryptAttachment(
+      audio,
+      "audio/mp4",
+      1,
+      1,
+      12_345,
+      noteId,
+      audioId,
+      true,
+      mediaKey
+    );
+    Models.AttachmentEnvelope audioEnvelope = new Models.AttachmentEnvelope(
+      audioId,
+      noteId,
+      1,
+      1,
+      encryptedAudio.payload.getString("ciphertext"),
+      encryptedAudio.payload.getString("nonce"),
+      true,
+      encryptedAudio.body.length,
+      null,
+      null
+    );
+    Models.AttachmentMetadata audioMetadata = CryptoEngine.decryptAttachmentMetadata(
+      mediaKey,
+      audioEnvelope
+    );
+    require("audio/mp4".equals(audioMetadata.contentType), "Audio content type was not preserved");
+    require(audioMetadata.durationMillis == 12_345, "Audio duration was not preserved");
+    require(
+      java.util.Arrays.equals(
+        audio,
+        CryptoEngine.decryptAttachmentBody(encryptedAudio.body, audioEnvelope, audioMetadata)
+      ),
+      "Encrypted audio attachment round trip failed"
+    );
   }
 
   private void verifySecureSessionStorage() {

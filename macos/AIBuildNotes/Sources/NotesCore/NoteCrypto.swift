@@ -135,7 +135,7 @@ public enum AttachmentCrypto {
   private static let version = 1
   private static let nonceBytes = 12
   private static let tagBytes = 16
-  private static let allowedContentTypes = ["image/jpeg", "image/png", "image/webp"]
+  private static let allowedContentTypes = ["image/jpeg", "image/png", "image/webp", "audio/mp4"]
 
   public struct EncryptedImage: Equatable, Sendable {
     public let payload: EncryptedAttachmentPayload
@@ -181,6 +181,7 @@ public enum AttachmentCrypto {
       pixelWidth: max(1, pixelWidth),
       pixelHeight: max(1, pixelHeight),
       plaintextBytes: imageData.count,
+      durationMillis: nil,
       objectNonce: NoteCrypto.encodeBase64URL(Data(objectNonce)),
       dataKey: NoteCrypto.encodeBase64URL(attachmentKey.withUnsafeBytes { Data($0) })
     )
@@ -233,6 +234,8 @@ public enum AttachmentCrypto {
       guard allowedContentTypes.contains(metadata.contentType),
         metadata.plaintextBytes > 0,
         metadata.plaintextBytes <= maxPlaintextBytes,
+        (metadata.contentType != "audio/mp4"
+          || ((metadata.durationMillis ?? 0) > 0 && (metadata.durationMillis ?? 0) <= 300_000)),
         NoteCrypto.decodeBase64URL(metadata.objectNonce)?.count == nonceBytes,
         NoteCrypto.decodeBase64URL(metadata.dataKey)?.count == 32
       else { throw AttachmentCryptoError.invalidEnvelope }

@@ -24,6 +24,19 @@ func searchesTitleAndBody() {
   #expect(!document.belongs(to: nil))
 }
 
+@Test("Search ignores the current folder but keeps trash separate")
+@MainActor
+func searchesAcrossAllFolders() {
+  let store = NotesStore.preview()
+  store.selectLocation(.folder("folder_linux"))
+  store.updateSearchQuery("Cloudflare")
+  #expect(store.visibleNotes.map(\.id) == ["preview_0002"])
+
+  store.selectLocation(.trash)
+  store.updateSearchQuery("Cloudflare")
+  #expect(store.visibleNotes.isEmpty)
+}
+
 @Test("Empty titles normalize without changing body whitespace")
 func normalizesEmptyTitle() {
   let content = NoteContent(title: "  ", content: "  secret\n").normalized()

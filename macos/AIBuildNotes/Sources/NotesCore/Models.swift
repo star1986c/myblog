@@ -219,6 +219,7 @@ public struct AttachmentMetadata: Codable, Equatable, Sendable {
   public let pixelWidth: Int
   public let pixelHeight: Int
   public let plaintextBytes: Int
+  public let durationMillis: Int?
   public let objectNonce: String
   public let dataKey: String
 
@@ -227,6 +228,7 @@ public struct AttachmentMetadata: Codable, Equatable, Sendable {
     pixelWidth: Int,
     pixelHeight: Int,
     plaintextBytes: Int,
+    durationMillis: Int? = nil,
     objectNonce: String,
     dataKey: String
   ) {
@@ -234,6 +236,7 @@ public struct AttachmentMetadata: Codable, Equatable, Sendable {
     self.pixelWidth = pixelWidth
     self.pixelHeight = pixelHeight
     self.plaintextBytes = plaintextBytes
+    self.durationMillis = durationMillis
     self.objectNonce = objectNonce
     self.dataKey = dataKey
   }

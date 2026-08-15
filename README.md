@@ -100,7 +100,8 @@ macOS and Android share the format, show locked notes without exposing the body,
 independent protection password to reveal any protected note.
 
 Downloaded attachment bodies are cached in each app's private cache directory. The cache contains
-only the AES-GCM ciphertext returned by R2; decrypted image bytes remain in memory. Cache keys include
+only the AES-GCM ciphertext returned by R2; decrypted image/audio bytes are never persisted as a
+long-lived cache. Cache keys include
 the attachment revision and encrypted metadata fingerprint, so changed or damaged entries are removed
 and fetched again automatically. Deleting an attachment or permanently deleting a note also clears its
 local cached ciphertext.
@@ -129,7 +130,14 @@ device token and short-lived session cookie are encrypted with an Android Keysto
 
 Both native clients expose login-password changes through the authenticated account API. Android also
 provides a visible "文件夹排序与管理" panel with per-folder up/down controls; the complete order is
-saved to the encrypted folders API.
+applied immediately and saved asynchronously to the encrypted folders API. New notes default to the
+first manually ordered folder, and a non-empty search spans every normal folder while trash stays
+separate.
+
+Android quick capture can record the original AAC/M4A audio without speech recognition or launch the
+system camera for a full-resolution photo. Both use app-private temporary files, encrypt attachment
+bytes before upload to private R2, cap each attachment at 10 MiB, and remove plaintext capture/playback
+files after use. Voice recordings are additionally capped at five minutes.
 
 The mobile UI is designed specifically for Android 16 (API 36) with edge-to-edge system bars,
 light/dark themes, visible folder filters, adaptive list/card layouts, and a consistent vector icon

@@ -136,12 +136,6 @@ private struct SidebarView: View {
             count: store.activeNotes.count,
             location: .allNotes
           )
-          locationRow(
-            title: "未分类",
-            systemImage: "tray",
-            count: store.noteCount(in: nil),
-            location: .unfiled
-          )
         }
 
         Section {
@@ -232,7 +226,7 @@ private struct SidebarView: View {
       }
       Button("取消", role: .cancel) { folderToDelete = nil }
     } message: {
-      Text("文件夹中的笔记不会删除，将自动移到“未分类”。")
+      Text("文件夹中的笔记不会删除，仍可在“全部笔记”中查看。")
     }
   }
 
@@ -877,12 +871,6 @@ private struct NoteEditorView: View {
 
   private func folderMenu(_ document: NoteDocument) -> some View {
     Menu {
-      Button {
-        Task { await store.moveSelected(to: nil) }
-      } label: {
-        Label("未分类", systemImage: document.folderId == nil ? "checkmark" : "tray")
-      }
-      if !store.folders.isEmpty { Divider() }
       ForEach(store.folders) { folder in
         Button {
           Task { await store.moveSelected(to: folder.id) }
@@ -1144,7 +1132,18 @@ private struct AttachmentCard: View {
   var body: some View {
     ZStack(alignment: .topTrailing) {
       Group {
-        if let data = attachment.imageData, let image = NSImage(data: data) {
+        if attachment.metadata.contentType == "audio/mp4" {
+          VStack(spacing: 8) {
+            Image(systemName: "waveform.circle.fill")
+              .font(.system(size: 32))
+              .foregroundStyle(.secondary)
+            Text("语音附件")
+              .font(.caption)
+            Text("请在安卓端播放")
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
+        } else if let data = attachment.imageData, let image = NSImage(data: data) {
           Image(nsImage: image)
             .resizable()
             .scaledToFill()
@@ -1182,11 +1181,15 @@ private struct AttachmentCard: View {
         .buttonStyle(.plain)
         .padding(6)
         .disabled(store.isAttachmentWorking)
-        .help("删除图片")
+        .help(attachment.metadata.contentType == "audio/mp4" ? "删除录音" : "删除图片")
       }
     }
-    .task(id: attachment.id) { await store.loadAttachmentImage(id: attachment.id) }
-    .accessibilityLabel("加密图片")
+    .task(id: attachment.id) {
+      if attachment.metadata.contentType != "audio/mp4" {
+        await store.loadAttachmentImage(id: attachment.id)
+      }
+    }
+    .accessibilityLabel(attachment.metadata.contentType == "audio/mp4" ? "加密录音" : "加密图片")
   }
 }
 
