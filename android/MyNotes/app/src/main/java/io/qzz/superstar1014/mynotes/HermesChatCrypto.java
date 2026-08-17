@@ -42,12 +42,29 @@ final class HermesChatCrypto {
     String messageId,
     long sentAt
   ) throws Exception {
+    return encryptMessage(sender, text, attachments, messageId, sentAt, 0, false);
+  }
+
+  JSONObject encryptMessage(
+    String sender,
+    String text,
+    JSONArray attachments,
+    String messageId,
+    long sentAt,
+    long replaceSequence,
+    boolean finalUpdate
+  ) throws Exception {
     if (!"client".equals(sender) && !"agent".equals(sender)) {
       throw new IllegalArgumentException("消息发送者无效。");
     }
     JSONObject plaintext = new JSONObject()
       .put("text", text == null ? "" : text)
       .put("attachments", attachments == null ? new JSONArray() : attachments);
+    if (replaceSequence > 0) {
+      plaintext.put("replaceSeq", replaceSequence).put("final", finalUpdate);
+    } else if (replaceSequence < 0) {
+      throw new IllegalArgumentException("消息替换序号无效。");
+    }
     byte[] nonce = new byte[12];
     RANDOM.nextBytes(nonce);
     byte[] ciphertext = crypt(
@@ -89,6 +106,12 @@ final class HermesChatCrypto {
       messageAad(messageId, sender, sentAt)
     );
     JSONObject payload = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
+    long replaceSequence = payload.has("replaceSeq") ? payload.getLong("replaceSeq") : 0;
+    boolean finalUpdate = payload.has("final") && payload.getBoolean("final");
+    if ((payload.has("replaceSeq") || payload.has("final"))
+        && (replaceSequence < 1 || !payload.has("replaceSeq") || !payload.has("final"))) {
+      throw new IllegalArgumentException("消息替换元数据无效。");
+    }
     return new ChatMessage(
       messageId,
       sender,
@@ -97,7 +120,9 @@ final class HermesChatCrypto {
       payload.optString("text"),
       payload.optJSONArray("attachments") == null
         ? new JSONArray()
-        : payload.getJSONArray("attachments")
+        : payload.getJSONArray("attachments"),
+      replaceSequence,
+      finalUpdate
     );
   }
 
@@ -193,6 +218,8 @@ final class HermesChatCrypto {
     long sequence;
     final String text;
     final JSONArray attachments;
+    final long replaceSequence;
+    final boolean finalUpdate;
 
     ChatMessage(
       String id,
@@ -202,12 +229,27 @@ final class HermesChatCrypto {
       String text,
       JSONArray attachments
     ) {
+      this(id, sender, sentAt, sequence, text, attachments, 0, false);
+    }
+
+    ChatMessage(
+      String id,
+      String sender,
+      long sentAt,
+      long sequence,
+      String text,
+      JSONArray attachments,
+      long replaceSequence,
+      boolean finalUpdate
+    ) {
       this.id = id;
       this.sender = sender;
       this.sentAt = sentAt;
       this.sequence = sequence;
       this.text = text;
       this.attachments = attachments;
+      this.replaceSequence = replaceSequence;
+      this.finalUpdate = finalUpdate;
     }
   }
 

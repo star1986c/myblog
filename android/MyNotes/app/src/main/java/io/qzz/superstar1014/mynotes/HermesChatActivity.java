@@ -40,7 +40,9 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -51,6 +53,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
   private final Set<String> renderedMessageIds = new HashSet<>();
+  private final Map<Long, RenderedMessage> renderedMessagesBySequence = new HashMap<>();
 
   private NotesApiClient api;
   private SecureSessionStore secureStore;
@@ -280,6 +283,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     crypto = null;
     reconnectAttempt = 0;
     renderedMessageIds.clear();
+    renderedMessagesBySequence.clear();
     messages.removeAllViews();
     composer.setText("");
     clearPendingImage();
@@ -471,20 +475,27 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
 
   private void appendMessage(HermesChatCrypto.ChatMessage message) {
     if (!renderedMessageIds.add(message.id)) return;
+    if (message.replaceSequence > 0) {
+      replaceMessage(message);
+      return;
+    }
+    appendNewMessage(message);
+  }
+
+  private void appendNewMessage(HermesChatCrypto.ChatMessage message) {
     boolean outgoing = "client".equals(message.sender);
     LinearLayout row = horizontal(outgoing ? Gravity.END : Gravity.START);
     LinearLayout bubble = vertical();
     bubble.setPadding(dp(14), dp(10), dp(14), dp(10));
     bubble.setBackground(rounded(outgoing ? R.color.brand_primary : R.color.surface_tonal, 18));
-    if (!message.text.trim().isEmpty()) {
-      TextView body = text(
-        message.text,
-        16,
-        outgoing ? R.color.on_brand : R.color.text_primary
-      );
-      body.setTextIsSelectable(true);
-      bubble.addView(body, new LinearLayout.LayoutParams(-2, -2));
-    }
+    TextView body = text(
+      message.text,
+      16,
+      outgoing ? R.color.on_brand : R.color.text_primary
+    );
+    body.setTextIsSelectable(true);
+    body.setVisibility(message.text.trim().isEmpty() ? View.GONE : View.VISIBLE);
+    bubble.addView(body, new LinearLayout.LayoutParams(-2, -2));
     for (int index = 0; index < message.attachments.length(); index++) {
       JSONObject descriptor = message.attachments.optJSONObject(index);
       if (descriptor != null) addAttachmentPreview(bubble, descriptor);
@@ -499,7 +510,42 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
     rowParams.setMargins(0, dp(5), 0, dp(5));
     messages.addView(row, rowParams);
+    if (message.sequence > 0) {
+      renderedMessagesBySequence.put(message.sequence, new RenderedMessage(body, meta));
+    }
     messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+  }
+
+  private void replaceMessage(HermesChatCrypto.ChatMessage message) {
+    RenderedMessage rendered = renderedMessagesBySequence.get(message.replaceSequence);
+    if (rendered == null) {
+      if (message.finalUpdate) {
+        appendNewMessage(new HermesChatCrypto.ChatMessage(
+          message.id,
+          message.sender,
+          message.sentAt,
+          message.sequence,
+          message.text,
+          message.attachments
+        ));
+      }
+      return;
+    }
+    TextView body = rendered.body;
+    body.setText(message.text);
+    body.setVisibility(message.text.trim().isEmpty() ? View.GONE : View.VISIBLE);
+    rendered.meta.setText(message.finalUpdate ? "Hermes" : "Hermes · 正在回复");
+    messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+  }
+
+  private static final class RenderedMessage {
+    final TextView body;
+    final TextView meta;
+
+    RenderedMessage(TextView body, TextView meta) {
+      this.body = body;
+      this.meta = meta;
+    }
   }
 
   private void addAttachmentPreview(LinearLayout bubble, JSONObject descriptor) {

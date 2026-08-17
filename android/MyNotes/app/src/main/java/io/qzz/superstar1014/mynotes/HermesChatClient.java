@@ -130,6 +130,20 @@ final class HermesChatClient {
           listener.onMessage(message);
           return;
         }
+        if ("edit".equals(type)) {
+          long sequence = frame.optLong("seq");
+          HermesChatCrypto.ChatMessage message = crypto.decryptMessage(
+            frame.getJSONObject("message"),
+            sequence
+          );
+          if (message.replaceSequence != frame.getLong("targetSeq")
+              || message.finalUpdate != frame.getBoolean("final")) {
+            throw new IllegalArgumentException("流式消息替换元数据校验失败。");
+          }
+          if (sequence > 0) lastSequence = Math.max(lastSequence, sequence);
+          listener.onMessage(message);
+          return;
+        }
         if ("resume_complete".equals(type)) {
           if (frame.optBoolean("hasMore")) {
             send(new JSONObject()

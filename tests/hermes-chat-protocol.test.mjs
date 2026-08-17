@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildHermesChatDeliveryFrame,
   createHermesChatTicket,
   hasConnectedHermesChatAgent,
   parseHermesChatFrame,
+  validateHermesChatEdit,
   validateHermesChatMessage,
   validateHermesChatReceipt,
   verifyHermesChatTicket,
@@ -111,4 +113,64 @@ test("accepts consumption receipts only from an agent with a valid sequence", ()
     () => validateHermesChatReceipt({ v: 1, type: "received", seq: 0 }, "agent"),
     /sequence/i,
   );
+});
+
+test("accepts encrypted stream edits only from the Hermes agent", () => {
+  const message = {
+    v: 1,
+    type: "message",
+    id: "550e8400-e29b-41d4-a716-446655440010",
+    sender: "agent",
+    sentAt: 1_800_000_000_100,
+    encrypted: {
+      alg: "A256GCM",
+      nonce: "AAECAwQFBgcICQoL",
+      ciphertext: "AQIDBAUGBwgJCgsMDQ4PEA",
+    },
+  };
+  const frame = {
+    v: 1,
+    type: "edit",
+    targetSeq: 42,
+    final: true,
+    message,
+  };
+
+  assert.deepEqual(validateHermesChatEdit(frame, "agent"), frame);
+  assert.throws(() => validateHermesChatEdit(frame, "client"), /only Hermes agents/i);
+  assert.throws(
+    () => validateHermesChatEdit({ ...frame, targetSeq: 0 }, "agent"),
+    /target sequence/i,
+  );
+  assert.throws(
+    () => validateHermesChatEdit({ ...frame, final: "yes" }, "agent"),
+    /final flag/i,
+  );
+});
+
+test("replays durable stream finals as edits while preserving their sequence", () => {
+  const stored = {
+    v: 1,
+    type: "edit",
+    targetSeq: 42,
+    final: true,
+    message: {
+      v: 1,
+      type: "message",
+      id: "550e8400-e29b-41d4-a716-446655440011",
+      sender: "agent",
+      sentAt: 1_800_000_000_200,
+      encrypted: {
+        alg: "A256GCM",
+        nonce: "AAECAwQFBgcICQoL",
+        ciphertext: "AQIDBAUGBwgJCgsMDQ4PEA",
+      },
+    },
+  };
+
+  assert.deepEqual(buildHermesChatDeliveryFrame(stored, 43, true), {
+    ...stored,
+    seq: 43,
+    replayed: true,
+  });
 });

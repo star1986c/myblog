@@ -58,6 +58,19 @@ public final class CryptoTestRunner extends Instrumentation {
     require("profile 隔离消息".equals(message.text), "Hermes message round trip failed");
     require(message.sequence == 7, "Hermes sequence was not preserved");
 
+    org.json.JSONObject editEnvelope = crypto.encryptMessage(
+      "agent",
+      "流式最终文本",
+      new org.json.JSONArray(),
+      "550e8400-e29b-41d4-a716-446655440010",
+      1_800_000_000_100L,
+      7,
+      true
+    );
+    HermesChatCrypto.ChatMessage edit = crypto.decryptMessage(editEnvelope, 8);
+    require(edit.replaceSequence == 7, "Hermes edit target was not authenticated");
+    require(edit.finalUpdate, "Hermes final edit flag was not authenticated");
+
     org.json.JSONObject fixture = new org.json.JSONObject()
       .put("v", 1)
       .put("type", "message")

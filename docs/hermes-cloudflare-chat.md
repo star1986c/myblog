@@ -5,7 +5,8 @@
 家庭 NAS 不开放公网入站端口。每个 Hermes profile 启动自己的 Gateway 和
 `cloudflare_chat` 插件，由插件主动连接
 `wss://h.superstar1014.qzz.io/api/hermes-chat/ws`。安卓记事本登录现有账号后，
-动态读取可用 profile，并把每个 profile 显示为独立聊天对象。
+动态读取可用 profile。当前 Android 界面只显示列表中的第一个聊天对象，协议和
+Worker 仍保留多 profile 能力，后续恢复切换界面时不需要修改后端数据模型。
 
 ```mermaid
 flowchart LR
@@ -20,8 +21,9 @@ flowchart LR
 ```
 
 profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，安卓端从 API
-动态生成选择项。当前实现最多接受 32 个 profile，目的是防止错误配置无限创建
-Durable Object；新增聊天对象不需要修改代码。
+动态读取配置。当前实现最多接受 32 个 profile，目的是防止错误配置无限创建
+Durable Object。Android 暂时只进入第一个 profile，但独立密钥、票据和 space
+结构均已预留。
 
 ## 隔离与安全模型
 
@@ -36,6 +38,18 @@ Durable Object；新增聊天对象不需要修改代码。
 - 图片明文上限为 10 MiB。WebSocket 只发送加密描述符，密文二进制放入现有私有
   R2 bucket 的 `hermes-chat/v1/<profileId>/` 前缀。
 - Durable Object 保存最近 500 条加密消息；断线重连按序号补发，每批最多 100 条。
+
+## 流式回复
+
+Hermes v0.20.1 的 Gateway 会先调用平台适配器 `send()` 创建一条回复，再反复调用
+`edit_message(..., finalize=...)` 更新该回复。插件使用首次发送获得的 relay 序号作为
+替换目标：中间更新只经 WebSocket 实时广播，不写入 500 条历史；最终更新才持久化，
+因此重连仍可恢复完整文本。
+
+更新正文、目标序号与完成标志都在 AES-GCM 密文中；外层只保留 Durable Object
+路由所需的目标序号和完成标志。Android 解密后会交叉校验两份元数据，再原地更新
+同一个消息气泡。若很旧的原消息已超过保留范围，重放最终更新时会退化为显示一条
+完整回复，不会丢失内容。
 
 ## Cloudflare 配置
 
@@ -116,13 +130,14 @@ hermes -p research status
 ## Android 使用流程
 
 1. 登录 My Notes，打开顶部聊天按钮。
-2. 客户端从 Worker 读取 profile 列表并动态显示聊天对象。
+2. 客户端从 Worker 读取 profile 列表；当前选择第一个聊天对象。
 3. 首次进入每个对象时分别生成聊天密钥。
 4. 把界面显示的 `HERMES_CF_SPACE_ID` 和密钥写入对应 NAS profile 的 `.env`。
 5. 重启对应 Gateway 后发送文字或图片验证。
 
-Android Keystore 按 profile id 独立保护密钥；切换聊天对象会关闭旧 WebSocket、
-清空旧对象的界面状态并连接新的 Durable Object，不会混用历史或密钥。
+Android Keystore 按 profile id 独立保护密钥。后续恢复多对象切换界面时，切换聊天
+对象会关闭旧 WebSocket、清空旧对象的界面状态并连接新的 Durable Object，不会
+混用历史或密钥。
 
 ## 回滚
 

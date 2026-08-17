@@ -40,7 +40,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.4"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.5"
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]\r\n]*\]\(\s*(?P<source>(?:https?://|file://|/)[^\s)]+)\s*\)",
@@ -61,6 +61,8 @@ def _get_secret(name: str, default: str = "") -> str:
 
 
 class CloudflareChatAdapter(BasePlatformAdapter):
+    REQUIRES_EDIT_FINALIZE = True
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("cloudflare_chat"))
         extra = getattr(config, "extra", {}) or {}
@@ -170,6 +172,40 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             _remove_delivered_spans(text, delivered_spans),
             attachments,
         )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ):
+        try:
+            target_seq = int(str(message_id))
+            if target_seq < 1 or str(target_seq) != str(message_id):
+                raise ValueError("stream message id must be a positive relay sequence")
+            envelope = self._cipher.encrypt_message(
+                sender="agent",
+                text=str(content or ""),
+                attachments=[],
+                replace_seq=target_seq,
+                final=bool(finalize),
+            )
+            frame = {
+                "v": 1,
+                "type": "edit",
+                "targetSeq": target_seq,
+                "final": bool(finalize),
+                "message": envelope,
+            }
+            await self._send_and_wait_for_ack(frame, envelope["id"])
+            return SendResult(success=True, message_id=str(target_seq))
+        except ValueError as error:
+            return SendResult(success=False, error=str(error), retryable=False)
+        except Exception as error:
+            return SendResult(success=False, error=str(error), retryable=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         await self._send_frame({
@@ -365,17 +401,25 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             text=text,
             attachments=attachments,
         )
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        self._pending_acks[envelope["id"]] = future
         try:
-            await self._send_frame(envelope)
-            ack = await asyncio.wait_for(future, timeout=15.0)
+            ack = await self._send_and_wait_for_ack(envelope, envelope["id"])
             return SendResult(success=True, message_id=str(ack.get("seq") or envelope["id"]))
         except Exception as error:
             return SendResult(success=False, error=str(error), retryable=True)
+
+    async def _send_and_wait_for_ack(
+        self,
+        frame: dict[str, Any],
+        acknowledgement_id: str,
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._pending_acks[acknowledgement_id] = future
+        try:
+            await self._send_frame(frame)
+            return await asyncio.wait_for(future, timeout=15.0)
         finally:
-            self._pending_acks.pop(envelope["id"], None)
+            self._pending_acks.pop(acknowledgement_id, None)
 
     async def _send_frame(self, frame: dict[str, Any]) -> None:
         socket = self._socket

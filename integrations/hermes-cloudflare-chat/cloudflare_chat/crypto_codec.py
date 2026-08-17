@@ -70,6 +70,8 @@ class ChatCipher:
         attachments: list[dict[str, Any]] | None = None,
         message_id: str | None = None,
         sent_at: int | None = None,
+        replace_seq: int | None = None,
+        final: bool = False,
     ) -> dict[str, Any]:
         if sender not in {"client", "agent"}:
             raise ValueError("invalid sender")
@@ -77,8 +79,15 @@ class ChatCipher:
             raise ValueError("message text is invalid or too large")
         message_id = message_id or str(uuid.uuid4())
         sent_at = int(sent_at if sent_at is not None else time.time() * 1000)
+        payload: dict[str, Any] = {"text": text, "attachments": attachments or []}
+        if replace_seq is not None:
+            if not isinstance(replace_seq, int) or isinstance(replace_seq, bool) or replace_seq < 1:
+                raise ValueError("replacement sequence must be a positive integer")
+            if not isinstance(final, bool):
+                raise ValueError("replacement final flag must be boolean")
+            payload.update({"replaceSeq": replace_seq, "final": final})
         plaintext = json.dumps(
-            {"text": text, "attachments": attachments or []},
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -130,7 +139,19 @@ class ChatCipher:
             raise ValueError("decrypted message text is invalid")
         if not isinstance(attachments, list) or len(attachments) > 8:
             raise ValueError("decrypted attachment list is invalid")
-        return {"text": text, "attachments": attachments}
+        result = {"text": text, "attachments": attachments}
+        if "replaceSeq" in payload or "final" in payload:
+            replace_seq = payload.get("replaceSeq")
+            final = payload.get("final")
+            if (
+                not isinstance(replace_seq, int)
+                or isinstance(replace_seq, bool)
+                or replace_seq < 1
+                or not isinstance(final, bool)
+            ):
+                raise ValueError("decrypted replacement metadata is invalid")
+            result.update({"replaceSeq": replace_seq, "final": final})
+        return result
 
     def encrypt_attachment(
         self,

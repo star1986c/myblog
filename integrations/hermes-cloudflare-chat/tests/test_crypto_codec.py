@@ -24,6 +24,28 @@ class ChatCipherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.cipher.decrypt_message(envelope, expected_sender="agent")
 
+    def test_stream_edit_metadata_is_encrypted_and_round_trips(self):
+        envelope = self.cipher.encrypt_message(
+            sender="agent",
+            text="正在流式输出",
+            replace_seq=42,
+            final=True,
+            message_id="550e8400-e29b-41d4-a716-446655440010",
+            sent_at=1_800_000_000_100,
+        )
+
+        self.assertNotIn("replaceSeq", envelope)
+        self.assertNotIn("正在流式输出", str(envelope))
+        self.assertEqual(
+            self.cipher.decrypt_message(envelope, expected_sender="agent"),
+            {
+                "text": "正在流式输出",
+                "attachments": [],
+                "replaceSeq": 42,
+                "final": True,
+            },
+        )
+
     def test_android_wire_fixture(self):
         envelope = {
             "v": 1,

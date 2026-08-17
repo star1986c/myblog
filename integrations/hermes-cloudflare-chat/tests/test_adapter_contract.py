@@ -135,7 +135,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.4")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.5")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -155,6 +155,44 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("HTTP 403", str(result))
         self.assertIn("error code: 1010", str(result))
         self.assertIn("test-ray-TPE", str(result))
+
+    def test_edit_message_sends_encrypted_update_and_keeps_original_message_id(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        sent_frames = []
+
+        async def send_frame(frame):
+            sent_frames.append(frame)
+            await instance._handle_frame(json.dumps({
+                "v": 1,
+                "type": "ack",
+                "id": frame["message"]["id"],
+                "seq": 43,
+                "targetSeq": 42,
+                "final": True,
+            }))
+
+        with patch.object(instance, "_send_frame", side_effect=send_frame):
+            result = asyncio.run(instance.edit_message(
+                chat_id="primary",
+                message_id="42",
+                content="完整的流式回复",
+                finalize=True,
+            ))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "42")
+        self.assertEqual(len(sent_frames), 1)
+        frame = sent_frames[0]
+        self.assertEqual(frame["type"], "edit")
+        self.assertEqual(frame["targetSeq"], 42)
+        self.assertIs(frame["final"], True)
+        payload = instance._cipher.decrypt_message(
+            frame["message"],
+            expected_sender="agent",
+        )
+        self.assertEqual(payload["text"], "完整的流式回复")
+        self.assertEqual(payload["replaceSeq"], 42)
+        self.assertIs(payload["final"], True)
 
     def test_resume_sequence_is_scoped_and_persisted_per_profile(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

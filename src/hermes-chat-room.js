@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   CHAT_PROTOCOL_VERSION,
+  buildHermesChatDeliveryFrame,
   hasConnectedHermesChatAgent,
   parseHermesChatFrame,
   validateHermesChatMessage,
+  validateHermesChatEdit,
   validateHermesChatReceipt,
 } from "./hermes-chat-protocol.js";
 
@@ -126,6 +128,30 @@ class HermesChatRoom extends DurableObject {
         });
         return;
       }
+      if (frame.type === "edit") {
+        const edit = validateHermesChatEdit(frame, attachment.role);
+        this.ensureEditableTarget(edit.targetSeq);
+        const stored = edit.final ? this.storeStreamEdit(edit) : null;
+        socket.send(JSON.stringify({
+          v: CHAT_PROTOCOL_VERSION,
+          type: "ack",
+          id: edit.message.id,
+          seq: stored?.seq || edit.targetSeq,
+          targetSeq: edit.targetSeq,
+          final: edit.final,
+          durable: edit.final,
+          duplicate: stored?.duplicate || false,
+        }));
+        if (!stored?.duplicate) {
+          this.broadcastToOtherRole(
+            attachment.role,
+            stored
+              ? buildHermesChatDeliveryFrame(edit, stored.seq)
+              : edit,
+          );
+        }
+        return;
+      }
       if (frame.type !== "message") {
         throw new Error("Unsupported Hermes chat frame.");
       }
@@ -139,12 +165,10 @@ class HermesChatRoom extends DurableObject {
         duplicate: stored.duplicate,
       }));
       if (!stored.duplicate) {
-        this.broadcastToOtherRole(attachment.role, {
-          v: CHAT_PROTOCOL_VERSION,
-          type: "message",
-          seq: stored.seq,
-          message: envelope,
-        });
+        this.broadcastToOtherRole(
+          attachment.role,
+          buildHermesChatDeliveryFrame(envelope, stored.seq),
+        );
       }
     } catch (error) {
       sendSocketError(socket, error);
@@ -175,14 +199,22 @@ class HermesChatRoom extends DurableObject {
   }
 
   storeMessage(envelope) {
+    return this.storeEvent(envelope.id, envelope.sender, envelope);
+  }
+
+  storeStreamEdit(edit) {
+    return this.storeEvent(edit.message.id, "agent", edit);
+  }
+
+  storeEvent(id, senderRole, event) {
     try {
       const result = this.ctx.storage.sql.exec(
         `INSERT INTO messages (id, sender_role, envelope, created_at)
          VALUES (?, ?, ?, ?)
          RETURNING seq`,
-        envelope.id,
-        envelope.sender,
-        JSON.stringify(envelope),
+        id,
+        senderRole,
+        JSON.stringify(event),
         Date.now(),
       );
       const seq = result.one().seq;
@@ -194,10 +226,29 @@ class HermesChatRoom extends DurableObject {
       return { seq, duplicate: false };
     } catch (error) {
       const existing = this.ctx.storage.sql
-        .exec("SELECT seq FROM messages WHERE id = ?", envelope.id)
+        .exec("SELECT seq FROM messages WHERE id = ?", id)
         .toArray()[0];
       if (existing) return { seq: existing.seq, duplicate: true };
       throw error;
+    }
+  }
+
+  ensureEditableTarget(targetSeq) {
+    const row = this.ctx.storage.sql.exec(
+      "SELECT sender_role, envelope FROM messages WHERE seq = ?",
+      targetSeq,
+    ).toArray()[0];
+    if (!row || row.sender_role !== "agent") {
+      throw new Error("Hermes chat edit target is unavailable.");
+    }
+    let event;
+    try {
+      event = JSON.parse(row.envelope);
+    } catch {
+      throw new Error("Hermes chat edit target is invalid.");
+    }
+    if (event?.v !== CHAT_PROTOCOL_VERSION || event?.type !== "message" || event?.sender !== "agent") {
+      throw new Error("Hermes chat edit target is invalid.");
     }
   }
 
@@ -228,13 +279,11 @@ class HermesChatRoom extends DurableObject {
         REPLAY_BATCH_SIZE,
       ).toArray();
     for (const row of rows) {
-      socket.send(JSON.stringify({
-        v: CHAT_PROTOCOL_VERSION,
-        type: "message",
-        seq: row.seq,
-        message: JSON.parse(row.envelope),
-        replayed: true,
-      }));
+      socket.send(JSON.stringify(buildHermesChatDeliveryFrame(
+        JSON.parse(row.envelope),
+        row.seq,
+        true,
+      )));
     }
     socket.send(JSON.stringify({
       v: CHAT_PROTOCOL_VERSION,

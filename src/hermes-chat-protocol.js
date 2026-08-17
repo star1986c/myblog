@@ -150,6 +150,45 @@ function validateHermesChatMessage(frame, expectedSender) {
   };
 }
 
+function validateHermesChatEdit(frame, senderRole) {
+  if (senderRole !== "agent") {
+    throw new ServiceError("Only Hermes agents may edit messages.", 403);
+  }
+  if (frame?.v !== CHAT_PROTOCOL_VERSION || frame?.type !== "edit") {
+    throw new ServiceError("Invalid Hermes chat edit.", 400);
+  }
+  if (!Number.isSafeInteger(frame.targetSeq) || frame.targetSeq < 1) {
+    throw new ServiceError("Invalid Hermes chat edit target sequence.", 400);
+  }
+  if (typeof frame.final !== "boolean") {
+    throw new ServiceError("Invalid Hermes chat edit final flag.", 400);
+  }
+  return {
+    v: CHAT_PROTOCOL_VERSION,
+    type: "edit",
+    targetSeq: frame.targetSeq,
+    final: frame.final,
+    message: validateHermesChatMessage(frame.message, "agent"),
+  };
+}
+
+function buildHermesChatDeliveryFrame(storedEvent, sequence, replayed = false) {
+  if (!Number.isSafeInteger(sequence) || sequence < 1) {
+    throw new ServiceError("Invalid Hermes chat delivery sequence.", 500);
+  }
+  const replay = replayed ? { replayed: true } : {};
+  if (storedEvent?.type === "edit") {
+    return { ...storedEvent, seq: sequence, ...replay };
+  }
+  return {
+    v: CHAT_PROTOCOL_VERSION,
+    type: "message",
+    seq: sequence,
+    message: storedEvent,
+    ...replay,
+  };
+}
+
 function validateHermesChatReceipt(frame, receiverRole) {
   if (receiverRole !== "agent") {
     throw new ServiceError("Only Hermes agents may acknowledge consumed messages.", 403);
@@ -197,6 +236,7 @@ function base64UrlToBytes(value) {
 
 export {
   CHAT_PROTOCOL_VERSION,
+  buildHermesChatDeliveryFrame,
   constantTimeSecretEqual,
   createHermesChatTicket,
   hasConnectedHermesChatAgent,
@@ -204,6 +244,7 @@ export {
   parseHermesChatFrame,
   readBearerToken,
   validateHermesChatMessage,
+  validateHermesChatEdit,
   validateHermesChatReceipt,
   verifyHermesChatTicket,
 };

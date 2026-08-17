@@ -27,6 +27,14 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.1.5 adds Hermes Gateway streaming support. The first response creates
+one normal chat message, later chunks edit that same Android bubble, and the
+final edit is stored by the relay for reconnect/resume. Both the replacement
+sequence and final flag are duplicated inside the encrypted payload so the
+Android client can reject relay-side retargeting. Upgrade the Worker, plugin,
+and Android app together. Existing environment variables and chat keys do not
+change.
+
 Version 0.1.4 prevents an Android image from being replayed into Hermes after
 the inbound message has already been accepted. The plugin checkpoints the
 sequence before dispatch, treats local checkpoint-write failures as non-fatal,

@@ -10,6 +10,10 @@ const manifestPath = new URL(
   "../android/MyNotes/app/src/main/AndroidManifest.xml",
   import.meta.url,
 );
+const clientPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatClient.java",
+  import.meta.url,
+);
 
 test("Hermes chat exposes only the first configured profile in Android", async () => {
   const source = await readFile(activityPath, "utf8");
@@ -36,4 +40,17 @@ test("Hermes chat composer accounts for the on-screen keyboard", async () => {
   assert.match(source, /WindowInsets\.Type\.ime\(\)/);
   assert.match(source, /Math\.max\(bars\.bottom, ime\.bottom\)/);
   assert.match(manifest, /HermesChatActivity[\s\S]*windowSoftInputMode="adjustResize"/);
+});
+
+test("Hermes stream edits update an existing Android message bubble", async () => {
+  const [activity, client] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(clientPath, "utf8"),
+  ]);
+
+  assert.match(client, /"edit"\.equals\(type\)/);
+  assert.match(client, /replaceSequence != frame\.getLong\("targetSeq"\)/);
+  assert.match(activity, /renderedMessagesBySequence/);
+  assert.match(activity, /replaceMessage\(message\)/);
+  assert.match(activity, /body\.setText\(message\.text\)/);
 });
