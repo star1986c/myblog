@@ -33,6 +33,7 @@ test("deployment config binds the Hermes chat Durable Object", () => {
     "primary:Hermes 主助手,secondary:Hermes 第二助手",
   );
   assert.deepEqual(wrangler.routes, [
+    { pattern: "superstar1014.qzz.io", custom_domain: true },
     { pattern: "h.superstar1014.qzz.io", custom_domain: true },
   ]);
 });
