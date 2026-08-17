@@ -357,6 +357,12 @@ public final class HermesConversationsActivity extends Activity {
     intent.putExtra(HermesChatActivity.EXTRA_PROFILE_ID, profile.id);
     intent.putExtra(HermesChatActivity.EXTRA_PROFILE_LABEL, profile.label);
     intent.putExtra("demo", demoMode);
+    if (demoMode) {
+      intent.putExtra(
+        HermesChatActivity.EXTRA_DEMO_AWAITING,
+        getIntent().getBooleanExtra(HermesChatActivity.EXTRA_DEMO_AWAITING, false)
+      );
+    }
     startActivity(intent);
   }
 

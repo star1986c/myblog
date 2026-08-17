@@ -6,9 +6,10 @@ const base = "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/
 const source = (name) => readFile(new URL(`${base}${name}`, import.meta.url), "utf8");
 
 test("Hermes chat resumes from the encrypted per-profile local checkpoint", async () => {
-  const [activity, client, history] = await Promise.all([
+  const [activity, client, manager, history] = await Promise.all([
     source("HermesChatActivity.java"),
     source("HermesChatClient.java"),
+    source("HermesChatConnectionManager.java"),
     source("HermesChatHistoryStore.java"),
   ]);
 
@@ -17,8 +18,30 @@ test("Hermes chat resumes from the encrypted per-profile local checkpoint", asyn
   assert.match(history, /lastSequence/);
   assert.match(client, /long initialSequence/);
   assert.match(client, /this\.lastSequence = initialSequence/);
-  assert.match(activity, /new HermesChatClient\([\s\S]*snapshot\.lastSequence/);
+  assert.match(manager, /new HermesChatClient\([\s\S]*initialSequence/);
+  assert.match(activity, /connection\.attach\([\s\S]*snapshot\.lastSequence/);
   assert.match(activity, /targetStore\.acknowledge\(messageId, sequence\)/);
+});
+
+test("Hermes keeps only the active profile socket for the Android process lifetime", async () => {
+  const [activity, manager, main] = await Promise.all([
+    source("HermesChatActivity.java"),
+    source("HermesChatConnectionManager.java"),
+    source("MainActivity.java"),
+  ]);
+  const onDestroy = activity.slice(
+    activity.indexOf("protected void onDestroy()"),
+    activity.indexOf("protected void onActivityResult"),
+  );
+
+  assert.match(manager, /static volatile HermesChatConnectionManager instance/);
+  assert.match(manager, /context\.getApplicationContext\(\)/);
+  assert.match(manager, /closeUnless\(String requestedProfileId\)/);
+  assert.match(manager, /pendingMessages/);
+  assert.match(manager, /handler\.postDelayed\(reconnectTask, delay\)/);
+  assert.match(onDestroy, /connection\.detach\(connectionListener\)/);
+  assert.doesNotMatch(onDestroy, /shutdown\(\)/);
+  assert.match(main, /private void logout\(\)[\s\S]*HermesChatConnectionManager\.get\(this\)\.shutdown\(\)/);
 });
 
 test("Hermes chat schedules retention cleanup without resetting the relay checkpoint", async () => {

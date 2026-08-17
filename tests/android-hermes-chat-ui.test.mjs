@@ -106,6 +106,14 @@ test("Hermes message footers show the local send time instead of a sender label"
 
 test("every profile shows WebSocket and awaiting-response status immediately after send", async () => {
   const source = await readFile(activityPath, "utf8");
+  const onMessage = source.slice(
+    source.indexOf("public void onMessage"),
+    source.indexOf("public void onAcknowledged"),
+  );
+  const onTyping = source.slice(
+    source.indexOf("public void onTyping"),
+    source.indexOf("public void onDisconnected"),
+  );
   const sendText = source.slice(
     source.indexOf("private void sendText()"),
     source.indexOf("private void chooseImage()"),
@@ -115,10 +123,38 @@ test("every profile shows WebSocket and awaiting-response status immediately aft
     source.indexOf("private void renderCachedMessages"),
   );
 
-  assert.match(source, /WebSocket 已连接/);
-  assert.match(source, /WebSocket 已断开/);
-  assert.match(sendText, /client\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
-  assert.match(sendImage, /targetClient\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
-  assert.match(source, /onMessage[\s\S]*clearAwaitingAgentResponse\(\)/);
-  assert.match(source, /showConnectionAwareStatus\("Hermes 正在思考…"\)/);
+  assert.match(source, /WS 已连接/);
+  assert.match(source, /WS 已断开/);
+  assert.match(sendText, /connection\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
+  assert.match(sendImage, /targetConnection\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
+  assert.match(onMessage, /"agent"\.equals\(message\.sender\)[\s\S]*clearAwaitingAgentResponse\(\)/);
+  assert.doesNotMatch(onTyping, /else clearAwaitingAgentResponse\(\)/);
+  assert.match(source, /showConnectionAwareStatus\("正在思考…"\)/);
+});
+
+test("long profile titles cannot cover the WebSocket status row", async () => {
+  const source = await readFile(activityPath, "utf8");
+
+  assert.match(source, /chatTitle\.setSingleLine\(true\)/);
+  assert.match(source, /chatTitle\.setEllipsize\(TextUtils\.TruncateAt\.END\)/);
+  assert.match(source, /status\.setSingleLine\(true\)/);
+  assert.match(source, /status\.setEllipsize\(TextUtils\.TruncateAt\.END\)/);
+  assert.match(source, /heading\.setMinimumHeight\(dp\(52\)\)/);
+  assert.match(source, /"WS 已连接 · "/);
+  assert.match(source, /showConnectionAwareStatus\("已加密"\)/);
+  assert.doesNotMatch(source, /new LinearLayout\.LayoutParams\(0, dp\(52\), 1\)/);
+  assert.doesNotMatch(source, /"WebSocket 已连接 · "/);
+});
+
+test("debug demo can render the real awaiting status through normal navigation", async () => {
+  const [chat, conversations, main] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(conversationsPath, "utf8"),
+    readFile(mainActivityPath, "utf8"),
+  ]);
+
+  assert.match(chat, /EXTRA_DEMO_AWAITING/);
+  assert.match(chat, /getBooleanExtra\(EXTRA_DEMO_AWAITING, false\)[\s\S]*webSocketReady = true;[\s\S]*markAwaitingAgentResponse\(\)/);
+  assert.match(conversations, /HermesChatActivity\.EXTRA_DEMO_AWAITING/);
+  assert.match(main, /HermesChatActivity\.EXTRA_DEMO_AWAITING/);
 });

@@ -929,9 +929,14 @@ public final class MainActivity extends Activity {
   }
 
   private void openHermesConversations() {
-    startActivity(
-      new Intent(this, HermesConversationsActivity.class).putExtra("demo", demoMode)
-    );
+    Intent intent = new Intent(this, HermesConversationsActivity.class).putExtra("demo", demoMode);
+    if (demoMode) {
+      intent.putExtra(
+        HermesChatActivity.EXTRA_DEMO_AWAITING,
+        getIntent().getBooleanExtra(HermesChatActivity.EXTRA_DEMO_AWAITING, false)
+      );
+    }
+    startActivity(intent);
   }
 
   private void showModeMenu(View anchor) {
@@ -2612,6 +2617,7 @@ public final class MainActivity extends Activity {
   }
 
   private void logout() {
+    HermesChatConnectionManager.get(this).shutdown();
     showLoading("正在退出登录…");
     runAsync(() -> {
       api.logout();

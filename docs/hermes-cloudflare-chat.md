@@ -172,9 +172,11 @@ hermes -p personal status
 4. 把界面显示的 `HERMES_CF_SPACE_ID` 和密钥写入对应 NAS profile 的 `.env`。
 5. 重启对应 Gateway 后发送文字或图片验证。
 
-Android Keystore 按 profile id 独立保护密钥。从聊天页返回会话列表会关闭当前
-WebSocket；进入另一个对象时加载对应缓存和 checkpoint，再连接新的 Durable Object，
-不会混用历史或密钥。
+Android Keystore 按 profile id 独立保护密钥。Android 2.4 起，最近使用的一个 profile
+WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不会主动关闭，进程仍存活时
+会自动重连；重新进入会话后补写后台收到的消息。进入另一个对象会先关闭旧 profile，
+再加载对应缓存和 checkpoint，仍只维持一个 Durable Object 连接，不会混用历史或密钥。
+退出登录会立即关闭连接；Android 系统杀死后台进程后，WebSocket 会随进程结束。
 
 ### Android 本地聊天缓存
 
@@ -199,8 +201,9 @@ WebSocket；进入另一个对象时加载对应缓存和 checkpoint，再连接
 - Android 2.2 起，底部文件夹入口改为 Hermes 会话；文件夹快捷按钮和横向筛选栏
   继续保留。会话列表支持搜索任意数量的已配置 profile，并从本机加密快照显示末条
   消息与时间，不会为列表中的其他 profile 建立 WebSocket。
-- Android 2.3 起，聊天页始终明确显示 `WebSocket 已连接/未连接/正在连接/已断开`。
-  文字或图片成功发送后会立即显示 `Hermes 正在思考…`，首条 Agent 回复到达后恢复
+- Android 2.4 起，聊天页在长 profile 名称和大字体下也会保留独立状态行，始终明确显示
+  `WS 已连接/未连接/连接中/已断开`。
+  文字或图片成功发送后会立即显示 `正在思考…`，首条 Agent 回复到达后恢复
   加密连接状态；插件 0.1.6 也会在每个 profile 接收消息时 best-effort 上报 typing。
 
 ## 成本边界
