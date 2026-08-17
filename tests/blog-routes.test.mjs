@@ -1514,6 +1514,52 @@ test("authenticated Android client requests one ticket for multiple configured H
   assert.deepEqual(ticket.spaceIds, ["primary", "personal"]);
 });
 
+test("native Android client can recover a multiplex ticket before its chat client loads CSRF", async () => {
+  const env = makeEnv({
+    HERMES_CHAT_PROFILES: "primary:主助手,personal:个人助手",
+  });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "native-client-csrf-token",
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/multiplex-ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-Attachment-Support": "1",
+      },
+      body: JSON.stringify({ spaceIds: ["primary", "personal"] }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).spaceIds, ["primary", "personal"]);
+});
+
+test("browser-style multiplex ticket request still requires CSRF", async () => {
+  const env = makeEnv({ HERMES_CHAT_PROFILES: "primary:主助手" });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "browser-client-csrf-token",
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/multiplex-ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+      },
+      body: JSON.stringify({ spaceIds: ["primary"] }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 403);
+});
+
 test("multiplex ticket rejects an unconfigured Hermes profile", async () => {
   const env = makeEnv({ HERMES_CHAT_PROFILES: "primary:主助手" });
   const cookie = await signSession({

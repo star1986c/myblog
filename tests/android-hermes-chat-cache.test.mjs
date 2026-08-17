@@ -25,11 +25,12 @@ test("Hermes chat resumes from the encrypted per-profile local checkpoint", asyn
 });
 
 test("Hermes keeps one routed socket for all cached profiles for the Android process lifetime", async () => {
-  const [activity, client, manager, main] = await Promise.all([
+  const [activity, client, manager, main, api] = await Promise.all([
     source("HermesChatActivity.java"),
     source("HermesChatClient.java"),
     source("HermesChatConnectionManager.java"),
     source("MainActivity.java"),
+    source("NotesApiClient.java"),
   ]);
   const onDestroy = activity.slice(
     activity.indexOf("protected void onDestroy()"),
@@ -42,7 +43,9 @@ test("Hermes keeps one routed socket for all cached profiles for the Android pro
   assert.match(manager, /hermesChatMultiplexTicket\(targetProfiles\)/);
   assert.match(manager, /pendingMessages/);
   assert.match(manager, /handler\.postDelayed\(reconnectTask, baseDelay \+ jitter\)/);
-  assert.match(manager, /void markAuthenticated\(\)[\s\S]*authenticated = true/);
+  assert.match(manager, /!authenticated \|\| !api\.hasCsrfToken\(\)/);
+  assert.match(manager, /status == 401 \|\| status == 403/);
+  assert.match(api, /boolean hasCsrfToken\(\)/);
   assert.match(client, /\.header\("X-Hermes-Mode", "multiplex"\)/);
   assert.match(client, /frame\.put\("spaceId", spaceId\)/);
   assert.match(client, /if \(webSocket != socket\)[\s\S]*Replaced by a newer chat connection/);

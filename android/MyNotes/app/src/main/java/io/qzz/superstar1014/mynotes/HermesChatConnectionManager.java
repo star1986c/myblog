@@ -303,7 +303,7 @@ final class HermesChatConnectionManager {
     HermesChatClient targetClient = client;
     executor.submit(() -> {
       try {
-        if (!authenticated) {
+        if (!authenticated || !api.hasCsrfToken()) {
           NotesApiClient.SessionResult session = api.restoreSession();
           if (!session.authenticated) throw new IllegalStateException("请先在 My Notes 登录。");
           authenticated = true;
@@ -314,9 +314,9 @@ final class HermesChatConnectionManager {
           targetClient.connect(ticket);
         });
       } catch (Exception error) {
-        if (error instanceof NotesApiClient.ApiException
-            && ((NotesApiClient.ApiException) error).status == 401) {
-          authenticated = false;
+        if (error instanceof NotesApiClient.ApiException) {
+          int status = ((NotesApiClient.ApiException) error).status;
+          if (status == 401 || status == 403) authenticated = false;
         }
         handler.post(() -> {
           if (!matches(generation, attempt, targetProfiles, targetClient)) return;

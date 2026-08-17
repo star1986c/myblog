@@ -123,6 +123,10 @@ final class NotesApiClient {
     );
   }
 
+  boolean hasCsrfToken() {
+    return !csrfToken.isEmpty();
+  }
+
   JSONObject purgeHermesChatCloudData(String spaceId) throws Exception {
     return request(
       "POST",

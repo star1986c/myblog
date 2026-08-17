@@ -836,7 +836,10 @@ async function handleAdminApi(request, env, path) {
     return jsonResponse({ error: "Authentication required." }, { status: 401 });
   }
 
-  if (!["GET", "HEAD"].includes(request.method)) {
+  if (
+    !["GET", "HEAD"].includes(request.method)
+    && !isNativeHermesMultiplexTicketRequest(request, path)
+  ) {
     const csrfToken = request.headers.get("X-CSRF-Token") || "";
     if (csrfToken !== session.csrfToken) {
       return jsonResponse({ error: "Invalid CSRF token." }, { status: 403 });
@@ -1133,6 +1136,24 @@ async function handleAdminApi(request, env, path) {
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
+}
+
+function isNativeHermesMultiplexTicketRequest(request, path) {
+  if (
+    path !== "/api/admin/hermes-chat/multiplex-ticket"
+    || request.method !== "POST"
+  ) {
+    return false;
+  }
+
+  // v2.7 can restore the HttpOnly session cookie in one API client while the
+  // background chat client has not loaded its matching CSRF value yet. This
+  // custom native-client header and JSON content type both require a browser
+  // CORS preflight, while the SameSite session cookie remains mandatory.
+  return request.headers.get("X-Attachment-Support") === "1"
+    && (request.headers.get("Content-Type") || "")
+      .toLowerCase()
+      .startsWith("application/json");
 }
 
 async function handleHermesChatAttachmentApi(request, env, pathname) {
