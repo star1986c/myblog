@@ -26,7 +26,6 @@ import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -58,12 +57,14 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   private HermesChatCrypto crypto;
   private HermesChatClient client;
   private LinearLayout messages;
-  private LinearLayout profileRail;
   private ScrollView messageScroll;
   private TextView chatTitle;
   private TextView status;
   private EditText composer;
   private Button sendButton;
+  private LinearLayout pendingImageBar;
+  private TextView pendingImageLabel;
+  private Uri pendingImageUri;
   private int reconnectAttempt;
   private boolean destroyed;
   private Models.HermesChatProfile selectedProfile;
@@ -94,7 +95,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     if (requestCode != REQUEST_IMAGE || resultCode != RESULT_OK || data == null) return;
     Uri uri = data.getData();
     if (uri == null) return;
-    sendImage(uri);
+    stageImage(uri);
   }
 
   @Override
@@ -180,13 +181,6 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     privacy.setPadding(dp(16), dp(6), dp(16), dp(8));
     column.addView(privacy, new LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-    HorizontalScrollView profileScroll = new HorizontalScrollView(this);
-    profileScroll.setHorizontalScrollBarEnabled(false);
-    profileRail = horizontal(Gravity.CENTER_VERTICAL);
-    profileRail.setPadding(dp(12), dp(4), dp(12), dp(8));
-    profileScroll.addView(profileRail, new HorizontalScrollView.LayoutParams(-2, -2));
-    column.addView(profileScroll, new LinearLayout.LayoutParams(-1, -2));
-
     messageScroll = new ScrollView(this);
     messageScroll.setFillViewport(true);
     messages = vertical();
@@ -194,9 +188,28 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     messageScroll.addView(messages, new ScrollView.LayoutParams(-1, -2));
     column.addView(messageScroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
+    LinearLayout composePanel = vertical();
+    composePanel.setPadding(dp(10), dp(8), dp(10), dp(10));
+    composePanel.setBackgroundColor(getColor(R.color.surface));
+    pendingImageBar = horizontal(Gravity.CENTER_VERTICAL);
+    pendingImageBar.setPadding(dp(12), dp(7), dp(8), dp(7));
+    pendingImageBar.setBackground(rounded(R.color.surface_tonal, 14));
+    pendingImageBar.setVisibility(View.GONE);
+    pendingImageLabel = text("", 13, R.color.text_primary);
+    pendingImageBar.addView(pendingImageLabel, new LinearLayout.LayoutParams(0, dp(36), 1));
+    Button removeImage = new Button(this);
+    removeImage.setText("移除");
+    removeImage.setTextSize(12);
+    removeImage.setTextColor(getColor(R.color.danger));
+    removeImage.setAllCaps(false);
+    removeImage.setBackground(rounded(R.color.background, 12));
+    removeImage.setOnClickListener(view -> clearPendingImage());
+    pendingImageBar.addView(removeImage, new LinearLayout.LayoutParams(dp(64), dp(36)));
+    LinearLayout.LayoutParams pendingParams = new LinearLayout.LayoutParams(-1, -2);
+    pendingParams.setMargins(0, 0, 0, dp(8));
+    composePanel.addView(pendingImageBar, pendingParams);
+
     LinearLayout compose = horizontal(Gravity.BOTTOM);
-    compose.setPadding(dp(10), dp(8), dp(10), dp(10));
-    compose.setBackgroundColor(getColor(R.color.surface));
     ImageButton image = iconButton(R.drawable.ic_image_add, "发送图片");
     image.setOnClickListener(view -> chooseImage());
     compose.addView(image, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -226,9 +239,10 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     sendButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
     sendButton.setBackground(rounded(R.color.brand_primary, 18));
     sendButton.setEnabled(false);
-    sendButton.setOnClickListener(view -> sendText());
+    sendButton.setOnClickListener(view -> sendCurrentMessage());
     compose.addView(sendButton, new LinearLayout.LayoutParams(dp(68), dp(48)));
-    column.addView(compose, new LinearLayout.LayoutParams(-1, -2));
+    composePanel.addView(compose, new LinearLayout.LayoutParams(-1, -2));
+    column.addView(composePanel, new LinearLayout.LayoutParams(-1, -2));
 
     setContentView(applyInsets(root));
   }
@@ -243,7 +257,6 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         if (profiles.isEmpty()) throw new IllegalStateException("尚未配置 Hermes profile。");
         runOnUiThread(() -> {
           if (destroyed) return;
-          renderProfiles(profiles);
           selectProfile(profiles.get(0));
         });
       } catch (Exception error) {
@@ -253,22 +266,6 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         });
       }
     });
-  }
-
-  private void renderProfiles(List<Models.HermesChatProfile> profiles) {
-    profileRail.removeAllViews();
-    for (Models.HermesChatProfile profile : profiles) {
-      Button chip = new Button(this);
-      chip.setText(profile.label);
-      chip.setTextSize(13);
-      chip.setAllCaps(false);
-      chip.setTag(profile.id);
-      chip.setOnClickListener(view -> selectProfile(profile));
-      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(40));
-      params.setMarginEnd(dp(8));
-      profileRail.addView(chip, params);
-    }
-    updateProfileChipStyles();
   }
 
   private void selectProfile(Models.HermesChatProfile profile) {
@@ -285,24 +282,13 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     renderedMessageIds.clear();
     messages.removeAllViews();
     composer.setText("");
+    clearPendingImage();
     sendButton.setEnabled(false);
     chatTitle.setText(profile.label);
     status.setText("正在准备独立加密会话…");
-    updateProfileChipStyles();
     String key = secureStore.loadHermesChatKey(profile.id);
     if (key.isEmpty()) showKeySetup(false);
     else startWithKey(key);
-  }
-
-  private void updateProfileChipStyles() {
-    for (int index = 0; index < profileRail.getChildCount(); index++) {
-      View child = profileRail.getChildAt(index);
-      if (!(child instanceof Button)) continue;
-      boolean selected = selectedProfile != null && selectedProfile.id.equals(child.getTag());
-      Button chip = (Button) child;
-      chip.setTextColor(getColor(selected ? R.color.on_brand : R.color.text_primary));
-      chip.setBackground(rounded(selected ? R.color.brand_primary : R.color.surface_tonal, 18));
-    }
   }
 
   private void startWithKey(String encodedKey) {
@@ -389,6 +375,11 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
 
   private final Runnable reconnect = this::authenticateAndConnect;
 
+  private void sendCurrentMessage() {
+    if (pendingImageUri != null) sendImage(pendingImageUri);
+    else sendText();
+  }
+
   private void sendText() {
     String value = composer.getText().toString().trim();
     if (value.isEmpty()) return;
@@ -406,6 +397,24 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     intent.addCategory(Intent.CATEGORY_OPENABLE);
     intent.setType("image/*");
     startActivityForResult(intent, REQUEST_IMAGE);
+  }
+
+  private void stageImage(Uri uri) {
+    pendingImageUri = uri;
+    pendingImageLabel.setText(displayName(uri) + " · 可输入说明文字后发送");
+    pendingImageBar.setVisibility(View.VISIBLE);
+    status.setText("图片已添加，点击发送后才会上传");
+    composer.requestFocus();
+    composer.post(() -> {
+      android.view.WindowInsetsController controller = getWindow().getInsetsController();
+      if (controller != null) controller.show(WindowInsets.Type.ime());
+    });
+  }
+
+  private void clearPendingImage() {
+    pendingImageUri = null;
+    if (pendingImageLabel != null) pendingImageLabel.setText("");
+    if (pendingImageBar != null) pendingImageBar.setVisibility(View.GONE);
   }
 
   private void sendImage(Uri uri) {
@@ -444,6 +453,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
               || !spaceId.equals(selectedProfile.id)
               || client != targetClient) return;
           composer.setText("");
+          if (uri.equals(pendingImageUri)) clearPendingImage();
           appendMessage(message);
           status.setText("已连接 · 端到端加密");
           sendButton.setEnabled(true);
@@ -651,7 +661,10 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       null,
       null
     )) {
-      if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
+      if (cursor != null && cursor.moveToFirst()) {
+        String name = cursor.getString(0);
+        if (name != null && !name.trim().isEmpty()) return name;
+      }
     } catch (Exception ignored) {
       // The authenticated attachment id is authoritative; a display name is optional.
     }
@@ -667,7 +680,13 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       android.graphics.Insets bars = insets.getInsets(
         WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
       );
-      target.setPadding(left + bars.left, top + bars.top, right + bars.right, bottom + bars.bottom);
+      android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
+      target.setPadding(
+        left + bars.left,
+        top + bars.top,
+        right + bars.right,
+        bottom + Math.max(bars.bottom, ime.bottom)
+      );
       return insets;
     });
     view.requestApplyInsets();

@@ -40,7 +40,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.3"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.4"
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]\r\n]*\]\(\s*(?P<source>(?:https?://|file://|/)[^\s)]+)\s*\)",
@@ -238,6 +238,12 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                     self._mark_connected()
                     self._ready.set()
                     delay = 1.0
+                    if self._last_sequence > 0:
+                        await self._send_frame({
+                            "v": 1,
+                            "type": "received",
+                            "seq": self._last_sequence,
+                        })
                     await self._send_frame({
                         "v": 1,
                         "type": "resume",
@@ -279,9 +285,36 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                     self._last_sequence,
                 )
                 return
-            await self._handle_inbound_message(frame.get("message") or {})
+            envelope = frame.get("message") or {}
+            event = await self._prepare_inbound_message(envelope)
             self._last_sequence = sequence
-            await asyncio.to_thread(self._save_last_sequence)
+            try:
+                await asyncio.to_thread(self._save_last_sequence)
+            except Exception:
+                logger.error(
+                    "Cloudflare Chat could not persist inbound checkpoint %s",
+                    sequence,
+                    exc_info=True,
+                )
+            await self.handle_message(event)
+            try:
+                await self._send_frame({
+                    "v": 1,
+                    "type": "received",
+                    "seq": sequence,
+                })
+            except Exception:
+                logger.warning(
+                    "Cloudflare Chat could not confirm inbound checkpoint %s",
+                    sequence,
+                    exc_info=True,
+                )
+            logger.info(
+                "Cloudflare Chat accepted inbound message seq=%s id=%s attachments=%s",
+                sequence,
+                str(envelope.get("id") or ""),
+                len(event.media_urls or []),
+            )
             return
         if frame_type == "resume_complete":
             if frame.get("hasMore") is True:
@@ -296,7 +329,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         if frame_type == "error":
             logger.warning("Cloudflare Chat relay rejected a frame: %s", frame.get("message"))
 
-    async def _handle_inbound_message(self, envelope: dict[str, Any]) -> None:
+    async def _prepare_inbound_message(self, envelope: dict[str, Any]) -> MessageEvent:
         payload = self._cipher.decrypt_message(envelope, expected_sender="client")
         media_urls: list[str] = []
         media_types: list[str] = []
@@ -324,7 +357,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             media_types=media_types,
             raw_message=envelope,
         )
-        await self.handle_message(event)
+        return event
 
     async def _send_payload(self, text: str, attachments: list[dict[str, Any]]):
         envelope = self._cipher.encrypt_message(

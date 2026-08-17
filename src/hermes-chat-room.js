@@ -4,6 +4,7 @@ import {
   hasConnectedHermesChatAgent,
   parseHermesChatFrame,
   validateHermesChatMessage,
+  validateHermesChatReceipt,
 } from "./hermes-chat-protocol.js";
 
 const MESSAGE_RETENTION_COUNT = 500;
@@ -31,8 +32,17 @@ class HermesChatRoom extends DurableObject {
           expires_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_used_tickets_expires_at ON used_tickets(expires_at);
+        CREATE TABLE IF NOT EXISTS consumer_offsets (
+          consumer_role TEXT NOT NULL CHECK (consumer_role IN ('client', 'agent')),
+          consumer_id TEXT NOT NULL,
+          last_seq INTEGER NOT NULL CHECK (last_seq >= 0),
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (consumer_role, consumer_id)
+        );
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (1, unixepoch() * 1000);
+        INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
+        VALUES (2, unixepoch() * 1000);
       `);
     });
   }
@@ -99,7 +109,12 @@ class HermesChatRoom extends DurableObject {
         return;
       }
       if (frame.type === "resume") {
-        this.replay(socket, attachment.role, frame.afterSeq);
+        this.replay(socket, attachment, frame.afterSeq);
+        return;
+      }
+      if (frame.type === "received") {
+        const sequence = validateHermesChatReceipt(frame, attachment.role);
+        this.recordConsumerOffset(attachment.role, attachment.userId, sequence);
         return;
       }
       if (frame.type === "typing") {
@@ -186,18 +201,21 @@ class HermesChatRoom extends DurableObject {
     }
   }
 
-  replay(socket, receiverRole, afterSeqValue) {
+  replay(socket, receiver, afterSeqValue) {
     const afterSeq = Number(afterSeqValue);
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
       throw new Error("Invalid Hermes chat resume sequence.");
     }
+    const receiverRole = receiver.role;
+    const serverOffset = this.consumerOffset(receiverRole, receiver.userId);
+    const effectiveAfterSeq = Math.max(afterSeq, serverOffset);
     const rows = receiverRole === "client"
       ? this.ctx.storage.sql.exec(
         `SELECT seq, envelope FROM messages
          WHERE seq > ?
          ORDER BY seq ASC
          LIMIT ?`,
-        afterSeq,
+        effectiveAfterSeq,
         REPLAY_BATCH_SIZE,
       ).toArray()
       : this.ctx.storage.sql.exec(
@@ -205,7 +223,7 @@ class HermesChatRoom extends DurableObject {
          WHERE seq > ? AND sender_role <> ?
          ORDER BY seq ASC
          LIMIT ?`,
-        afterSeq,
+        effectiveAfterSeq,
         receiverRole,
         REPLAY_BATCH_SIZE,
       ).toArray();
@@ -224,6 +242,33 @@ class HermesChatRoom extends DurableObject {
       latestSeq: this.latestSequence(),
       hasMore: rows.length === REPLAY_BATCH_SIZE,
     }));
+  }
+
+  consumerOffset(role, userId) {
+    const row = this.ctx.storage.sql.exec(
+      `SELECT last_seq FROM consumer_offsets
+       WHERE consumer_role = ? AND consumer_id = ?`,
+      role,
+      userId,
+    ).toArray()[0];
+    return Number(row?.last_seq || 0);
+  }
+
+  recordConsumerOffset(role, userId, sequence) {
+    if (sequence > this.latestSequence()) {
+      throw new Error("Hermes chat receipt is ahead of the room sequence.");
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO consumer_offsets (consumer_role, consumer_id, last_seq, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (consumer_role, consumer_id) DO UPDATE SET
+         last_seq = MAX(consumer_offsets.last_seq, excluded.last_seq),
+         updated_at = excluded.updated_at`,
+      role,
+      userId,
+      sequence,
+      Date.now(),
+    );
   }
 
   broadcastToOtherRole(senderRole, frame) {

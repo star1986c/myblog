@@ -27,6 +27,14 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.1.4 prevents an Android image from being replayed into Hermes after
+the inbound message has already been accepted. The plugin checkpoints the
+sequence before dispatch, treats local checkpoint-write failures as non-fatal,
+and confirms consumed sequences to the relay. The relay keeps a per-agent
+consumer offset, so a restart or missing local state file cannot feed the same
+image to the Agent repeatedly. This version requires the matching Worker
+deployment.
+
 Version 0.1.3 fixes Cloudflare Error 1010 on attachment requests by replacing
 Python urllib's default browser signature with an explicit
 `Hermes-Cloudflare-Chat` User-Agent. It also records bounded HTTP response

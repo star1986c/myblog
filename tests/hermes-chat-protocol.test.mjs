@@ -5,6 +5,7 @@ import {
   hasConnectedHermesChatAgent,
   parseHermesChatFrame,
   validateHermesChatMessage,
+  validateHermesChatReceipt,
   verifyHermesChatTicket,
 } from "../src/hermes-chat-protocol.js";
 import {
@@ -97,5 +98,17 @@ test("accepts only bounded encrypted Hermes chat messages", () => {
   assert.throws(
     () => parseHermesChatFrame("x".repeat(65 * 1024)),
     /too large/i,
+  );
+});
+
+test("accepts consumption receipts only from an agent with a valid sequence", () => {
+  assert.equal(validateHermesChatReceipt({ v: 1, type: "received", seq: 42 }, "agent"), 42);
+  assert.throws(
+    () => validateHermesChatReceipt({ v: 1, type: "received", seq: 42 }, "client"),
+    /only Hermes agents/i,
+  );
+  assert.throws(
+    () => validateHermesChatReceipt({ v: 1, type: "received", seq: 0 }, "agent"),
+    /sequence/i,
   );
 });

@@ -150,6 +150,19 @@ function validateHermesChatMessage(frame, expectedSender) {
   };
 }
 
+function validateHermesChatReceipt(frame, receiverRole) {
+  if (receiverRole !== "agent") {
+    throw new ServiceError("Only Hermes agents may acknowledge consumed messages.", 403);
+  }
+  if (frame?.v !== CHAT_PROTOCOL_VERSION || frame?.type !== "received") {
+    throw new ServiceError("Invalid Hermes chat receipt.", 400);
+  }
+  if (!Number.isSafeInteger(frame.seq) || frame.seq < 1) {
+    throw new ServiceError("Invalid Hermes chat receipt sequence.", 400);
+  }
+  return frame.seq;
+}
+
 async function hmacSha256(secret, message) {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -191,5 +204,6 @@ export {
   parseHermesChatFrame,
   readBearerToken,
   validateHermesChatMessage,
+  validateHermesChatReceipt,
   verifyHermesChatTicket,
 };

@@ -30,7 +30,8 @@
     </activity>
     <activity
       android:name=".HermesChatActivity"
-      android:exported="false" />
+      android:exported="false"
+      android:windowSoftInputMode="adjustResize" />
     <provider
       android:name=".CameraFileProvider"
       android:authorities="io.qzz.superstar1014.mynotes.camera"

@@ -37,6 +37,9 @@ def install_hermes_stubs():
             self.config = config
             self.platform = platform
 
+        async def handle_message(self, event):
+            return None
+
         @staticmethod
         def validate_media_delivery_path(path):
             candidate = Path(path).expanduser().resolve()
@@ -132,7 +135,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.3")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.4")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -326,8 +329,8 @@ class AdapterContractTests(unittest.TestCase):
             instance._last_sequence = 42
             with patch.object(
                 instance,
-                "_handle_inbound_message",
-            ) as handle_inbound, patch.object(instance, "_save_last_sequence") as save:
+                "_prepare_inbound_message",
+            ) as prepare_inbound, patch.object(instance, "_save_last_sequence") as save:
                 asyncio.run(instance._handle_frame(json.dumps({
                     "v": 1,
                     "type": "message",
@@ -341,11 +344,11 @@ class AdapterContractTests(unittest.TestCase):
                     "message": {"id": "out-of-order"},
                 })))
 
-            handle_inbound.assert_not_called()
+            prepare_inbound.assert_not_called()
             save.assert_not_called()
             self.assertEqual(instance._last_sequence, 42)
 
-    def test_new_sequence_advances_only_after_dispatch_is_accepted(self):
+    def test_new_sequence_is_checkpointed_and_confirmed_after_dispatch(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             self.adapter,
             "get_hermes_home",
@@ -353,10 +356,20 @@ class AdapterContractTests(unittest.TestCase):
         ):
             instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
             instance._last_sequence = 42
+            event = types.SimpleNamespace(media_urls=["cached-image"])
             with patch.object(
                 instance,
-                "_handle_inbound_message",
-            ) as handle_inbound, patch.object(instance, "_save_last_sequence") as save:
+                "_prepare_inbound_message",
+                AsyncMock(return_value=event),
+            ) as prepare_inbound, patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ) as handle_inbound, patch.object(
+                instance,
+                "_send_frame",
+                AsyncMock(),
+            ) as send_frame, patch.object(instance, "_save_last_sequence") as save:
                 asyncio.run(instance._handle_frame(json.dumps({
                     "v": 1,
                     "type": "message",
@@ -364,11 +377,17 @@ class AdapterContractTests(unittest.TestCase):
                     "message": {"id": "new"},
                 })))
 
-            handle_inbound.assert_called_once_with({"id": "new"})
+            prepare_inbound.assert_awaited_once_with({"id": "new"})
+            handle_inbound.assert_awaited_once_with(event)
             save.assert_called_once_with()
+            send_frame.assert_awaited_once_with({
+                "v": 1,
+                "type": "received",
+                "seq": 43,
+            })
             self.assertEqual(instance._last_sequence, 43)
 
-    def test_failed_dispatch_keeps_sequence_available_for_replay(self):
+    def test_failed_dispatch_does_not_replay_an_already_prepared_message(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             self.adapter,
             "get_hermes_home",
@@ -376,15 +395,19 @@ class AdapterContractTests(unittest.TestCase):
         ):
             instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
             instance._last_sequence = 42
-
-            async def reject(_message):
-                raise RuntimeError("dispatch failed")
-
             with patch.object(
                 instance,
-                "_handle_inbound_message",
-                side_effect=reject,
-            ), patch.object(instance, "_save_last_sequence") as save:
+                "_prepare_inbound_message",
+                AsyncMock(return_value=types.SimpleNamespace(media_urls=[])),
+            ), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(side_effect=RuntimeError("dispatch failed")),
+            ), patch.object(
+                instance,
+                "_send_frame",
+                AsyncMock(),
+            ) as send_frame, patch.object(instance, "_save_last_sequence") as save:
                 with self.assertRaisesRegex(RuntimeError, "dispatch failed"):
                     asyncio.run(instance._handle_frame(json.dumps({
                         "v": 1,
@@ -393,8 +416,50 @@ class AdapterContractTests(unittest.TestCase):
                         "message": {"id": "retryable"},
                     })))
 
-            save.assert_not_called()
-            self.assertEqual(instance._last_sequence, 42)
+            save.assert_called_once_with()
+            send_frame.assert_not_awaited()
+            self.assertEqual(instance._last_sequence, 43)
+
+    def test_checkpoint_write_failure_does_not_reconnect_or_redispatch(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 42
+            event = types.SimpleNamespace(media_urls=[])
+            with patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=event),
+            ), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ) as handle_inbound, patch.object(
+                instance,
+                "_send_frame",
+                AsyncMock(),
+            ) as send_frame, patch.object(
+                instance,
+                "_save_last_sequence",
+                side_effect=OSError("read-only state"),
+            ):
+                asyncio.run(instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 43,
+                    "message": {"id": "checkpoint-failure"},
+                })))
+
+            handle_inbound.assert_awaited_once_with(event)
+            send_frame.assert_awaited_once_with({
+                "v": 1,
+                "type": "received",
+                "seq": 43,
+            })
+            self.assertEqual(instance._last_sequence, 43)
 
 
 if __name__ == "__main__":
