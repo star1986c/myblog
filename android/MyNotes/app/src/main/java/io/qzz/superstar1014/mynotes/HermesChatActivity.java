@@ -61,6 +61,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   public static final String EXTRA_PROFILE_ID = "hermes_profile_id";
   public static final String EXTRA_PROFILE_LABEL = "hermes_profile_label";
   private static final int REQUEST_IMAGE = 2201;
+  private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
   private static final DateTimeFormatter MESSAGE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
     "yyyy-MM-dd HH:mm",
     Locale.ROOT
@@ -88,6 +89,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   private Uri pendingImageUri;
   private String requestedProfileId;
   private boolean demoMode;
+  private boolean webSocketReady;
+  private boolean awaitingAgentResponse;
   private int reconnectAttempt;
   private boolean destroyed;
   private Models.HermesChatProfile selectedProfile;
@@ -135,8 +138,9 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   public void onReady() {
     runOnUiThread(() -> {
       reconnectAttempt = 0;
-      status.setText("已连接 · 端到端加密");
-      status.setTextColor(getColor(R.color.brand_primary_dark));
+      webSocketReady = true;
+      if (awaitingAgentResponse) markAwaitingAgentResponse();
+      else showConnectionAwareStatus("端到端加密");
       sendButton.setEnabled(true);
     });
   }
@@ -145,7 +149,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   public void onMessage(HermesChatCrypto.ChatMessage message) {
     persistMessage(message);
     runOnUiThread(() -> {
-      status.setText("已连接 · 端到端加密");
+      clearAwaitingAgentResponse();
       appendMessage(message);
     });
   }
@@ -165,17 +169,16 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   @Override
   public void onTyping(boolean active) {
     runOnUiThread(() -> {
-      if (!active) return;
-      status.setText("Hermes 正在思考…");
-      handler.removeCallbacks(clearTyping);
-      handler.postDelayed(clearTyping, 6_000);
+      if (active) markAwaitingAgentResponse();
+      else clearAwaitingAgentResponse();
     });
   }
 
   @Override
   public void onDisconnected(String reason) {
     runOnUiThread(() -> {
-      status.setText("连接断开，正在重试…");
+      webSocketReady = false;
+      status.setText("WebSocket 已断开 · 正在重试…");
       status.setTextColor(getColor(R.color.warning));
       sendButton.setEnabled(false);
       scheduleReconnect();
@@ -183,9 +186,32 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     });
   }
 
-  private final Runnable clearTyping = () -> {
-    if (client != null && client.isConnected()) status.setText("已连接 · 端到端加密");
+  private final Runnable expireAwaitingAgentResponse = () -> {
+    awaitingAgentResponse = false;
+    if (webSocketReady) showConnectionAwareStatus("端到端加密");
   };
+
+  private void markAwaitingAgentResponse() {
+    awaitingAgentResponse = true;
+    handler.removeCallbacks(expireAwaitingAgentResponse);
+    showConnectionAwareStatus("Hermes 正在思考…");
+    handler.postDelayed(expireAwaitingAgentResponse, AWAITING_RESPONSE_TIMEOUT_MS);
+  }
+
+  private void clearAwaitingAgentResponse() {
+    awaitingAgentResponse = false;
+    handler.removeCallbacks(expireAwaitingAgentResponse);
+    if (webSocketReady) showConnectionAwareStatus("端到端加密");
+  }
+
+  private void showConnectionAwareStatus(String detail) {
+    status.setText(
+      (webSocketReady ? "WebSocket 已连接 · " : "WebSocket 未连接 · ") + detail
+    );
+    status.setTextColor(getColor(
+      webSocketReady ? R.color.brand_primary_dark : R.color.text_secondary
+    ));
+  }
 
   private void buildScreen() {
     FrameLayout root = new FrameLayout(this);
@@ -209,7 +235,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     chatTitle = text("Hermes", 19, R.color.text_primary);
     chatTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
     heading.addView(chatTitle);
-    status = text("正在准备安全连接…", 12, R.color.text_secondary);
+    status = text("WebSocket 未连接 · 正在准备安全连接…", 12, R.color.text_secondary);
     heading.addView(status);
     LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(0, dp(52), 1);
     headingParams.setMarginStart(dp(8));
@@ -307,7 +333,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   }
 
   private void loadProfiles() {
-    status.setText("正在加载 Hermes 聊天对象…");
+    showConnectionAwareStatus("正在加载 Hermes 聊天对象…");
     executor.submit(() -> {
       try {
         NotesApiClient.SessionResult session = api.restoreSession();
@@ -331,7 +357,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
-          status.setText("无法加载 Hermes 聊天对象");
+          showConnectionAwareStatus("无法加载 Hermes 聊天对象");
           toast(error.getMessage());
         });
       }
@@ -345,8 +371,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       : requestedLabel.trim();
     selectedProfile = new Models.HermesChatProfile(profileId, profileLabel);
     chatTitle.setText(profileLabel);
-    status.setText("演示模式 · 端到端加密");
-    status.setTextColor(getColor(R.color.brand_primary_dark));
+    showConnectionAwareStatus("演示模式");
     long now = System.currentTimeMillis();
     appendMessage(new HermesChatCrypto.ChatMessage(
       "demo-agent-1",
@@ -378,6 +403,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     if (destroyed) return;
     profileGeneration += 1;
     handler.removeCallbacksAndMessages(null);
+    webSocketReady = false;
+    awaitingAgentResponse = false;
     if (client != null) {
       client.shutdown();
       client = null;
@@ -394,7 +421,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     clearPendingImage();
     sendButton.setEnabled(false);
     chatTitle.setText(profile.label);
-    status.setText("正在准备独立加密会话…");
+    showConnectionAwareStatus("正在准备独立加密会话…");
     String key = secureStore.loadHermesChatKey(profile.id);
     if (key.isEmpty()) showKeySetup(false);
     else startWithKey(key);
@@ -409,7 +436,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       sendButton.setEnabled(false);
       String spaceId = selectedProfile.id;
       long generation = profileGeneration;
-      status.setText("正在加载本地加密聊天记录…");
+      showConnectionAwareStatus("正在加载本地加密聊天记录…");
       executor.submit(() -> {
         HermesChatHistoryStore targetHistory = new HermesChatHistoryStore(
           this,
@@ -477,7 +504,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     String spaceId = selectedProfile.id;
     HermesChatClient targetClient = client;
     long generation = profileGeneration;
-    status.setText("正在获取短期连接凭证…");
+    webSocketReady = false;
+    status.setText("WebSocket 正在连接 · 获取短期连接凭证…");
     status.setTextColor(getColor(R.color.text_secondary));
     sendButton.setEnabled(false);
     executor.submit(() -> {
@@ -495,7 +523,9 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
-          status.setText("无法连接 Hermes");
+          webSocketReady = false;
+          status.setText("WebSocket 连接失败 · 正在重试…");
+          status.setTextColor(getColor(R.color.warning));
           toast(error.getMessage());
           scheduleReconnect();
         });
@@ -526,6 +556,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       composer.setText("");
       appendMessage(message);
       persistMessage(message);
+      markAwaitingAgentResponse();
     } catch (Exception error) {
       toast(error.getMessage());
     }
@@ -542,7 +573,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     pendingImageUri = uri;
     pendingImageLabel.setText(displayName(uri) + " · 可输入说明文字后发送");
     pendingImageBar.setVisibility(View.VISIBLE);
-    status.setText("图片已添加，点击发送后才会上传");
+    showConnectionAwareStatus("图片已添加，点击发送后才会上传");
     composer.requestFocus();
     composer.post(() -> {
       android.view.WindowInsetsController controller = getWindow().getInsetsController();
@@ -565,7 +596,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     HermesChatCrypto targetCrypto = crypto;
     HermesChatClient targetClient = client;
     long generation = profileGeneration;
-    status.setText("正在加密并上传图片…");
+    showConnectionAwareStatus("正在加密并上传图片…");
     String caption = composer.getText().toString().trim();
     sendButton.setEnabled(false);
     executor.submit(() -> {
@@ -598,14 +629,14 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
           composer.setText("");
           if (uri.equals(pendingImageUri)) clearPendingImage();
           appendMessage(message);
-          status.setText("已连接 · 端到端加密");
+          markAwaitingAgentResponse();
           sendButton.setEnabled(true);
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
           toast(error.getMessage());
-          status.setText("图片发送失败");
+          showConnectionAwareStatus("图片发送失败");
           sendButton.setEnabled(client != null && client.isConnected());
         });
       }
@@ -618,7 +649,9 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     messages.removeAllViews();
     for (HermesChatCrypto.ChatMessage message : snapshot.messages) appendMessage(message);
     if (!snapshot.messages.isEmpty()) {
-      status.setText("已加载 " + snapshot.messages.size() + " 条本地加密消息，正在连接…");
+      showConnectionAwareStatus(
+        "已加载 " + snapshot.messages.size() + " 条本地加密消息，正在连接…"
+      );
     }
   }
 
@@ -774,7 +807,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache targetImages = imageCache;
     long generation = profileGeneration;
-    status.setText("正在打开大图…");
+    showConnectionAwareStatus("正在打开大图…");
     executor.submit(() -> {
       try {
         byte[] ciphertext = targetImages.read(descriptor);
@@ -787,13 +820,15 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
-          status.setText("已连接 · 端到端加密");
+          showConnectionAwareStatus(
+            awaitingAgentResponse ? "Hermes 正在思考…" : "端到端加密"
+          );
           showImagePreview(bitmap, plaintext, descriptor);
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (!destroyed && generation == profileGeneration) {
-            status.setText("图片打开失败");
+            showConnectionAwareStatus("图片打开失败");
             toast(error.getMessage());
           }
         });
@@ -1004,7 +1039,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     long generation = profileGeneration;
     if (targetHistory == null || targetImages == null || targetProfile == null) return;
     String spaceId = targetProfile.id;
-    status.setText("正在清理本机和 Cloudflare 聊天数据…");
+    showConnectionAwareStatus("正在清理本机和 Cloudflare 聊天数据…");
     sendButton.setEnabled(false);
     executor.submit(() -> {
       try {
@@ -1016,9 +1051,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
           renderCachedMessages(snapshot);
-          status.setText(client != null && client.isConnected()
-            ? "已连接 · 本机和云端已清理"
-            : "本机和云端已清理");
+          showConnectionAwareStatus("本机和云端已清理");
           sendButton.setEnabled(client != null && client.isConnected());
           toast(
             "清理完成：Cloudflare 消息 " + cloudMessages
@@ -1028,7 +1061,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
-          status.setText("云端清理失败，本机数据未删除");
+          showConnectionAwareStatus("云端清理失败，本机数据未删除");
           sendButton.setEnabled(client != null && client.isConnected());
           toast(error.getMessage());
         });

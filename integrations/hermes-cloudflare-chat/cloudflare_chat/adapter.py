@@ -40,7 +40,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.5"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.6"
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]\r\n]*\]\(\s*(?P<source>(?:https?://|file://|/)[^\s)]+)\s*\)",
@@ -330,6 +330,13 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                 logger.error(
                     "Cloudflare Chat could not persist inbound checkpoint %s",
                     sequence,
+                    exc_info=True,
+                )
+            try:
+                await self.send_typing(self.space_id)
+            except Exception:
+                logger.debug(
+                    "Cloudflare Chat could not announce inbound processing",
                     exc_info=True,
                 )
             await self.handle_message(event)

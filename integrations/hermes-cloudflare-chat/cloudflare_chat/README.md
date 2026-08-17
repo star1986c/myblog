@@ -10,7 +10,7 @@ For a named Hermes profile, deploy the same directory to that profile's own
 Hermes home, for example:
 
 ```text
-/root/.hermes/profiles/research/plugins/cloudflare_chat
+/root/.hermes/profiles/personal/plugins/cloudflare_chat
 ```
 
 The plugin connects outbound to:
@@ -26,6 +26,12 @@ a named profile uses `/root/.hermes/profiles/<name>/.env`. Every profile must
 set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
+
+Version 0.1.6 emits a best-effort typing frame as soon as each new inbound
+message is accepted, before dispatching it to the Hermes Gateway. This makes
+the Android “thinking” indicator consistent across default and named profiles,
+even when their Gateway typing behavior differs. Existing environment variables
+and chat keys do not change.
 
 Version 0.1.5 adds Hermes Gateway streaming support. The first response creates
 one normal chat message, later chunks edit that same Android bubble, and the

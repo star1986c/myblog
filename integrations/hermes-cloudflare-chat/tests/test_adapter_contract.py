@@ -12,7 +12,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 
 def install_hermes_stubs():
@@ -135,7 +135,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.5")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.6")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -207,6 +207,46 @@ class AdapterContractTests(unittest.TestCase):
             second = self.adapter.CloudflareChatAdapter(config)
             self.assertEqual(second._last_sequence, 42)
             self.assertIn("primary", str(second._state_path))
+
+    def test_inbound_message_announces_typing_before_gateway_dispatch(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        event = types.SimpleNamespace(media_urls=[])
+        order = []
+
+        async def send_frame(frame):
+            order.append(("frame", frame["type"], frame.get("active")))
+
+        async def handle_message(received_event):
+            order.append(("handle", received_event, None))
+
+        with patch.object(
+            instance,
+            "_prepare_inbound_message",
+            AsyncMock(return_value=event),
+        ), patch.object(
+            instance,
+            "_save_last_sequence",
+        ), patch.object(
+            instance,
+            "_send_frame",
+            side_effect=send_frame,
+        ), patch.object(
+            instance,
+            "handle_message",
+            side_effect=handle_message,
+        ):
+            asyncio.run(instance._handle_frame(json.dumps({
+                "v": 1,
+                "type": "message",
+                "seq": 1,
+                "message": {"id": "client-message-1"},
+            })))
+
+        self.assertEqual(order, [
+            ("frame", "typing", True),
+            ("handle", event, None),
+            ("frame", "received", None),
+        ])
 
     def test_local_image_is_encrypted_uploaded_and_sent_as_attachment(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -418,11 +458,11 @@ class AdapterContractTests(unittest.TestCase):
             prepare_inbound.assert_awaited_once_with({"id": "new"})
             handle_inbound.assert_awaited_once_with(event)
             save.assert_called_once_with()
-            send_frame.assert_awaited_once_with({
-                "v": 1,
-                "type": "received",
-                "seq": 43,
-            })
+            send_frame.assert_has_awaits([
+                call({"v": 1, "type": "typing", "active": True}),
+                call({"v": 1, "type": "received", "seq": 43}),
+            ])
+            self.assertEqual(send_frame.await_count, 2)
             self.assertEqual(instance._last_sequence, 43)
 
     def test_failed_dispatch_does_not_replay_an_already_prepared_message(self):
@@ -455,7 +495,11 @@ class AdapterContractTests(unittest.TestCase):
                     })))
 
             save.assert_called_once_with()
-            send_frame.assert_not_awaited()
+            send_frame.assert_awaited_once_with({
+                "v": 1,
+                "type": "typing",
+                "active": True,
+            })
             self.assertEqual(instance._last_sequence, 43)
 
     def test_checkpoint_write_failure_does_not_reconnect_or_redispatch(self):
@@ -492,11 +536,11 @@ class AdapterContractTests(unittest.TestCase):
                 })))
 
             handle_inbound.assert_awaited_once_with(event)
-            send_frame.assert_awaited_once_with({
-                "v": 1,
-                "type": "received",
-                "seq": 43,
-            })
+            send_frame.assert_has_awaits([
+                call({"v": 1, "type": "typing", "active": True}),
+                call({"v": 1, "type": "received", "seq": 43}),
+            ])
+            self.assertEqual(send_frame.await_count, 2)
             self.assertEqual(instance._last_sequence, 43)
 
 

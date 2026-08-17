@@ -212,11 +212,9 @@ public final class HermesConversationsActivity extends Activity {
     long now = System.currentTimeMillis();
     profiles.clear();
     profiles.add(new Models.HermesChatProfile("primary", "Hermes 主助手"));
-    profiles.add(new Models.HermesChatProfile("secondary", "Hermes 第二助手"));
     profiles.add(new Models.HermesChatProfile("personal", "Hermes 个人助手"));
     summaries.clear();
     summaries.put("primary", new ConversationSummary("已整理今天的笔记与待办。", now - 240_000, true));
-    summaries.put("secondary", new ConversationSummary("代码检查已完成，可以继续讨论。", now - 520_000, true));
     summaries.put("personal", new ConversationSummary("Gateway online — Hermes is ready.", now - 60_000, true));
     profileCount.setText(profiles.size() + " 个聊天对象 · 端到端加密");
     renderProfiles();

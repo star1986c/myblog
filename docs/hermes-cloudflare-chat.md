@@ -58,7 +58,7 @@ Hermes v0.20.1 的 Gateway 会先调用平台适配器 `send()` 创建一条回�
 ```json
 {
   "vars": {
-    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,secondary:Hermes 第二助手,personal:Hermes 个人助手",
+    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,personal:Hermes 个人助手",
     "HERMES_CHAT_CLOUD_RETENTION_DAYS": "30"
   }
 }
@@ -199,6 +199,9 @@ WebSocket；进入另一个对象时加载对应缓存和 checkpoint，再连接
 - Android 2.2 起，底部文件夹入口改为 Hermes 会话；文件夹快捷按钮和横向筛选栏
   继续保留。会话列表支持搜索任意数量的已配置 profile，并从本机加密快照显示末条
   消息与时间，不会为列表中的其他 profile 建立 WebSocket。
+- Android 2.3 起，聊天页始终明确显示 `WebSocket 已连接/未连接/正在连接/已断开`。
+  文字或图片成功发送后会立即显示 `Hermes 正在思考…`，首条 Agent 回复到达后恢复
+  加密连接状态；插件 0.1.6 也会在每个 profile 接收消息时 best-effort 上报 typing。
 
 ## 成本边界
 

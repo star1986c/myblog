@@ -103,3 +103,22 @@ test("Hermes message footers show the local send time instead of a sender label"
   assert.doesNotMatch(source, /text\(outgoing \? "你" : "Hermes"/);
   assert.doesNotMatch(source, /message\.finalUpdate \? "Hermes"/);
 });
+
+test("every profile shows WebSocket and awaiting-response status immediately after send", async () => {
+  const source = await readFile(activityPath, "utf8");
+  const sendText = source.slice(
+    source.indexOf("private void sendText()"),
+    source.indexOf("private void chooseImage()"),
+  );
+  const sendImage = source.slice(
+    source.indexOf("private void sendImage(Uri uri)"),
+    source.indexOf("private void renderCachedMessages"),
+  );
+
+  assert.match(source, /WebSocket 已连接/);
+  assert.match(source, /WebSocket 已断开/);
+  assert.match(sendText, /client\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
+  assert.match(sendImage, /targetClient\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
+  assert.match(source, /onMessage[\s\S]*clearAwaitingAgentResponse\(\)/);
+  assert.match(source, /showConnectionAwareStatus\("Hermes 正在思考…"\)/);
+});
