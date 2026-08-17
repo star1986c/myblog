@@ -32,6 +32,8 @@ test("deployment config binds the Hermes chat Durable Object", () => {
     wrangler.vars.HERMES_CHAT_PROFILES,
     "primary:Hermes 主助手,secondary:Hermes 第二助手",
   );
+  assert.equal(wrangler.vars.HERMES_CHAT_CLOUD_RETENTION_DAYS, "30");
+  assert.equal(wrangler.compatibility_date, "2026-08-17");
   assert.deepEqual(wrangler.routes, [
     { pattern: "superstar1014.qzz.io", custom_domain: true },
     { pattern: "h.superstar1014.qzz.io", custom_domain: true },

@@ -10,10 +10,6 @@ async function handleHermesChatWebSocket(request, env) {
   if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
     throw new ServiceError("WebSocket upgrade required.", 426);
   }
-  if (!env.HERMES_CHAT_ROOMS || typeof env.HERMES_CHAT_ROOMS.getByName !== "function") {
-    throw new ServiceError("Hermes chat is unavailable.", 503);
-  }
-
   const requestedRole = request.headers.get("X-Hermes-Role") || "";
   const requestedSpace = requireConfiguredHermesChatSpace(
     env,
@@ -58,10 +54,17 @@ async function handleHermesChatWebSocket(request, env) {
     method: "GET",
     headers,
   });
-  const room = env.HERMES_CHAT_ROOMS.getByName(`space:${requestedSpace}`, {
+  const room = hermesChatRoom(env, requestedSpace);
+  return await room.fetch(internalRequest);
+}
+
+function hermesChatRoom(env, spaceId) {
+  if (!env.HERMES_CHAT_ROOMS || typeof env.HERMES_CHAT_ROOMS.getByName !== "function") {
+    throw new ServiceError("Hermes chat is unavailable.", 503);
+  }
+  return env.HERMES_CHAT_ROOMS.getByName(`space:${spaceId}`, {
     locationHint: "apac",
   });
-  return await room.fetch(internalRequest);
 }
 
 async function authorizeHermesChatAgent(request, env) {
@@ -124,5 +127,6 @@ export {
   authorizeHermesChatAgent,
   configuredHermesChatProfiles,
   handleHermesChatWebSocket,
+  hermesChatRoom,
   requireConfiguredHermesChatSpace,
 };

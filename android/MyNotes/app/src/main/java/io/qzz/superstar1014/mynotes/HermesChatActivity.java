@@ -45,9 +45,13 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.HashSet;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -55,6 +59,10 @@ import java.util.concurrent.Executors;
 
 public final class HermesChatActivity extends Activity implements HermesChatClient.Listener {
   private static final int REQUEST_IMAGE = 2201;
+  private static final DateTimeFormatter MESSAGE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
+    "yyyy-MM-dd HH:mm",
+    Locale.ROOT
+  );
 
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -578,7 +586,11 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       JSONObject descriptor = message.attachments.optJSONObject(index);
       if (descriptor != null) addAttachmentPreview(bubble, descriptor);
     }
-    TextView meta = text(outgoing ? "你" : "Hermes", 11, outgoing ? R.color.on_brand : R.color.text_secondary);
+    TextView meta = text(
+      formatMessageTime(message.sentAt),
+      11,
+      outgoing ? R.color.on_brand : R.color.text_secondary
+    );
     meta.setAlpha(0.78f);
     LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(-2, -2);
     metaParams.topMargin = dp(5);
@@ -589,7 +601,10 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     rowParams.setMargins(0, dp(5), 0, dp(5));
     messages.addView(row, rowParams);
     if (message.sequence > 0) {
-      renderedMessagesBySequence.put(message.sequence, new RenderedMessage(body, meta));
+      renderedMessagesBySequence.put(
+        message.sequence,
+        new RenderedMessage(body, meta, message.sentAt)
+      );
     }
     messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
   }
@@ -612,17 +627,27 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     TextView body = rendered.body;
     body.setText(message.text);
     body.setVisibility(message.text.trim().isEmpty() ? View.GONE : View.VISIBLE);
-    rendered.meta.setText(message.finalUpdate ? "Hermes" : "Hermes · 正在回复");
+    String sentTime = formatMessageTime(rendered.sentAt);
+    rendered.meta.setText(message.finalUpdate ? sentTime : sentTime + " · 正在回复");
     messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+  }
+
+  private static String formatMessageTime(long sentAt) {
+    if (sentAt <= 0) return "时间未知";
+    return MESSAGE_TIME_FORMATTER.format(
+      Instant.ofEpochMilli(sentAt).atZone(ZoneId.systemDefault())
+    );
   }
 
   private static final class RenderedMessage {
     final TextView body;
     final TextView meta;
+    final long sentAt;
 
-    RenderedMessage(TextView body, TextView meta) {
+    RenderedMessage(TextView body, TextView meta, long sentAt) {
       this.body = body;
       this.meta = meta;
+      this.sentAt = sentAt;
     }
   }
 
@@ -827,7 +852,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       2,
       "聊天缓存保留时间：" + retentionLabel(HermesChatCacheSettings.retentionDays(this))
     );
-    menu.getMenu().add(0, 4, 3, "立即清理当前聊天缓存");
+    menu.getMenu().add(0, 4, 3, "清理当前聊天（本机和 Cloudflare）");
     menu.setForceShowIcon(true);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 1) {
@@ -868,9 +893,12 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
 
   private void confirmClearChatCache() {
     new AlertDialog.Builder(this)
-      .setTitle("清理当前聊天缓存？")
-      .setMessage("会删除本机显示的历史消息和加密图片缓存，但保留同步序号，重连时不会重新下载这些旧消息。")
-      .setPositiveButton("清理", (dialog, which) -> clearCurrentHistory())
+      .setTitle("清理当前聊天的全部缓存？")
+      .setMessage(
+        "会删除当前聊天对象在本机以及 Cloudflare 上的历史消息和加密图片附件，无法恢复。"
+          + "同步序号会保留，重连时不会重新下载这些旧消息。"
+      )
+      .setPositiveButton("同时清理", (dialog, which) -> clearCurrentHistoryAndCloud())
       .setNegativeButton("取消", null)
       .show();
   }
@@ -894,22 +922,42 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     });
   }
 
-  private void clearCurrentHistory() {
+  private void clearCurrentHistoryAndCloud() {
     HermesChatHistoryStore targetHistory = historyStore;
     HermesChatImageCache targetImages = imageCache;
+    Models.HermesChatProfile targetProfile = selectedProfile;
     long generation = profileGeneration;
-    if (targetHistory == null || targetImages == null) return;
+    if (targetHistory == null || targetImages == null || targetProfile == null) return;
+    String spaceId = targetProfile.id;
+    status.setText("正在清理本机和 Cloudflare 聊天数据…");
+    sendButton.setEnabled(false);
     executor.submit(() -> {
-      HermesChatHistoryStore.Snapshot snapshot = targetHistory.clearMessages();
-      targetImages.clear();
-      runOnUiThread(() -> {
-        if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
-        renderCachedMessages(snapshot);
-        status.setText(client != null && client.isConnected()
-          ? "已连接 · 本地缓存已清理"
-          : "本地缓存已清理");
-        toast("当前聊天缓存已清理。");
-      });
+      try {
+        JSONObject cloud = api.purgeHermesChatCloudData(spaceId);
+        HermesChatHistoryStore.Snapshot snapshot = targetHistory.clearMessages();
+        targetImages.clear();
+        int cloudMessages = cloud.optInt("messagesDeleted");
+        int cloudAttachments = cloud.optInt("attachmentsDeleted");
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
+          renderCachedMessages(snapshot);
+          status.setText(client != null && client.isConnected()
+            ? "已连接 · 本机和云端已清理"
+            : "本机和云端已清理");
+          sendButton.setEnabled(client != null && client.isConnected());
+          toast(
+            "清理完成：Cloudflare 消息 " + cloudMessages
+              + " 条，附件 " + cloudAttachments + " 个。"
+          );
+        });
+      } catch (Exception error) {
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration) return;
+          status.setText("云端清理失败，本机数据未删除");
+          sendButton.setEnabled(client != null && client.isConnected());
+          toast(error.getMessage());
+        });
+      }
     });
   }
 

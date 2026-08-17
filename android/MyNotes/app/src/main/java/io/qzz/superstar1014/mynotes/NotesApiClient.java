@@ -107,6 +107,15 @@ final class NotesApiClient {
     );
   }
 
+  JSONObject purgeHermesChatCloudData(String spaceId) throws Exception {
+    return request(
+      "POST",
+      "api/admin/hermes-chat/cleanup",
+      new JSONObject().put("spaceId", spaceId),
+      null
+    );
+  }
+
   void uploadHermesChatAttachment(
     String spaceId,
     String attachmentId,

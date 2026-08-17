@@ -2,7 +2,9 @@ import { ServiceError } from "./blog-repository.js";
 
 const MAX_CHAT_ATTACHMENT_PLAINTEXT_BYTES = 10 * 1024 * 1024;
 const MAX_CHAT_ATTACHMENT_CIPHERTEXT_BYTES = MAX_CHAT_ATTACHMENT_PLAINTEXT_BYTES + 16;
+const MAX_MANUAL_DELETE_PAGES = 100;
 const ATTACHMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SPACE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 async function uploadHermesChatAttachment(bucket, request, { attachmentId, spaceId, uploader }) {
   requireBucket(bucket);
@@ -45,7 +47,40 @@ async function downloadHermesChatAttachment(bucket, { attachmentId, spaceId }) {
   return object;
 }
 
+async function deleteHermesChatAttachments(bucket, { spaceId }) {
+  requireListDeleteBucket(bucket);
+  const prefix = `${attachmentObjectKey(spaceId, "")}`;
+  let attachmentsDeleted = 0;
+  let ciphertextBytesDeleted = 0;
+  let listRequests = 0;
+
+  for (let page = 0; page < MAX_MANUAL_DELETE_PAGES; page += 1) {
+    const listed = await bucket.list({ prefix, limit: 1000 });
+    listRequests += 1;
+    const objects = Array.isArray(listed?.objects) ? listed.objects : [];
+    const keys = objects
+      .map((object) => String(object?.key || ""))
+      .filter((key) => key.startsWith(prefix));
+    if (keys.length) {
+      await bucket.delete(keys);
+      attachmentsDeleted += keys.length;
+      ciphertextBytesDeleted += objects.reduce((total, object) => (
+        total + (Number.isSafeInteger(object?.size) && object.size > 0 ? object.size : 0)
+      ), 0);
+    }
+    if (listed?.truncated !== true) {
+      return { attachmentsDeleted, ciphertextBytesDeleted, listRequests };
+    }
+  }
+
+  throw new ServiceError(
+    "Hermes chat attachment cleanup reached its safe page limit; retry cleanup.",
+    503,
+  );
+}
+
 function attachmentObjectKey(spaceId, attachmentId) {
+  requireSpaceId(spaceId);
   return `hermes-chat/v1/${spaceId}/${attachmentId}`;
 }
 
@@ -61,8 +96,21 @@ function requireBucket(bucket) {
   }
 }
 
+function requireListDeleteBucket(bucket) {
+  if (!bucket || typeof bucket.list !== "function" || typeof bucket.delete !== "function") {
+    throw new ServiceError("Hermes chat attachment storage is unavailable.", 503);
+  }
+}
+
+function requireSpaceId(value) {
+  if (!SPACE_ID_PATTERN.test(String(value || ""))) {
+    throw new ServiceError("Invalid Hermes chat space.", 400);
+  }
+}
+
 export {
   MAX_CHAT_ATTACHMENT_CIPHERTEXT_BYTES,
+  deleteHermesChatAttachments,
   downloadHermesChatAttachment,
   uploadHermesChatAttachment,
 };

@@ -53,6 +53,7 @@ import {
   rotateDeviceToken,
 } from "./device-token-repository.js";
 import {
+  deleteHermesChatAttachments,
   downloadHermesChatAttachment,
   uploadHermesChatAttachment,
 } from "./hermes-chat-attachment-repository.js";
@@ -60,9 +61,11 @@ import {
   authorizeHermesChatAgent,
   configuredHermesChatProfiles,
   handleHermesChatWebSocket,
+  hermesChatRoom,
   requireConfiguredHermesChatSpace,
 } from "./hermes-chat-gateway.js";
 import { createHermesChatTicket } from "./hermes-chat-protocol.js";
+import { resolveHermesChatCloudRetentionDays } from "./hermes-chat-retention.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
@@ -851,6 +854,23 @@ async function handleAdminApi(request, env, path) {
       }),
       spaceId,
       expiresInSeconds: 90,
+    });
+  }
+
+  if (path === "/api/admin/hermes-chat/cleanup" && request.method === "POST") {
+    const payload = await readJson(request);
+    const spaceId = requireConfiguredHermesChatSpace(env, payload.spaceId).id;
+    const room = hermesChatRoom(env, spaceId);
+    const history = await room.purgeHistory();
+    const attachments = await deleteHermesChatAttachments(env.NOTE_ATTACHMENTS, { spaceId });
+    return jsonResponse({
+      ok: true,
+      spaceId,
+      cloudRetentionDays: resolveHermesChatCloudRetentionDays(env),
+      messagesDeleted: Number(history?.messagesDeleted || 0),
+      attachmentsDeleted: attachments.attachmentsDeleted,
+      ciphertextBytesDeleted: attachments.ciphertextBytesDeleted,
+      lastSequence: Number(history?.lastSequence || 0),
     });
   }
 

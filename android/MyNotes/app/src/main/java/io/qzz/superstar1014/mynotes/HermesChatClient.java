@@ -29,6 +29,7 @@ final class HermesChatClient {
   private WebSocket socket;
   private boolean closing;
   private long lastSequence;
+  private Boolean lastTypingActive;
 
   HermesChatClient(HermesChatCrypto crypto, Listener listener) {
     this(crypto, listener, 0);
@@ -74,11 +75,13 @@ final class HermesChatClient {
   }
 
   void sendTyping(boolean active) {
+    if (lastTypingActive != null && lastTypingActive == active) return;
     try {
-      send(new JSONObject()
+      boolean sent = send(new JSONObject()
         .put("v", 1)
         .put("type", "typing")
         .put("active", active));
+      if (sent) lastTypingActive = active;
     } catch (Exception ignored) {
       // Typing state is ephemeral and must not interrupt message entry.
     }
@@ -90,6 +93,7 @@ final class HermesChatClient {
 
   void close() {
     closing = true;
+    lastTypingActive = null;
     WebSocket current = socket;
     socket = null;
     if (current != null) current.close(1000, "Android chat closed");
@@ -110,6 +114,7 @@ final class HermesChatClient {
     @Override
     public void onOpen(WebSocket webSocket, Response response) {
       socket = webSocket;
+      lastTypingActive = null;
     }
 
     @Override
@@ -186,6 +191,7 @@ final class HermesChatClient {
     public void onClosed(WebSocket webSocket, int code, String reason) {
       if (webSocket != socket) return;
       socket = null;
+      lastTypingActive = null;
       if (!closing) listener.onDisconnected(reason.isEmpty() ? "聊天连接已断开。" : reason);
     }
 
@@ -193,6 +199,7 @@ final class HermesChatClient {
     public void onFailure(WebSocket webSocket, Throwable error, Response response) {
       if (webSocket != socket) return;
       socket = null;
+      lastTypingActive = null;
       if (!closing) {
         String message = error.getMessage();
         listener.onDisconnected(message == null ? "无法连接 Hermes。" : message);

@@ -34,7 +34,7 @@ test("Hermes chat schedules retention cleanup without resetting the relay checkp
   assert.match(service, /loadAndCleanup/);
   assert.match(manifest, /HermesChatCleanupService/);
   assert.match(activity, /聊天缓存保留时间/);
-  assert.match(activity, /立即清理当前聊天缓存/);
+  assert.match(activity, /清理当前聊天（本机和 Cloudflare）/);
 });
 
 test("encrypted chat images are cached, expandable, and explicitly saved through MediaStore", async () => {
@@ -50,4 +50,19 @@ test("encrypted chat images are cached, expandable, and explicitly saved through
   assert.match(activity, /showImagePreview/);
   assert.match(activity, /MediaStore\.Images\.Media\.EXTERNAL_CONTENT_URI/);
   assert.match(activity, /MediaStore\.MediaColumns\.RELATIVE_PATH/);
+});
+
+test("Android cloud cleanup is explicit and typing frames are deduplicated", async () => {
+  const [activity, api, client] = await Promise.all([
+    source("HermesChatActivity.java"),
+    source("NotesApiClient.java"),
+    source("HermesChatClient.java"),
+  ]);
+
+  assert.match(api, /purgeHermesChatCloudData/);
+  assert.match(api, /api\/admin\/hermes-chat\/cleanup/);
+  assert.match(activity, /本机和 Cloudflare/);
+  assert.match(activity, /api\.purgeHermesChatCloudData\(spaceId\)/);
+  assert.match(client, /lastTypingActive/);
+  assert.match(client, /lastTypingActive\s*==\s*active/);
 });

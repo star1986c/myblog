@@ -623,6 +623,20 @@ class FakeR2 {
   async delete(keys) {
     for (const key of Array.isArray(keys) ? keys : [keys]) this.objects.delete(key);
   }
+
+  async list({ prefix = "", cursor, limit = 1000 } = {}) {
+    const values = [...this.objects.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .sort(([left], [right]) => left.localeCompare(right));
+    const offset = Number(cursor || 0);
+    const page = values.slice(offset, offset + limit);
+    const nextOffset = offset + page.length;
+    return {
+      objects: page.map(([key, stored]) => ({ key, size: stored.bytes.byteLength })),
+      truncated: nextOffset < values.length,
+      ...(nextOffset < values.length ? { cursor: String(nextOffset) } : {}),
+    };
+  }
 }
 
 function makeVisitorRequest(ip, cf = {}) {
@@ -1463,6 +1477,67 @@ test("authenticated Android client lists dynamic Hermes profiles and requests a 
   });
   assert.equal(ticket.spaceId, "third");
   assert.equal(ticket.username, env.ADMIN_USERNAME);
+});
+
+test("authenticated Android client purges only the selected Hermes cloud profile", async () => {
+  const bucket = new FakeR2();
+  await bucket.put("hermes-chat/v1/primary/image-1", new Uint8Array(16));
+  await bucket.put("hermes-chat/v1/primary/image-2", new Uint8Array(32));
+  await bucket.put("hermes-chat/v1/secondary/image-3", new Uint8Array(64));
+  await bucket.put("encrypted-notes/keep", new Uint8Array(128));
+  let requestedRoom = "";
+  const env = makeEnv({
+    NOTE_ATTACHMENTS: bucket,
+    HERMES_CHAT_PROFILES: "primary:主助手,secondary:研究助手",
+    HERMES_CHAT_CLOUD_RETENTION_DAYS: "30",
+    HERMES_CHAT_ROOMS: {
+      getByName(name) {
+        requestedRoom = name;
+        return {
+          async purgeHistory() {
+            return { messagesDeleted: 4, lastSequence: 9 };
+          },
+        };
+      },
+    },
+  });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "hermes-cleanup-csrf",
+  });
+  const request = (csrf = true) => new Request(
+    "https://superstar1014.qzz.io/api/admin/hermes-chat/cleanup",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        ...(csrf ? { "X-CSRF-Token": "hermes-cleanup-csrf" } : {}),
+      },
+      body: JSON.stringify({ spaceId: "primary" }),
+    },
+  );
+
+  const rejected = await worker.fetch(request(false), env);
+  assert.equal(rejected.status, 403);
+
+  const response = await worker.fetch(request(), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    spaceId: "primary",
+    cloudRetentionDays: 30,
+    messagesDeleted: 4,
+    attachmentsDeleted: 2,
+    ciphertextBytesDeleted: 48,
+    lastSequence: 9,
+  });
+  assert.equal(requestedRoom, "space:primary");
+  assert.deepEqual([...bucket.objects.keys()].sort(), [
+    "encrypted-notes/keep",
+    "hermes-chat/v1/secondary/image-3",
+  ]);
 });
 
 test("authenticated workspace key is created once and returned without a master password", async () => {

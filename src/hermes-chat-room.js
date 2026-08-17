@@ -8,6 +8,11 @@ import {
   validateHermesChatEdit,
   validateHermesChatReceipt,
 } from "./hermes-chat-protocol.js";
+import {
+  hermesChatRetentionCutoff,
+  nextHermesChatCleanupAt,
+  resolveHermesChatCloudRetentionDays,
+} from "./hermes-chat-retention.js";
 
 const MESSAGE_RETENTION_COUNT = 500;
 const REPLAY_BATCH_SIZE = 100;
@@ -41,10 +46,16 @@ class HermesChatRoom extends DurableObject {
           updated_at INTEGER NOT NULL,
           PRIMARY KEY (consumer_role, consumer_id)
         );
+        CREATE TABLE IF NOT EXISTS room_state (
+          key TEXT PRIMARY KEY,
+          value INTEGER NOT NULL
+        );
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (1, unixepoch() * 1000);
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (2, unixepoch() * 1000);
+        INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
+        VALUES (3, unixepoch() * 1000);
       `);
     });
   }
@@ -98,7 +109,7 @@ class HermesChatRoom extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(socket, message) {
+  async webSocketMessage(socket, message) {
     const attachment = readSocketAttachment(socket);
     try {
       const frame = parseHermesChatFrame(message);
@@ -132,6 +143,7 @@ class HermesChatRoom extends DurableObject {
         const edit = validateHermesChatEdit(frame, attachment.role);
         this.ensureEditableTarget(edit.targetSeq);
         const stored = edit.final ? this.storeStreamEdit(edit) : null;
+        if (stored && !stored.duplicate) await this.ensureCleanupAlarm();
         socket.send(JSON.stringify({
           v: CHAT_PROTOCOL_VERSION,
           type: "ack",
@@ -157,6 +169,7 @@ class HermesChatRoom extends DurableObject {
       }
       const envelope = validateHermesChatMessage(frame, attachment.role);
       const stored = this.storeMessage(envelope);
+      if (!stored.duplicate) await this.ensureCleanupAlarm();
       socket.send(JSON.stringify({
         v: CHAT_PROTOCOL_VERSION,
         type: "ack",
@@ -192,10 +205,67 @@ class HermesChatRoom extends DurableObject {
     }
   }
 
+  async alarm() {
+    const now = Date.now();
+    const cutoff = hermesChatRetentionCutoff(this.env, now);
+    const expired = this.ctx.storage.sql
+      .exec("SELECT COUNT(*) AS count FROM messages WHERE created_at <= ?", cutoff)
+      .one().count;
+    if (expired > 0) {
+      this.preserveLatestSequence();
+      this.ctx.storage.sql.exec("DELETE FROM messages WHERE created_at <= ?", cutoff);
+    }
+    this.ctx.storage.sql.exec("DELETE FROM used_tickets WHERE expires_at <= ?", now);
+    await this.ensureCleanupAlarm(now);
+  }
+
+  async purgeHistory() {
+    const messagesDeleted = this.ctx.storage.sql
+      .exec("SELECT COUNT(*) AS count FROM messages")
+      .one().count;
+    const lastSequence = this.latestSequence();
+    if (messagesDeleted > 0) this.preserveLatestSequence(lastSequence);
+    this.ctx.storage.sql.exec("DELETE FROM messages");
+    await this.ctx.storage.deleteAlarm();
+    return { messagesDeleted, lastSequence };
+  }
+
   latestSequence() {
     return this.ctx.storage.sql
-      .exec("SELECT COALESCE(MAX(seq), 0) AS seq FROM messages")
+      .exec(`SELECT MAX(seq) AS seq FROM (
+        SELECT COALESCE(MAX(seq), 0) AS seq FROM messages
+        UNION ALL
+        SELECT value AS seq FROM room_state WHERE key = 'latest_sequence'
+      )`)
       .one().seq;
+  }
+
+  preserveLatestSequence(sequence = this.latestSequence()) {
+    if (!Number.isSafeInteger(sequence) || sequence < 1) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room_state (key, value) VALUES ('latest_sequence', ?)
+       ON CONFLICT (key) DO UPDATE SET value = MAX(room_state.value, excluded.value)`,
+      sequence,
+    );
+  }
+
+  async ensureCleanupAlarm(now = Date.now()) {
+    const oldest = this.ctx.storage.sql
+      .exec("SELECT MIN(created_at) AS created_at FROM messages")
+      .one().created_at;
+    const existing = await this.ctx.storage.getAlarm();
+    if (!Number.isSafeInteger(oldest) || oldest < 0) {
+      if (existing !== null) await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const target = nextHermesChatCleanupAt(
+      oldest,
+      resolveHermesChatCloudRetentionDays(this.env),
+      now,
+    );
+    if (existing === null || target < existing) {
+      await this.ctx.storage.setAlarm(target);
+    }
   }
 
   storeMessage(envelope) {

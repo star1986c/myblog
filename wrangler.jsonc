@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "wispy-cloud-0978",
   "main": "./src/cloudflare-entry.js",
-  "compatibility_date": "2026-07-06",
+  "compatibility_date": "2026-08-17",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
     "required": [
@@ -12,7 +12,8 @@
     ]
   },
   "vars": {
-    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,secondary:Hermes 第二助手"
+    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,secondary:Hermes 第二助手",
+    "HERMES_CHAT_CLOUD_RETENTION_DAYS": "30"
   },
   "routes": [
     {

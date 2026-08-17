@@ -54,3 +54,13 @@ test("Hermes stream edits update an existing Android message bubble", async () =
   assert.match(activity, /replaceMessage\(message\)/);
   assert.match(activity, /body\.setText\(message\.text\)/);
 });
+
+test("Hermes message footers show the local send time instead of a sender label", async () => {
+  const source = await readFile(activityPath, "utf8");
+
+  assert.match(source, /DateTimeFormatter\.ofPattern\(\s*"yyyy-MM-dd HH:mm"/);
+  assert.match(source, /formatMessageTime\(message\.sentAt\)/);
+  assert.match(source, /formatMessageTime\(rendered\.sentAt\)/);
+  assert.doesNotMatch(source, /text\(outgoing \? "你" : "Hermes"/);
+  assert.doesNotMatch(source, /message\.finalUpdate \? "Hermes"/);
+});
