@@ -27,6 +27,12 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.1.2 recovers extensionless Markdown image URLs and local `MEDIA:`
+image directives in the adapter's text send path. This covers Hermes responses
+that older or stricter base media extraction leaves as plain text. Successfully
+recovered images are encrypted and uploaded as normal chat attachments; if an
+upload fails, the original image markup remains visible instead of disappearing.
+
 Version 0.1.1 ignores duplicate and out-of-order relay sequences before they
 reach Hermes. Stop the profile gateway, replace the complete plugin directory,
 and restart the gateway. Existing environment variables and chat keys do not

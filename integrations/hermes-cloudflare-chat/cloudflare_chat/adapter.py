@@ -8,10 +8,11 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -37,6 +38,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
+MAX_MESSAGE_ATTACHMENTS = 8
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_MARKDOWN_IMAGE_RE = re.compile(
+    r"!\[[^\]\r\n]*\]\(\s*(?P<source>(?:https?://|file://|/)[^\s)]+)\s*\)",
+    re.IGNORECASE,
+)
+_MEDIA_IMAGE_RE = re.compile(
+    r"^[ \t]*MEDIA:[ \t]*(?P<source>[^\r\n]+?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _get_secret(name: str, default: str = "") -> str:
@@ -140,7 +151,23 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         self._release_lock()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        return await self._send_payload(str(content or ""), [])
+        text = str(content or "")
+        attachments: list[dict[str, Any]] = []
+        delivered_spans: list[tuple[int, int]] = []
+        for start, end, source in _inline_image_candidates(text):
+            if len(attachments) >= MAX_MESSAGE_ATTACHMENTS:
+                break
+            try:
+                attachments.append(await self._encrypt_and_upload_image(source))
+                delivered_spans.append((start, end))
+            except Exception as error:
+                # Preserve the original Markdown/MEDIA directive when the
+                # fallback upload fails, so the image is never silently lost.
+                logger.warning("Cloudflare Chat inline image fallback failed: %s", error)
+        return await self._send_payload(
+            _remove_delivered_spans(text, delivered_spans),
+            attachments,
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         await self._send_frame({
@@ -158,25 +185,8 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ):
         try:
-            parsed = urlsplit(str(image_url or ""))
-            source = image_url
-            if parsed.scheme in {"https", "http"}:
-                source = await cache_image_from_url(image_url)
-            data, content_type, filename = await asyncio.to_thread(
-                self._read_outbound_image,
-                source,
-            )
-            encrypted = self._cipher.encrypt_attachment(
-                data,
-                content_type=content_type,
-                filename=filename,
-            )
-            await asyncio.to_thread(
-                self._upload_attachment,
-                encrypted.descriptor["id"],
-                encrypted.ciphertext,
-            )
-            return await self._send_payload(caption or "", [encrypted.descriptor])
+            descriptor = await self._encrypt_and_upload_image(image_url)
+            return await self._send_payload(caption or "", [descriptor])
         except Exception as error:
             logger.warning("Cloudflare Chat image send failed: %s", error)
             return SendResult(success=False, error=str(error), retryable=False)
@@ -397,6 +407,35 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             "X-Hermes-Space": self.space_id,
         }
 
+    async def _encrypt_and_upload_image(self, image_url: str) -> dict[str, Any]:
+        parsed = urlsplit(str(image_url or ""))
+        source = image_url
+        if parsed.scheme in {"https", "http"}:
+            source = await cache_image_from_url(image_url)
+        elif parsed.scheme == "file":
+            source = self.validate_media_delivery_path(unquote(parsed.path))
+            if not source:
+                raise ValueError("Unsafe or unreadable image path")
+        elif parsed.scheme == "":
+            source = self.validate_media_delivery_path(str(image_url or ""))
+            if not source:
+                raise ValueError("Unsafe or unreadable image path")
+        data, content_type, filename = await asyncio.to_thread(
+            self._read_outbound_image,
+            source,
+        )
+        encrypted = self._cipher.encrypt_attachment(
+            data,
+            content_type=content_type,
+            filename=filename,
+        )
+        await asyncio.to_thread(
+            self._upload_attachment,
+            encrypted.descriptor["id"],
+            encrypted.ciphertext,
+        )
+        return encrypted.descriptor
+
     def _read_outbound_image(self, image_url: str):
         parsed = urlsplit(str(image_url or ""))
         if parsed.scheme not in {"", "file"}:
@@ -465,6 +504,39 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("Cloudflare Chat scoped lock release failed", exc_info=True)
         self._lock_key = None
+
+
+def _inline_image_candidates(text: str) -> list[tuple[int, int, str]]:
+    candidates: list[tuple[int, int, str]] = []
+    for match in _MARKDOWN_IMAGE_RE.finditer(text):
+        candidates.append((match.start(), match.end(), match.group("source")))
+    for match in _MEDIA_IMAGE_RE.finditer(text):
+        source = match.group("source").strip()
+        if len(source) >= 2 and source[0] == source[-1] and source[0] in "`\"'":
+            source = source[1:-1].strip()
+        parsed = urlsplit(source)
+        local_path = unquote(parsed.path) if parsed.scheme == "file" else source
+        if parsed.scheme not in {"", "file"} or not Path(local_path).is_absolute():
+            continue
+        if Path(local_path).suffix.lower() not in _IMAGE_EXTENSIONS:
+            continue
+        candidates.append((match.start(), match.end(), source))
+
+    accepted: list[tuple[int, int, str]] = []
+    previous_end = -1
+    for candidate in sorted(candidates, key=lambda item: (item[0], item[1])):
+        if candidate[0] < previous_end:
+            continue
+        accepted.append(candidate)
+        previous_end = candidate[1]
+    return accepted
+
+
+def _remove_delivered_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    cleaned = text
+    for start, end in sorted(spans, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def _valid_configuration(relay_url: str, secret: str, agent_id: str, space_id: str) -> bool:
