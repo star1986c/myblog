@@ -45,13 +45,28 @@ def install_hermes_stubs():
             candidate = Path(path).expanduser().resolve()
             return str(candidate) if candidate.is_file() else None
 
+        @staticmethod
+        def build_source(**kwargs):
+            return kwargs
+
     class MessageType(enum.Enum):
         TEXT = "text"
         PHOTO = "photo"
+        VOICE = "voice"
+        VIDEO = "video"
+        DOCUMENT = "document"
 
     @dataclasses.dataclass
     class MessageEvent:
         text: str
+        message_type: MessageType | None = None
+        user_id: str = ""
+        user_name: str = ""
+        source: dict | None = None
+        message_id: str = ""
+        media_urls: list[str] | None = None
+        media_types: list[str] | None = None
+        raw_message: dict | None = None
 
     @dataclasses.dataclass
     class SendResult:
@@ -129,13 +144,15 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("image_generate", platform_hint)
         self.assertIn("MEDIA:<absolute-path>", platform_hint)
         self.assertIn("agent_visible_image", platform_hint)
+        self.assertIn("fenced code blocks", platform_hint)
+        self.assertIn("documents", platform_hint)
 
     def test_attachment_requests_use_explicit_application_user_agent(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.6")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.7")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -286,6 +303,128 @@ class AdapterContractTests(unittest.TestCase):
                 instance._cipher.decrypt_attachment(ciphertext, descriptor),
                 image_bytes,
             )
+
+    def test_document_is_encrypted_uploaded_and_sent_as_attachment(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            document_path = Path(directory) / "report.pdf"
+            document_bytes = b"%PDF-1.7\nprivate report\n"
+            document_path.write_bytes(document_bytes)
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            send_payload = AsyncMock(
+                return_value=self.adapter.SendResult(success=True, message_id="48")
+            )
+
+            with patch.object(instance, "_upload_attachment") as upload, patch.object(
+                instance,
+                "_send_payload",
+                send_payload,
+            ):
+                result = asyncio.run(instance.send_document(
+                    chat_id="primary",
+                    file_path=str(document_path),
+                    caption="检查报告",
+                ))
+
+            self.assertTrue(result.success)
+            attachment_id, ciphertext = upload.call_args.args
+            sent_text, attachments = send_payload.await_args.args
+            self.assertEqual(sent_text, "检查报告")
+            descriptor = attachments[0]
+            self.assertEqual(descriptor["id"], attachment_id)
+            self.assertEqual(descriptor["contentType"], "application/pdf")
+            self.assertEqual(
+                instance._cipher.decrypt_attachment(ciphertext, descriptor),
+                document_bytes,
+            )
+
+    def test_voice_and_video_use_their_platform_delivery_methods(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            for method_name, filename, expected_type in (
+                ("send_voice", "reply.mp3", "audio/mpeg"),
+                ("send_video", "walkthrough.mp4", "video/mp4"),
+            ):
+                with self.subTest(method=method_name):
+                    path = Path(directory) / filename
+                    path.write_bytes((method_name + "-payload").encode("utf-8"))
+                    send_payload = AsyncMock(
+                        return_value=self.adapter.SendResult(success=True, message_id="49")
+                    )
+                    with patch.object(instance, "_upload_attachment") as upload, patch.object(
+                        instance,
+                        "_send_payload",
+                        send_payload,
+                    ):
+                        result = asyncio.run(getattr(instance, method_name)(
+                            chat_id="primary",
+                            **({"audio_path": str(path)} if method_name == "send_voice"
+                               else {"video_path": str(path)}),
+                        ))
+                    self.assertTrue(result.success)
+                    self.assertEqual(
+                        send_payload.await_args.args[1][0]["contentType"],
+                        expected_type,
+                    )
+                    upload.assert_called_once()
+
+    def test_unsupported_executable_is_not_uploaded(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            executable = Path(directory) / "unsafe.exe"
+            executable.write_bytes(b"MZ-not-delivered")
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            with patch.object(instance, "_upload_attachment") as upload:
+                result = asyncio.run(instance.send_file(
+                    chat_id="primary",
+                    file_path=str(executable),
+                ))
+
+            self.assertFalse(result.success)
+            self.assertIn("unsupported attachment format", result.error)
+            upload.assert_not_called()
+
+    def test_inbound_document_is_dispatched_as_document_message(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        envelope = instance._cipher.encrypt_message(
+            sender="client",
+            text="请分析附件",
+            attachments=[{
+                "id": "00000000-0000-4000-8000-000000000001",
+                "name": "report.pdf",
+                "contentType": "application/pdf",
+                "plaintextBytes": 8,
+                "nonce": "AAAAAAAAAAAAAAAA",
+            }],
+        )
+        with patch.object(
+            instance,
+            "_download_and_decrypt_attachment",
+            AsyncMock(return_value=(Path("/tmp/report.pdf"), "application/pdf", "document")),
+        ):
+            event = asyncio.run(instance._prepare_inbound_message(envelope))
+
+        self.assertEqual(event.message_type, self.adapter.MessageType.DOCUMENT)
+        self.assertEqual(event.media_types, ["application/pdf"])
+        self.assertEqual(event.text, "请分析附件")
+        self.assertEqual(
+            self.adapter._message_type_for_categories(["audio"]),
+            self.adapter.MessageType.VOICE,
+        )
+        self.assertEqual(
+            self.adapter._message_type_for_categories(["video"]),
+            self.adapter.MessageType.VIDEO,
+        )
 
     def test_send_recovers_extensionless_markdown_image_as_attachment(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

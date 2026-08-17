@@ -54,6 +54,7 @@ import {
 } from "./device-token-repository.js";
 import {
   deleteHermesChatAttachments,
+  deleteHermesChatAttachmentsById,
   downloadHermesChatAttachment,
   uploadHermesChatAttachment,
 } from "./hermes-chat-attachment-repository.js";
@@ -74,6 +75,7 @@ const IP_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const VISITOR_NETWORK_HEADER = "X-AI-Build-Lab-Request";
 const VISITOR_NETWORK_HEADER_VALUE = "visitor-network";
 const WORLD_CLOCK_HEADER_VALUE = "world-clock";
+const HERMES_CHAT_OPAQUE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CACHEABLE_NETWORK_SOURCES = ["ipinfo", "ipwhois", "geojs"];
 
 const SECURITY_HEADERS = {
@@ -874,6 +876,37 @@ async function handleAdminApi(request, env, path) {
     });
   }
 
+  if (path === "/api/admin/hermes-chat/messages/delete" && request.method === "POST") {
+    const payload = await readJson(request);
+    const spaceId = requireConfiguredHermesChatSpace(env, payload.spaceId).id;
+    const messageIds = requireHermesChatOpaqueIds(payload.messageIds, {
+      label: "message",
+      minimum: 1,
+      maximum: 100,
+    });
+    const attachmentIds = requireHermesChatOpaqueIds(payload.attachmentIds || [], {
+      label: "attachment",
+      minimum: 0,
+      maximum: 800,
+    });
+    const room = hermesChatRoom(env, spaceId);
+    const history = await room.deleteMessages(messageIds);
+    const attachments = attachmentIds.length > 0
+      ? await deleteHermesChatAttachmentsById(env.NOTE_ATTACHMENTS, {
+        spaceId,
+        attachmentIds,
+      })
+      : { attachmentsDeleted: 0 };
+    return jsonResponse({
+      ok: true,
+      spaceId,
+      messagesDeleted: Number(history?.messagesDeleted || 0),
+      requestedMessages: messageIds.length,
+      attachmentsDeleted: attachments.attachmentsDeleted,
+      lastSequence: Number(history?.lastSequence || 0),
+    });
+  }
+
   if (path === "/api/admin/workspace-key" && request.method === "GET") {
     return jsonResponse({
       workspaceKey: await readOrCreateWorkspaceDataKey(
@@ -1137,6 +1170,20 @@ async function handleHermesChatAttachmentApi(request, env, pathname) {
     { error: "Method not allowed" },
     { status: 405, headers: { Allow: "GET, POST" } },
   );
+}
+
+function requireHermesChatOpaqueIds(values, { label, minimum, maximum }) {
+  if (!Array.isArray(values) || values.length < minimum || values.length > maximum) {
+    throw new ServiceError(
+      `Hermes chat ${label} ids must contain ${minimum} to ${maximum} values.`,
+      400,
+    );
+  }
+  const ids = [...new Set(values.map((value) => String(value || "").toLowerCase()))];
+  if (ids.length < minimum || ids.some((id) => !HERMES_CHAT_OPAQUE_ID_PATTERN.test(id))) {
+    throw new ServiceError(`Invalid Hermes chat ${label} id.`, 400);
+  }
+  return ids;
 }
 
 function readExpectedRevision(request) {

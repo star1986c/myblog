@@ -7,6 +7,7 @@ import android.os.Bundle;
 import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 import javax.crypto.SecretKey;
 
@@ -26,6 +27,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifySharedProtectionPassword();
       verifyEncryptedAttachments();
       verifyHermesChatCrypto();
+      verifyHermesChatRichMessages();
       verifyHermesChatHistoryCache();
       verifyAttachmentRequestHints();
       verifyAttachmentDiskCache();
@@ -100,6 +102,50 @@ public final class CryptoTestRunner extends Instrumentation {
     require(
       Arrays.equals(image, crypto.decryptAttachment(encrypted.ciphertext, encrypted.descriptor)),
       "Hermes attachment round trip failed"
+    );
+  }
+
+  private static void verifyHermesChatRichMessages() {
+    HermesChatAttachmentPolicy.ResolvedType document = HermesChatAttachmentPolicy.resolve(
+      "application/pdf",
+      "report.pdf"
+    );
+    require(
+      document.category == HermesChatAttachmentPolicy.Category.DOCUMENT,
+      "Hermes PDF category mismatch"
+    );
+    require(
+      HermesChatAttachmentPolicy.resolve("audio/mpeg", "reply.mp3").category
+        == HermesChatAttachmentPolicy.Category.AUDIO,
+      "Hermes audio category mismatch"
+    );
+    require(
+      HermesChatAttachmentPolicy.resolve("video/mp4", "demo.mp4").category
+        == HermesChatAttachmentPolicy.Category.VIDEO,
+      "Hermes video category mismatch"
+    );
+    boolean rejected = false;
+    try {
+      HermesChatAttachmentPolicy.resolve("application/octet-stream", "unsafe.exe");
+    } catch (IllegalArgumentException expected) {
+      rejected = true;
+    }
+    require(rejected, "Hermes unsupported executable was accepted");
+
+    CharSequence rendered = HermesChatMarkdown.render(
+      "## 状态\n```bash\nhermes status\n```\n`ready`",
+      0xff202020,
+      0xffffffff,
+      0xff00aa88,
+      8
+    );
+    require(rendered instanceof android.text.Spanned, "Hermes Markdown was not styled");
+    require(!rendered.toString().contains("```"), "Hermes code fences remained visible");
+    require(rendered.toString().contains("hermes status"), "Hermes code block content was lost");
+    android.text.Spanned styled = (android.text.Spanned) rendered;
+    require(
+      styled.getSpans(0, styled.length(), android.text.style.TypefaceSpan.class).length >= 2,
+      "Hermes code styles were not applied"
     );
   }
 
@@ -178,6 +224,12 @@ public final class CryptoTestRunner extends Instrumentation {
     );
     images.retain(snapshot.messages);
     require(images.read(descriptor) != null, "Referenced Hermes image was cleaned");
+
+    HermesChatHistoryStore.Snapshot selectedDelete = history.deleteMessages(Set.of(recent.id));
+    images.retain(selectedDelete.messages);
+    require(selectedDelete.messages.isEmpty(), "Selected Hermes message was retained");
+    require(selectedDelete.lastSequence == 9, "Selected delete reset the relay checkpoint");
+    require(images.read(descriptor) == null, "Selected message attachment cache was retained");
 
     HermesChatHistoryStore.Snapshot cleared = history.clearMessages();
     images.retain(cleared.messages);

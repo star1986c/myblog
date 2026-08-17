@@ -27,6 +27,15 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.1.7 adds bidirectional encrypted attachments. Android can send the
+supported images, audio, video, documents, Office files, archives, EPUB/APK/IPA
+files to Hermes, and the adapter now implements `send_document`, `send_file`,
+`send_voice`, and `send_video` for Agent output. Each attachment remains limited
+to 10 MiB. Audio and video are delivered with their native Hermes message types;
+other non-image files use `DOCUMENT`. Existing environment variables and chat
+keys do not change. The attachment wire format is unchanged; when using Android
+2.5's single/multi-message deletion, deploy the matching Worker release as well.
+
 Version 0.1.6 emits a best-effort typing frame as soon as each new inbound
 message is accepted, before dispatching it to the Hermes Gateway. This makes
 the Android “thinking” indicator consistent across default and named profiles,

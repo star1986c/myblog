@@ -13,6 +13,7 @@ import {
   nextHermesChatCleanupAt,
   resolveHermesChatCloudRetentionDays,
 } from "./hermes-chat-retention.js";
+import { resolveHermesChatMessageDeletion } from "./hermes-chat-message-deletion.js";
 
 const MESSAGE_RETENTION_COUNT = 500;
 const REPLAY_BATCH_SIZE = 100;
@@ -228,6 +229,29 @@ class HermesChatRoom extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM messages");
     await this.ctx.storage.deleteAlarm();
     return { messagesDeleted, lastSequence };
+  }
+
+  async deleteMessages(messageIds) {
+    const rows = this.ctx.storage.sql
+      .exec("SELECT seq, id, envelope FROM messages ORDER BY seq ASC")
+      .toArray();
+    const deletion = resolveHermesChatMessageDeletion(rows, messageIds);
+    const ids = deletion.deletedIds;
+    const lastSequence = this.latestSequence();
+    if (ids.length > 0) {
+      this.preserveLatestSequence(lastSequence);
+      const placeholders = ids.map(() => "?").join(",");
+      this.ctx.storage.sql.exec(
+        `DELETE FROM messages WHERE id IN (${placeholders})`,
+        ...ids,
+      );
+      await this.ensureCleanupAlarm();
+    }
+    return {
+      messagesDeleted: ids.length,
+      requestedMessages: deletion.requestedIds.length,
+      lastSequence,
+    };
   }
 
   latestSequence() {

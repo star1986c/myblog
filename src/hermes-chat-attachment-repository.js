@@ -79,6 +79,18 @@ async function deleteHermesChatAttachments(bucket, { spaceId }) {
   );
 }
 
+async function deleteHermesChatAttachmentsById(bucket, { spaceId, attachmentIds }) {
+  if (!Array.isArray(attachmentIds) || attachmentIds.length > 800) {
+    throw new ServiceError("Invalid Hermes chat attachment deletion list.", 400);
+  }
+  const ids = [...new Set(attachmentIds.map((value) => String(value || "").toLowerCase()))];
+  for (const attachmentId of ids) requireAttachmentId(attachmentId);
+  if (ids.length === 0) return { attachmentsDeleted: 0 };
+  requireDeleteBucket(bucket);
+  await bucket.delete(ids.map((attachmentId) => attachmentObjectKey(spaceId, attachmentId)));
+  return { attachmentsDeleted: ids.length };
+}
+
 function attachmentObjectKey(spaceId, attachmentId) {
   requireSpaceId(spaceId);
   return `hermes-chat/v1/${spaceId}/${attachmentId}`;
@@ -102,6 +114,12 @@ function requireListDeleteBucket(bucket) {
   }
 }
 
+function requireDeleteBucket(bucket) {
+  if (!bucket || typeof bucket.delete !== "function") {
+    throw new ServiceError("Hermes chat attachment storage is unavailable.", 503);
+  }
+}
+
 function requireSpaceId(value) {
   if (!SPACE_ID_PATTERN.test(String(value || ""))) {
     throw new ServiceError("Invalid Hermes chat space.", 400);
@@ -111,6 +129,7 @@ function requireSpaceId(value) {
 export {
   MAX_CHAT_ATTACHMENT_CIPHERTEXT_BYTES,
   deleteHermesChatAttachments,
+  deleteHermesChatAttachmentsById,
   downloadHermesChatAttachment,
   uploadHermesChatAttachment,
 };

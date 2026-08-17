@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /** Stores a profile's decrypted message model inside one AES-GCM encrypted snapshot. */
 final class HermesChatHistoryStore {
@@ -122,6 +123,23 @@ final class HermesChatHistoryStore {
       Snapshot cleared = new Snapshot(current.lastSequence, List.of());
       writeSnapshot(cleared);
       return cleared;
+    }
+  }
+
+  Snapshot deleteMessages(Set<String> messageIds) {
+    if (messageIds == null || messageIds.isEmpty()) {
+      return loadAndCleanup(0, System.currentTimeMillis());
+    }
+    synchronized (FILE_LOCK) {
+      Snapshot current = readSnapshot();
+      List<HermesChatCrypto.ChatMessage> retained = new ArrayList<>();
+      for (HermesChatCrypto.ChatMessage message : current.messages) {
+        if (!messageIds.contains(message.id)) retained.add(copy(message));
+      }
+      if (retained.size() == current.messages.size()) return current;
+      Snapshot updated = new Snapshot(current.lastSequence, retained);
+      writeSnapshot(updated);
+      return updated;
     }
   }
 

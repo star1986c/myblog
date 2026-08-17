@@ -14,9 +14,9 @@ flowchart LR
   N2["NAS Hermes profile B"] -->|"主动 WebSocket"| W
   W --> D1["Durable Object: space A"]
   W --> D2["Durable Object: space B"]
-  A -->|"加密图片"| R["Private R2"]
-  N1 -->|"加密图片"| R
-  N2 -->|"加密图片"| R
+  A -->|"加密附件"| R["Private R2"]
+  N1 -->|"加密附件"| R
+  N2 -->|"加密附件"| R
 ```
 
 profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，安卓端从 API
@@ -28,13 +28,13 @@ Durable Object。会话列表不会连接所有 profile，也不会从 Cloudflar
 
 - 每个 profile id 确定性映射到一个 `space:<profileId>` Durable Object，聊天序号、
   离线记录和连接完全隔离。
-- 每个 profile 必须使用不同的 32 字节 `HERMES_CF_CHAT_KEY`。文字与图片均由
+- 每个 profile 必须使用不同的 32 字节 `HERMES_CF_CHAT_KEY`。文字与附件均由
   Android/NAS 使用 AES-256-GCM 加密，Cloudflare 只保存密文和路由所需元数据。
 - NAS profile 可以共用一个 `HERMES_CHAT_AGENT_SECRET` 做 Worker 身份认证；该
   secret 不参与消息加密。
 - Android 使用现有登录会话换取 90 秒、单次使用、绑定 profile 的 WebSocket
   票据，长期设备令牌不会放进 WebSocket URL。
-- 图片明文上限为 10 MiB。WebSocket 只发送加密描述符，密文二进制放入现有私有
+- 每个附件的明文上限为 10 MiB。WebSocket 只发送加密描述符，密文二进制放入现有私有
   R2 bucket 的 `hermes-chat/v1/<profileId>/` 前缀。
 - Durable Object 保存最近 30 天且最多 500 条加密消息；断线重连按序号补发，每批
   最多 100 条。每天最多一次的 DO alarm 会清理到期消息；没有消息时不运行 alarm。
@@ -170,7 +170,7 @@ hermes -p personal status
 2. 客户端从 Worker 动态读取全部 profile，并显示各自的本机加密消息摘要。
 3. 点击聊天对象进入独立会话；首次进入每个对象时分别生成聊天密钥。
 4. 把界面显示的 `HERMES_CF_SPACE_ID` 和密钥写入对应 NAS profile 的 `.env`。
-5. 重启对应 Gateway 后发送文字或图片验证。
+5. 重启对应 Gateway 后发送文字或附件验证。
 
 Android Keystore 按 profile id 独立保护密钥。Android 2.4 起，最近使用的一个 profile
 WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不会主动关闭，进程仍存活时
@@ -189,8 +189,8 @@ WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不�
   替换缓存中的完整正文并推进 sequence。
 - 默认保留 30 天，可在聊天右上角设置为 7、30、90 天或永久。系统 JobScheduler
   每 24 小时清理一次，也可手动立即清理当前聊天；清理消息会同步删除无引用的
-  加密图片缓存。
-- 图片附件在应用私有目录中仍以端到端密文缓存。点击缩略图可打开全屏预览；只有
+  加密附件缓存。
+- 附件在应用私有目录中仍以端到端密文缓存。点击图片缩略图可打开全屏预览；只有
   点击“保存相册”后，原始图片才会通过 MediaStore 写入 `Pictures/My Notes`。
 - Android 2.1 起，输入状态只在“开始/停止输入”变化时发送，避免每个字符产生一个
   Durable Object 入站事件。右上角“清理当前聊天（本机和 Cloudflare）”会二次确认，
@@ -199,12 +199,39 @@ WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不�
 - 消息气泡左下角显示手机本地时区的发送时间（`yyyy-MM-dd HH:mm`），不再显示
   “Hermes”或“你”；流式生成期间只在时间后追加“正在回复”。
 - Android 2.2 起，底部文件夹入口改为 Hermes 会话；文件夹快捷按钮和横向筛选栏
-  继续保留。会话列表支持搜索任意数量的已配置 profile，并从本机加密快照显示末条
-  消息与时间，不会为列表中的其他 profile 建立 WebSocket。
+  继续保留。会话列表从本机加密快照显示任意数量 profile 的末条消息与时间，不会
+  提供搜索，也不会为列表中的其他 profile 建立 WebSocket。
 - Android 2.4 起，聊天页在长 profile 名称和大字体下也会保留独立状态行，始终明确显示
   `WS 已连接/未连接/连接中/已断开`。
-  文字或图片成功发送后会立即显示 `正在思考…`，首条 Agent 回复到达后恢复
+  文字或附件成功发送后会立即显示 `正在思考…`，首条 Agent 回复到达后恢复
   加密连接状态；插件 0.1.6 也会在每个 profile 接收消息时 best-effort 上报 typing。
+- Android 2.5 起，聊天正文按 Telegram 风格渲染标题、粗体、斜体、删除线、行内代码
+  和 fenced code block；会话进入、附件选择返回以及收到 Agent 消息后，输入焦点都会
+  回到输入框。图片、音频、视频、文档、Office、压缩包、EPUB/APK/IPA 均可双向传输，
+  非图片附件通过 Android 系统文件选择器保存。音频使用原生播放控件，视频使用全屏
+  播放器；只有点击播放时才解密到 App 私有临时缓存，关闭播放器或销毁页面后立即删除。
+- 长按任意已由服务器确认的消息会进入选择模式，可一次选择 1 到 100 条并永久删除。
+  Android 先删除 Durable Object 中的目标消息及关联流式最终更新，再按精确 R2 key
+  删除所选消息的附件；云端成功后才删除本机加密快照和附件缓存。此操作不会使用
+  R2 ListObjects，也不会撤回 Hermes 已经吸收到 NAS Agent 当前上下文中的内容。
+
+### Android 2.5 附件白名单
+
+| 类别 | 扩展名 |
+|---|---|
+| 图片 | `png jpg jpeg gif webp bmp tif tiff svg` |
+| 音频 | `mp3 wav ogg m4a opus flac aac` |
+| 视频 | `mp4 mov webm mkv avi` |
+| 文档 | `pdf txt md csv json xml html yaml yml log` |
+| Office | `doc docx xls xlsx ppt pptx odt ods odp` |
+| 压缩包 | `zip rar 7z tar gz bz2` |
+| 电子书/安装包 | `epub apk ipa`（仅传输和保存，不自动执行） |
+
+插件 0.1.7 对应实现 Hermes 的 `send_document`、`send_file`、`send_voice` 和
+`send_video`，入站音频/视频分别映射为 `VOICE`/`VIDEO`，其他非图片附件映射为
+`DOCUMENT`。附件传输沿用现有通用密文 R2 端点，不需要更换环境变量或聊天密钥；
+Android 2.5 的单条/多条消息删除需要同时部署本版本 Worker，新增的登录态 API 会
+精确删除 Durable Object 消息和对应 R2 对象。
 
 ## 成本边界
 
@@ -225,4 +252,4 @@ WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不�
   Gateway。其他 profile 不受影响。
 - Cloudflare：回滚 Worker 版本即可。R2 lifecycle 是 bucket 独立配置，Worker 回滚
   不会自动移除；如需停止附件自动过期，应单独删除 `hermes-chat-expire` 规则。不要
-  删除 Durable Object namespace 或 R2 bucket，否则历史密文与图片无法恢复。
+  删除 Durable Object namespace 或 R2 bucket，否则历史密文与附件无法恢复。

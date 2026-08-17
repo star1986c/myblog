@@ -8,20 +8,19 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
-import android.text.Editable;
 import android.text.TextUtils;
-import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -54,7 +53,6 @@ public final class HermesConversationsActivity extends Activity {
   private SecureSessionStore secureStore;
   private LinearLayout profileList;
   private TextView profileCount;
-  private EditText search;
   private boolean demoMode;
   private boolean destroyed;
   private boolean firstResume = true;
@@ -120,29 +118,6 @@ public final class HermesConversationsActivity extends Activity {
     refresh.setOnClickListener(view -> loadProfiles());
     top.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
     column.addView(top, new LinearLayout.LayoutParams(-1, dp(66)));
-
-    search = new EditText(this);
-    search.setHint("搜索聊天对象");
-    search.setSingleLine(true);
-    search.setTextSize(16);
-    search.setTextColor(getColor(R.color.text_primary));
-    search.setHintTextColor(getColor(R.color.text_secondary));
-    search.setPadding(dp(16), dp(8), dp(16), dp(8));
-    android.graphics.drawable.Drawable searchIcon = getDrawable(R.drawable.ic_search);
-    searchIcon.setTint(getColor(R.color.text_secondary));
-    search.setCompoundDrawablesWithIntrinsicBounds(searchIcon, null, null, null);
-    search.setCompoundDrawablePadding(dp(10));
-    search.setBackground(roundedStroke(R.color.surface, R.color.divider, 24, 1));
-    search.addTextChangedListener(new TextWatcher() {
-      @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
-      @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
-        renderProfiles();
-      }
-      @Override public void afterTextChanged(Editable value) {}
-    });
-    LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(-1, dp(54));
-    searchParams.setMargins(dp(14), dp(10), dp(14), dp(8));
-    column.addView(search, searchParams);
 
     LinearLayout security = horizontal(Gravity.CENTER_VERTICAL);
     security.setPadding(dp(14), dp(8), dp(14), dp(8));
@@ -259,7 +234,9 @@ public final class HermesConversationsActivity extends Activity {
       }
       HermesChatCrypto.ChatMessage last = snapshot.messages.get(snapshot.messages.size() - 1);
       String preview = last.text == null ? "" : last.text.replaceAll("\\s+", " ").trim();
-      if (preview.isEmpty() && last.attachments.length() > 0) preview = "图片";
+      if (preview.isEmpty() && last.attachments.length() > 0) {
+        preview = attachmentPreview(last.attachments.optJSONObject(0));
+      }
       if (preview.isEmpty()) preview = "加密消息";
       if (preview.length() > 64) preview = preview.substring(0, 64) + "…";
       if ("client".equals(last.sender)) preview = "你：" + preview;
@@ -272,17 +249,25 @@ public final class HermesConversationsActivity extends Activity {
   private void renderProfiles() {
     if (profileList == null) return;
     profileList.removeAllViews();
-    String query = search == null ? "" : search.getText().toString().trim().toLowerCase(Locale.ROOT);
-    int visible = 0;
     for (Models.HermesChatProfile profile : profiles) {
-      if (!query.isEmpty()
-          && !profile.label.toLowerCase(Locale.ROOT).contains(query)
-          && !profile.id.toLowerCase(Locale.ROOT).contains(query)) continue;
       addProfileRow(profile, summaries.get(profile.id));
-      visible += 1;
     }
-    if (visible == 0) {
-      showListMessage(profiles.isEmpty() ? "尚未配置 Hermes profile" : "没有匹配的聊天对象");
+    if (profiles.isEmpty()) showListMessage("尚未配置 Hermes profile");
+  }
+
+  private static String attachmentPreview(JSONObject descriptor) {
+    if (descriptor == null) return "加密附件";
+    String name = descriptor.optString("name", "");
+    String contentType = descriptor.optString("contentType", "application/octet-stream");
+    try {
+      HermesChatAttachmentPolicy.ResolvedType type = HermesChatAttachmentPolicy.resolve(
+        contentType,
+        name
+      );
+      String safeName = HermesChatAttachmentPolicy.safeDisplayName(name, type);
+      return type.category.label + "：" + safeName;
+    } catch (IllegalArgumentException ignored) {
+      return "加密附件";
     }
   }
 

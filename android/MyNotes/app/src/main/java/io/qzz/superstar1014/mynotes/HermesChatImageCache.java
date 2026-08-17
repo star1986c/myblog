@@ -63,7 +63,7 @@ final class HermesChatImageCache {
         int expected = expectedCiphertextBytes(descriptor);
         if (ciphertext == null || ciphertext.length != expected) return;
         if (!directory.exists() && !directory.mkdirs()) return;
-        temporary = File.createTempFile("image-", ".tmp", directory);
+        temporary = File.createTempFile("attachment-", ".tmp", directory);
         try (FileOutputStream output = new FileOutputStream(temporary)) {
           output.write(ciphertext);
           output.getFD().sync();
@@ -124,10 +124,12 @@ final class HermesChatImageCache {
   private static int expectedCiphertextBytes(JSONObject descriptor) throws Exception {
     int plaintextBytes = descriptor.getInt("plaintextBytes");
     if (plaintextBytes < 1 || plaintextBytes > HermesChatCrypto.MAX_ATTACHMENT_BYTES) {
-      throw new IllegalArgumentException("图片大小无效。");
+      throw new IllegalArgumentException("附件大小无效。");
     }
     int ciphertextBytes = plaintextBytes + 16;
-    if (ciphertextBytes > MAX_CIPHERTEXT_BYTES) throw new IllegalArgumentException("图片过大。");
+    if (ciphertextBytes > MAX_CIPHERTEXT_BYTES) {
+      throw new IllegalArgumentException("附件过大。");
+    }
     return ciphertextBytes;
   }
 
@@ -147,7 +149,7 @@ final class HermesChatImageCache {
       for (byte item : digest) output.append(String.format("%02x", item & 0xff));
       return output.toString();
     } catch (Exception error) {
-      throw new IllegalStateException("无法创建图片缓存键。", error);
+      throw new IllegalStateException("无法创建附件缓存键。", error);
     }
   }
 }

@@ -89,3 +89,21 @@ test("Android cloud cleanup is explicit and typing frames are deduplicated", asy
   assert.match(client, /lastTypingActive/);
   assert.match(client, /lastTypingActive\s*==\s*active/);
 });
+
+test("Android supports single and multi-select deletion after cloud confirmation", async () => {
+  const [activity, api, history] = await Promise.all([
+    source("HermesChatActivity.java"),
+    source("NotesApiClient.java"),
+    source("HermesChatHistoryStore.java"),
+  ]);
+
+  assert.match(activity, /setOnLongClickListener[\s\S]*toggleMessageSelection/);
+  assert.match(activity, /rendered\.body\.setTextIsSelectable\(!selecting\)/);
+  assert.match(activity, /body\.setOnClickListener[\s\S]*toggleMessageSelection/);
+  assert.match(activity, /已选择 " \+ selectedMessageIds\.size\(\) \+ " 条/);
+  assert.match(activity, /confirmDeleteSelectedMessages/);
+  assert.match(activity, /api\.deleteHermesChatMessages[\s\S]*targetHistory\.deleteMessages/);
+  assert.match(activity, /targetCache\.retain\(snapshot\.messages\)/);
+  assert.match(api, /api\/admin\/hermes-chat\/messages\/delete/);
+  assert.match(history, /Snapshot deleteMessages\(Set<String> messageIds\)/);
+});

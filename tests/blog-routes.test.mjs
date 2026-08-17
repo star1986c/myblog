@@ -1540,6 +1540,65 @@ test("authenticated Android client purges only the selected Hermes cloud profile
   ]);
 });
 
+test("authenticated Android client deletes selected Hermes messages and attachments", async () => {
+  const messageId = "00000000-0000-4000-8000-000000000011";
+  const attachmentId = "00000000-0000-4000-8000-000000000012";
+  const keptAttachmentId = "00000000-0000-4000-8000-000000000013";
+  const bucket = new FakeR2();
+  await bucket.put(`hermes-chat/v1/personal/${attachmentId}`, new Uint8Array(16));
+  await bucket.put(`hermes-chat/v1/personal/${keptAttachmentId}`, new Uint8Array(32));
+  let deletedIds = null;
+  const env = makeEnv({
+    NOTE_ATTACHMENTS: bucket,
+    HERMES_CHAT_PROFILES: "primary:主助手,personal:个人助手",
+    HERMES_CHAT_ROOMS: {
+      getByName(name) {
+        assert.equal(name, "space:personal");
+        return {
+          async deleteMessages(ids) {
+            deletedIds = ids;
+            return { messagesDeleted: 1, requestedMessages: 1, lastSequence: 17 };
+          },
+        };
+      },
+    },
+  });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "hermes-delete-csrf",
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/messages/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "hermes-delete-csrf",
+      },
+      body: JSON.stringify({
+        spaceId: "personal",
+        messageIds: [messageId],
+        attachmentIds: [attachmentId],
+      }),
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    spaceId: "personal",
+    messagesDeleted: 1,
+    requestedMessages: 1,
+    attachmentsDeleted: 1,
+    lastSequence: 17,
+  });
+  assert.deepEqual(deletedIds, [messageId]);
+  assert.equal(bucket.objects.has(`hermes-chat/v1/personal/${attachmentId}`), false);
+  assert.equal(bucket.objects.has(`hermes-chat/v1/personal/${keptAttachmentId}`), true);
+});
+
 test("authenticated workspace key is created once and returned without a master password", async () => {
   const db = new FakeD1();
   const env = makeEnv({ BLOG_DB: db });

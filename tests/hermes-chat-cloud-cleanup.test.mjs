@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { deleteHermesChatAttachments } from "../src/hermes-chat-attachment-repository.js";
+import {
+  deleteHermesChatAttachments,
+  deleteHermesChatAttachmentsById,
+} from "../src/hermes-chat-attachment-repository.js";
 import {
   DEFAULT_HERMES_CHAT_CLOUD_RETENTION_DAYS,
   hermesChatRetentionCutoff,
   nextHermesChatCleanupAt,
   resolveHermesChatCloudRetentionDays,
 } from "../src/hermes-chat-retention.js";
+import { resolveHermesChatMessageDeletion } from "../src/hermes-chat-message-deletion.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -83,6 +87,56 @@ test("manual cloud cleanup deletes only encrypted attachments for the selected p
   ]);
 });
 
+test("selected-message cleanup deletes exact encrypted attachments without listing R2", async () => {
+  const first = "00000000-0000-4000-8000-000000000001";
+  const second = "00000000-0000-4000-8000-000000000002";
+  const keep = "00000000-0000-4000-8000-000000000003";
+  const bucket = pagedMemoryBucket([
+    [`hermes-chat/v1/primary/${first}`, 10],
+    [`hermes-chat/v1/primary/${second}`, 20],
+    [`hermes-chat/v1/primary/${keep}`, 30],
+    [`hermes-chat/v1/secondary/${first}`, 40],
+  ]);
+
+  const result = await deleteHermesChatAttachmentsById(bucket, {
+    spaceId: "primary",
+    attachmentIds: [first, second, first],
+  });
+
+  assert.deepEqual(result, { attachmentsDeleted: 2 });
+  assert.equal(bucket.listRequests, 0);
+  assert.deepEqual([...bucket.objects.keys()].sort(), [
+    `hermes-chat/v1/primary/${keep}`,
+    `hermes-chat/v1/secondary/${first}`,
+  ]);
+});
+
+test("selected-message cleanup removes a message together with its durable stream final", () => {
+  const originalId = "00000000-0000-4000-8000-000000000021";
+  const finalId = "00000000-0000-4000-8000-000000000022";
+  const keepId = "00000000-0000-4000-8000-000000000023";
+  const result = resolveHermesChatMessageDeletion([
+    {
+      seq: 7,
+      id: originalId,
+      envelope: JSON.stringify({ v: 1, type: "message", sender: "agent" }),
+    },
+    {
+      seq: 8,
+      id: finalId,
+      envelope: JSON.stringify({ v: 1, type: "edit", targetSeq: 7, final: true }),
+    },
+    {
+      seq: 9,
+      id: keepId,
+      envelope: JSON.stringify({ v: 1, type: "message", sender: "client" }),
+    },
+  ], [originalId]);
+
+  assert.deepEqual(result.requestedIds, [originalId]);
+  assert.deepEqual(result.deletedIds.sort(), [finalId, originalId].sort());
+});
+
 test("Durable Object has age cleanup, monotonic purge state, and no high-frequency cron", async () => {
   const source = await readFile(
     new URL("../src/hermes-chat-room.js", import.meta.url),
@@ -93,5 +147,7 @@ test("Durable Object has age cleanup, monotonic purge state, and no high-frequen
   assert.match(source, /setAlarm\(/);
   assert.match(source, /DELETE FROM messages[\s\S]*created_at <=/);
   assert.match(source, /async purgeHistory\(\)/);
+  assert.match(source, /async deleteMessages\(messageIds\)/);
+  assert.match(source, /resolveHermesChatMessageDeletion/);
   assert.match(source, /room_state/);
 });

@@ -40,8 +40,84 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.6"
-_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.7"
+_SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
+    ".png": ("image/png", "image"),
+    ".jpg": ("image/jpeg", "image"),
+    ".jpeg": ("image/jpeg", "image"),
+    ".gif": ("image/gif", "image"),
+    ".webp": ("image/webp", "image"),
+    ".bmp": ("image/bmp", "image"),
+    ".tif": ("image/tiff", "image"),
+    ".tiff": ("image/tiff", "image"),
+    ".svg": ("image/svg+xml", "image"),
+    ".mp3": ("audio/mpeg", "audio"),
+    ".wav": ("audio/wav", "audio"),
+    ".ogg": ("audio/ogg", "audio"),
+    ".m4a": ("audio/mp4", "audio"),
+    ".opus": ("audio/opus", "audio"),
+    ".flac": ("audio/flac", "audio"),
+    ".aac": ("audio/aac", "audio"),
+    ".mp4": ("video/mp4", "video"),
+    ".mov": ("video/quicktime", "video"),
+    ".webm": ("video/webm", "video"),
+    ".mkv": ("video/x-matroska", "video"),
+    ".avi": ("video/x-msvideo", "video"),
+    ".pdf": ("application/pdf", "document"),
+    ".txt": ("text/plain", "document"),
+    ".md": ("text/markdown", "document"),
+    ".csv": ("text/csv", "document"),
+    ".json": ("application/json", "document"),
+    ".xml": ("application/xml", "document"),
+    ".html": ("text/html", "document"),
+    ".yaml": ("application/yaml", "document"),
+    ".yml": ("application/yaml", "document"),
+    ".log": ("text/plain", "document"),
+    ".doc": ("application/msword", "office"),
+    ".docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "office",
+    ),
+    ".xls": ("application/vnd.ms-excel", "office"),
+    ".xlsx": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "office",
+    ),
+    ".ppt": ("application/vnd.ms-powerpoint", "office"),
+    ".pptx": (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "office",
+    ),
+    ".odt": ("application/vnd.oasis.opendocument.text", "office"),
+    ".ods": ("application/vnd.oasis.opendocument.spreadsheet", "office"),
+    ".odp": ("application/vnd.oasis.opendocument.presentation", "office"),
+    ".zip": ("application/zip", "archive"),
+    ".rar": ("application/vnd.rar", "archive"),
+    ".7z": ("application/x-7z-compressed", "archive"),
+    ".tar": ("application/x-tar", "archive"),
+    ".gz": ("application/gzip", "archive"),
+    ".bz2": ("application/x-bzip2", "archive"),
+    ".epub": ("application/epub+zip", "book"),
+    ".apk": ("application/vnd.android.package-archive", "package"),
+    ".ipa": ("application/octet-stream", "package"),
+}
+_CONTENT_TYPE_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "audio/x-wav": "audio/wav",
+    "audio/x-flac": "audio/flac",
+    "application/x-rar-compressed": "application/vnd.rar",
+    "application/x-gzip": "application/gzip",
+    "application/x-bzip2": "application/x-bzip2",
+    "text/x-markdown": "text/markdown",
+    "text/xml": "application/xml",
+    "application/x-yaml": "application/yaml",
+    "text/yaml": "application/yaml",
+}
+_IMAGE_EXTENSIONS = frozenset(
+    extension
+    for extension, (_, category) in _SUPPORTED_FILE_TYPES.items()
+    if category == "image"
+)
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]\r\n]*\]\(\s*(?P<source>(?:https?://|file://|/)[^\s)]+)\s*\)",
     re.IGNORECASE,
@@ -249,6 +325,94 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             metadata=metadata,
         )
 
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        file_name: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs,
+    ):
+        return await self._send_local_attachment(
+            file_path,
+            caption=caption,
+            file_name=file_name,
+            allowed_categories={"document", "office", "archive", "book", "package"},
+        )
+
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        file_name: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs,
+    ):
+        return await self._send_local_attachment(
+            file_path,
+            caption=caption,
+            file_name=file_name,
+            allowed_categories=set(_supported_categories()),
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs,
+    ):
+        return await self._send_local_attachment(
+            audio_path,
+            caption=caption,
+            file_name=kwargs.get("file_name"),
+            allowed_categories={"audio"},
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs,
+    ):
+        return await self._send_local_attachment(
+            video_path,
+            caption=caption,
+            file_name=kwargs.get("file_name"),
+            allowed_categories={"video"},
+        )
+
+    async def _send_local_attachment(
+        self,
+        file_path: str,
+        *,
+        caption: str | None,
+        file_name: str | None,
+        allowed_categories: set[str],
+    ):
+        safe_path = self.validate_media_delivery_path(str(file_path or ""))
+        if not safe_path:
+            return SendResult(success=False, error="Unsafe or unreadable attachment path")
+        try:
+            descriptor = await self._encrypt_and_upload_local_file(
+                safe_path,
+                file_name=file_name,
+                allowed_categories=allowed_categories,
+            )
+            return await self._send_payload(caption or "", [descriptor])
+        except Exception as error:
+            logger.warning("Cloudflare Chat attachment send failed: %s", error)
+            return SendResult(success=False, error=str(error), retryable=False)
+
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": "Android Notes", "type": "dm", "chat_id": chat_id}
 
@@ -376,10 +540,14 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         payload = self._cipher.decrypt_message(envelope, expected_sender="client")
         media_urls: list[str] = []
         media_types: list[str] = []
+        media_categories: list[str] = []
         for descriptor in payload["attachments"]:
-            path, content_type = await self._download_and_decrypt_attachment(descriptor)
+            path, content_type, category = await self._download_and_decrypt_attachment(
+                descriptor
+            )
             media_urls.append(str(path))
             media_types.append(content_type)
+            media_categories.append(category)
 
         source = self.build_source(
             chat_id=self.space_id,
@@ -391,7 +559,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(
             text=payload["text"],
-            message_type=MessageType.PHOTO if media_urls else MessageType.TEXT,
+            message_type=_message_type_for_categories(media_categories),
             user_id="android-owner",
             user_name="Android Owner",
             source=source,
@@ -439,15 +607,21 @@ class CloudflareChatAdapter(BasePlatformAdapter):
 
     async def _download_and_decrypt_attachment(self, descriptor: dict[str, Any]):
         attachment_id = str(descriptor.get("id") or "")
+        if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", attachment_id):
+            raise ValueError("invalid attachment id")
+        filename = Path(str(descriptor.get("name") or "attachment.bin")).name
+        content_type, category = _resolve_file_type(
+            filename,
+            str(descriptor.get("contentType") or "application/octet-stream"),
+        )
         ciphertext = await asyncio.to_thread(self._download_attachment, attachment_id)
         plaintext = self._cipher.decrypt_attachment(ciphertext, descriptor)
         self._media_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._cleanup_media_cache()
-        filename = Path(str(descriptor.get("name") or "attachment.bin")).name
         target = self._media_directory / f"{attachment_id}-{filename}"
         target.write_bytes(plaintext)
         target.chmod(0o600)
-        return target, str(descriptor.get("contentType") or "application/octet-stream")
+        return target, content_type, category
 
     def _download_attachment(self, attachment_id: str) -> bytes:
         request = Request(
@@ -530,20 +704,60 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         )
         return encrypted.descriptor
 
+    async def _encrypt_and_upload_local_file(
+        self,
+        file_path: str,
+        *,
+        file_name: str | None,
+        allowed_categories: set[str],
+    ) -> dict[str, Any]:
+        data, content_type, filename = await asyncio.to_thread(
+            self._read_outbound_file,
+            file_path,
+            file_name,
+            allowed_categories,
+        )
+        encrypted = self._cipher.encrypt_attachment(
+            data,
+            content_type=content_type,
+            filename=filename,
+        )
+        await asyncio.to_thread(
+            self._upload_attachment,
+            encrypted.descriptor["id"],
+            encrypted.ciphertext,
+        )
+        return encrypted.descriptor
+
     def _read_outbound_image(self, image_url: str):
-        parsed = urlsplit(str(image_url or ""))
+        return self._read_outbound_file(image_url, None, {"image"})
+
+    def _read_outbound_file(
+        self,
+        file_path: str,
+        file_name: str | None,
+        allowed_categories: set[str],
+    ):
+        parsed = urlsplit(str(file_path or ""))
         if parsed.scheme not in {"", "file"}:
-            raise ValueError("outbound image must be cached to a local file first")
-        path = Path(parsed.path if parsed.scheme == "file" else str(image_url)).expanduser().resolve()
+            raise ValueError("outbound attachment must be a local file")
+        path = Path(
+            unquote(parsed.path) if parsed.scheme == "file" else str(file_path)
+        ).expanduser().resolve()
         if not path.is_file():
-            raise ValueError("outbound image is not a readable file")
-        data = path.read_bytes()
-        filename = path.name
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        if not content_type.startswith("image/"):
-            raise ValueError("send_image accepts image content only")
-        if not data or len(data) > MAX_ATTACHMENT_BYTES:
-            raise ValueError("outbound image exceeds 10 MiB")
+            raise ValueError("outbound attachment is not a readable file")
+        size = path.stat().st_size
+        if size < 1 or size > MAX_ATTACHMENT_BYTES:
+            raise ValueError("outbound attachment exceeds 10 MiB")
+        filename = Path(str(file_name or path.name)).name or path.name
+        guessed_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        content_type, category = _resolve_file_type(filename, guessed_type)
+        if category not in allowed_categories:
+            raise ValueError(f"attachment category {category} is not supported by this send method")
+        with path.open("rb") as source:
+            data = source.read(MAX_ATTACHMENT_BYTES + 1)
+        if len(data) != size or len(data) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("outbound attachment changed or exceeded 10 MiB while reading")
         return data, content_type, filename
 
     def _cleanup_media_cache(self) -> None:
@@ -598,6 +812,38 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("Cloudflare Chat scoped lock release failed", exc_info=True)
         self._lock_key = None
+
+
+def _supported_categories() -> frozenset[str]:
+    return frozenset(category for _, category in _SUPPORTED_FILE_TYPES.values())
+
+
+def _resolve_file_type(filename: str, content_type: str) -> tuple[str, str]:
+    extension = Path(str(filename or "")).suffix.lower()
+    by_extension = _SUPPORTED_FILE_TYPES.get(extension)
+    if by_extension is not None:
+        return by_extension
+
+    normalized_type = str(content_type or "application/octet-stream")
+    normalized_type = normalized_type.split(";", 1)[0].strip().lower()
+    normalized_type = _CONTENT_TYPE_ALIASES.get(normalized_type, normalized_type)
+    if normalized_type != "application/octet-stream":
+        for canonical_type, category in _SUPPORTED_FILE_TYPES.values():
+            if normalized_type == canonical_type:
+                return canonical_type, category
+    raise ValueError("unsupported attachment format")
+
+
+def _message_type_for_categories(categories: list[str]):
+    if not categories:
+        return MessageType.TEXT
+    if all(category == "image" for category in categories):
+        return MessageType.PHOTO
+    if all(category == "audio" for category in categories):
+        return MessageType.VOICE
+    if all(category == "video" for category in categories):
+        return MessageType.VIDEO
+    return MessageType.DOCUMENT
 
 
 def _inline_image_candidates(text: str) -> list[tuple[int, int, str]]:
@@ -735,10 +981,13 @@ def register(ctx) -> None:
         allow_update_command=True,
         platform_hint=(
             "You are chatting with the owner through a private Android notes app. "
-            "Markdown and image attachments are supported. After image_generate succeeds, "
+            "Telegram-style Markdown, fenced code blocks, images, audio, video, documents, "
+            "Office files, archives, and EPUB files are supported up to 10 MiB each. "
+            "Use the platform document, voice, or video delivery methods for generated files "
+            "and only provide safe local absolute paths. After image_generate succeeds, "
             "always include a standalone MEDIA:<absolute-path> line in the final response, "
             "using the first available local path from agent_visible_image, host_image, or "
             "image in the tool result. Keep the MEDIA line even when the tool already reports "
-            "success; never use it for credentials, configuration, or other sensitive files."
+            "success; never deliver credentials, configuration, or other sensitive files."
         ),
     )

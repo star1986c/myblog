@@ -8,6 +8,10 @@
   <color name="surface_variant">#202724</color>
   <color name="surface_tonal">#173D37</color>
   <color name="surface_high">#29312E</color>
+  <color name="code_background">#293531</color>
+  <color name="code_text">#EDF4F1</color>
+  <color name="outgoing_code_background">#B4E9E1</color>
+  <color name="outgoing_code_text">#08221E</color>
   <color name="text_primary">#EDF4F1</color>
   <color name="text_secondary">#B6C4C0</color>
   <color name="divider">#394440</color>

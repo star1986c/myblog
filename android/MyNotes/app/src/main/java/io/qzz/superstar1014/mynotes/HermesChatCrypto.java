@@ -132,7 +132,7 @@ final class HermesChatCrypto {
     String filename
   ) throws Exception {
     if (plaintext == null || plaintext.length < 1 || plaintext.length > MAX_ATTACHMENT_BYTES) {
-      throw new IllegalArgumentException("图片大小必须在 10 MiB 以内。");
+      throw new IllegalArgumentException("附件大小必须在 10 MiB 以内。");
     }
     String attachmentId = UUID.randomUUID().toString();
     String safeType = safeContentType(contentType);
@@ -158,7 +158,7 @@ final class HermesChatCrypto {
     String contentType = safeContentType(descriptor.getString("contentType"));
     int plaintextBytes = descriptor.getInt("plaintextBytes");
     if (plaintextBytes < 1 || plaintextBytes > MAX_ATTACHMENT_BYTES) {
-      throw new IllegalArgumentException("图片大小无效。");
+      throw new IllegalArgumentException("附件大小无效。");
     }
     byte[] plaintext = crypt(
       Cipher.DECRYPT_MODE,
@@ -166,7 +166,9 @@ final class HermesChatCrypto {
       decode(descriptor.getString("nonce")),
       attachmentAad(attachmentId, contentType, plaintextBytes)
     );
-    if (plaintext.length != plaintextBytes) throw new IllegalArgumentException("图片完整性校验失败。");
+    if (plaintext.length != plaintextBytes) {
+      throw new IllegalArgumentException("附件完整性校验失败。");
+    }
     return plaintext;
   }
 
@@ -228,18 +230,18 @@ final class HermesChatCrypto {
   }
 
   private static String safeFilename(String value) {
-    String filename = value == null ? "image" : value.replaceAll("[^\\p{L}\\p{N}._ -]", "_");
+    String filename = value == null ? "attachment" : value.replaceAll("[^\\p{L}\\p{N}._ -]", "_");
     filename = filename.replaceAll("^[ .]+|[ .]+$", "");
-    if (filename.isEmpty()) filename = "image";
+    if (filename.isEmpty()) filename = "attachment";
     return filename.length() > 120 ? filename.substring(0, 120) : filename;
   }
 
   private static String safeContentType(String value) {
     String contentType = value == null
       ? "application/octet-stream"
-      : value.trim().toLowerCase(java.util.Locale.ROOT);
+      : value.split(";", 2)[0].trim().toLowerCase(java.util.Locale.ROOT);
     if (contentType.length() > 100 || !contentType.matches("[a-z0-9!#$&^_.+\\-/]+")) {
-      throw new IllegalArgumentException("图片类型无效。");
+      throw new IllegalArgumentException("附件类型无效。");
     }
     return contentType;
   }

@@ -1,8 +1,8 @@
 name: cloudflare_chat
 label: Cloudflare Chat
 kind: platform
-version: 0.1.6
-description: End-to-end encrypted Cloudflare WebSocket channel for a private Hermes NAS.
+version: 0.1.7
+description: End-to-end encrypted Cloudflare chat with rich files and media for a private Hermes NAS.
 author: superstar1014
 requires_env:
   - name: HERMES_CF_RELAY_URL

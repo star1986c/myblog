@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class NotesApiClient {
   static final String PRODUCTION_BASE_URL = "https://superstar1014.qzz.io/";
@@ -112,6 +113,26 @@ final class NotesApiClient {
       "POST",
       "api/admin/hermes-chat/cleanup",
       new JSONObject().put("spaceId", spaceId),
+      null
+    );
+  }
+
+  JSONObject deleteHermesChatMessages(
+    String spaceId,
+    Set<String> messageIds,
+    Set<String> attachmentIds
+  ) throws Exception {
+    JSONArray messages = new JSONArray();
+    for (String messageId : messageIds) messages.put(messageId);
+    JSONArray attachments = new JSONArray();
+    for (String attachmentId : attachmentIds) attachments.put(attachmentId);
+    return request(
+      "POST",
+      "api/admin/hermes-chat/messages/delete",
+      new JSONObject()
+        .put("spaceId", spaceId)
+        .put("messageIds", messages)
+        .put("attachmentIds", attachments),
       null
     );
   }
