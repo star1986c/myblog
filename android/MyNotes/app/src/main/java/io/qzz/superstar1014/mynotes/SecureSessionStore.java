@@ -8,6 +8,8 @@ import android.security.keystore.KeyProperties;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -91,6 +93,20 @@ final class SecureSessionStore {
 
   void clearHermesChatKey(String spaceId) {
     preferences.edit().remove(chatPreferenceKey(spaceId)).apply();
+  }
+
+  Set<String> hermesChatSpaceIds() {
+    Set<String> result = new HashSet<>();
+    for (String preferenceKey : preferences.getAll().keySet()) {
+      if (!preferenceKey.startsWith(HERMES_CHAT_KEY_PREFIX)) continue;
+      String candidate = preferenceKey.substring(HERMES_CHAT_KEY_PREFIX.length());
+      try {
+        result.add(normalizedSpaceId(candidate));
+      } catch (IllegalArgumentException ignored) {
+        // Ignore malformed preference names left by an interrupted older version.
+      }
+    }
+    return result;
   }
 
   private void saveEncrypted(String preferenceKey, String aad, String value) {

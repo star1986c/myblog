@@ -139,6 +139,21 @@ Android Keystore 按 profile id 独立保护密钥。后续恢复多对象切换
 对象会关闭旧 WebSocket、清空旧对象的界面状态并连接新的 Durable Object，不会
 混用历史或密钥。
 
+### Android 本地聊天缓存
+
+- Android 2.0 起会把每个 profile 的消息快照和最后 durable sequence 写入
+  `noBackupFilesDir`。消息快照由对应 `HERMES_CF_CHAT_KEY` 再次使用 AES-GCM
+  加密，profile 之间不能互相解密。
+- WebSocket 重连使用本地 sequence 作为 `resume.afterSeq`，只补发新消息。清理旧
+  消息时仍保留 sequence，因此被清理的历史不会在下次重连时重新下载。
+- 流式中间更新只改当前界面，不写本地历史、不推进 checkpoint；最终更新才原子
+  替换缓存中的完整正文并推进 sequence。
+- 默认保留 30 天，可在聊天右上角设置为 7、30、90 天或永久。系统 JobScheduler
+  每 24 小时清理一次，也可手动立即清理当前聊天；清理消息会同步删除无引用的
+  加密图片缓存。
+- 图片附件在应用私有目录中仍以端到端密文缓存。点击缩略图可打开全屏预览；只有
+  点击“保存相册”后，原始图片才会通过 MediaStore 写入 `Pictures/My Notes`。
+
 ## 回滚
 
 - Android：安装上一版本 APK；原笔记功能和数据格式未改变。

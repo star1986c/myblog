@@ -26,6 +26,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifySharedProtectionPassword();
       verifyEncryptedAttachments();
       verifyHermesChatCrypto();
+      verifyHermesChatHistoryCache();
       verifyAttachmentRequestHints();
       verifyAttachmentDiskCache();
       verifySecureSessionStorage();
@@ -100,6 +101,89 @@ public final class CryptoTestRunner extends Instrumentation {
       Arrays.equals(image, crypto.decryptAttachment(encrypted.ciphertext, encrypted.descriptor)),
       "Hermes attachment round trip failed"
     );
+  }
+
+  private void verifyHermesChatHistoryCache() throws Exception {
+    String key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    HermesChatCrypto crypto = new HermesChatCrypto(key);
+    File directory = new File(
+      getTargetContext().getCacheDir(),
+      "hermes-chat-history-test-" + System.nanoTime()
+    );
+    HermesChatHistoryStore history = new HermesChatHistoryStore(directory, "primary", crypto);
+    long now = 1_800_000_000_000L;
+    org.json.JSONObject descriptor = new org.json.JSONObject()
+      .put("id", "550e8400-e29b-41d4-a716-446655440099")
+      .put("name", "cached.png")
+      .put("contentType", "image/png")
+      .put("plaintextBytes", 6)
+      .put("nonce", "AAECAwQFBgcICQoL");
+    HermesChatCrypto.ChatMessage old = new HermesChatCrypto.ChatMessage(
+      "550e8400-e29b-41d4-a716-446655440020",
+      "agent",
+      now - 40L * 24 * 60 * 60 * 1000,
+      7,
+      "应被定时清理",
+      new org.json.JSONArray()
+    );
+    HermesChatCrypto.ChatMessage recent = new HermesChatCrypto.ChatMessage(
+      "550e8400-e29b-41d4-a716-446655440021",
+      "agent",
+      now - 1_000,
+      8,
+      "本地加密正文",
+      new org.json.JSONArray().put(descriptor)
+    );
+    history.record(old);
+    history.record(recent);
+
+    File[] encryptedFiles = directory.listFiles();
+    require(encryptedFiles != null && encryptedFiles.length == 1, "Hermes history was not stored");
+    String stored = new String(java.nio.file.Files.readAllBytes(encryptedFiles[0].toPath()));
+    require(!stored.contains("本地加密正文"), "Hermes history cache leaked plaintext");
+
+    HermesChatCrypto.ChatMessage finalEdit = new HermesChatCrypto.ChatMessage(
+      "550e8400-e29b-41d4-a716-446655440022",
+      "agent",
+      now,
+      9,
+      "流式完整正文",
+      new org.json.JSONArray(),
+      8,
+      true
+    );
+    history.record(finalEdit);
+    HermesChatHistoryStore.Snapshot snapshot = history.loadAndCleanup(30, now);
+    require(snapshot.lastSequence == 9, "Hermes durable checkpoint was not cached");
+    require(snapshot.messages.size() == 1, "Expired Hermes history was not cleaned");
+    require(
+      "流式完整正文".equals(snapshot.messages.get(0).text),
+      "Final stream update did not replace cached text"
+    );
+    require(
+      snapshot.messages.get(0).attachments.length() == 1,
+      "Final stream update discarded cached image descriptors"
+    );
+
+    HermesChatImageCache images = new HermesChatImageCache(
+      new File(directory, "images"),
+      "primary"
+    );
+    byte[] encryptedImage = new byte[22];
+    Arrays.fill(encryptedImage, (byte) 0x4A);
+    images.write(descriptor, encryptedImage);
+    require(
+      Arrays.equals(encryptedImage, images.read(descriptor)),
+      "Hermes encrypted image cache did not persist"
+    );
+    images.retain(snapshot.messages);
+    require(images.read(descriptor) != null, "Referenced Hermes image was cleaned");
+
+    HermesChatHistoryStore.Snapshot cleared = history.clearMessages();
+    images.retain(cleared.messages);
+    require(cleared.messages.isEmpty(), "Manual Hermes history clear kept messages");
+    require(cleared.lastSequence == 9, "History clear reset the relay checkpoint");
+    require(images.read(descriptor) == null, "Orphaned Hermes image cache was retained");
   }
 
   private static void verifyWebCryptoFixture() throws Exception {

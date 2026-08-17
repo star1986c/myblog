@@ -31,8 +31,14 @@ final class HermesChatClient {
   private long lastSequence;
 
   HermesChatClient(HermesChatCrypto crypto, Listener listener) {
+    this(crypto, listener, 0);
+  }
+
+  HermesChatClient(HermesChatCrypto crypto, Listener listener, long initialSequence) {
+    if (initialSequence < 0) throw new IllegalArgumentException("聊天恢复序号无效。");
     this.crypto = crypto;
     this.listener = listener;
+    this.lastSequence = initialSequence;
     http = new OkHttpClient.Builder()
       .connectTimeout(20, TimeUnit.SECONDS)
       .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -154,7 +160,9 @@ final class HermesChatClient {
           return;
         }
         if ("ack".equals(type)) {
-          listener.onAcknowledged(frame.optString("id"), frame.optLong("seq"));
+          long sequence = frame.optLong("seq");
+          if (sequence > 0) lastSequence = Math.max(lastSequence, sequence);
+          listener.onAcknowledged(frame.optString("id"), sequence);
           return;
         }
         if ("typing".equals(type) && "agent".equals(frame.optString("sender"))) {

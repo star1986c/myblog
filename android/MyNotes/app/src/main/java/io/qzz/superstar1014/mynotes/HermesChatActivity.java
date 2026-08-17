@@ -2,8 +2,10 @@ package io.qzz.superstar1014.mynotes;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
@@ -11,11 +13,14 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -39,6 +44,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
@@ -59,6 +65,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   private SecureSessionStore secureStore;
   private HermesChatCrypto crypto;
   private HermesChatClient client;
+  private HermesChatHistoryStore historyStore;
+  private HermesChatImageCache imageCache;
   private LinearLayout messages;
   private ScrollView messageScroll;
   private TextView chatTitle;
@@ -79,6 +87,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     getWindow().setNavigationBarContrastEnforced(false);
     api = new NotesApiClient(this);
     secureStore = new SecureSessionStore(this);
+    HermesChatCleanupService.schedule(this);
     buildScreen();
     loadProfiles();
   }
@@ -113,6 +122,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
 
   @Override
   public void onMessage(HermesChatCrypto.ChatMessage message) {
+    persistMessage(message);
     runOnUiThread(() -> {
       status.setText("已连接 · 端到端加密");
       appendMessage(message);
@@ -121,7 +131,14 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
 
   @Override
   public void onAcknowledged(String messageId, long sequence) {
-    // The local bubble is already visible. Sequence acknowledgements are used for relay deduplication.
+    HermesChatHistoryStore targetStore = historyStore;
+    long generation = profileGeneration;
+    if (targetStore == null || sequence < 1) return;
+    executor.submit(() -> {
+      if (!destroyed && generation == profileGeneration && historyStore == targetStore) {
+        targetStore.acknowledge(messageId, sequence);
+      }
+    });
   }
 
   @Override
@@ -174,12 +191,16 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     ImageButton reconnect = iconButton(R.drawable.ic_refresh, "重新连接");
     reconnect.setOnClickListener(view -> authenticateAndConnect());
     top.addView(reconnect, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    ImageButton settings = iconButton(R.drawable.ic_key, "聊天密钥设置");
+    ImageButton settings = iconButton(R.drawable.ic_key, "聊天与缓存设置");
     settings.setOnClickListener(this::showSettings);
     top.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
     column.addView(top, new LinearLayout.LayoutParams(-1, dp(68)));
 
-    TextView privacy = text("消息和图片在手机与 NAS 之间加密，Cloudflare 只保存密文。", 12, R.color.text_secondary);
+    TextView privacy = text(
+      "消息和图片端到端加密，本机加密缓存默认保留 30 天。",
+      12,
+      R.color.text_secondary
+    );
     privacy.setGravity(Gravity.CENTER);
     privacy.setPadding(dp(16), dp(6), dp(16), dp(8));
     column.addView(privacy, new LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -281,6 +302,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     }
     selectedProfile = profile;
     crypto = null;
+    historyStore = null;
+    imageCache = null;
     reconnectAttempt = 0;
     renderedMessageIds.clear();
     renderedMessagesBySequence.clear();
@@ -298,11 +321,40 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   private void startWithKey(String encodedKey) {
     if (selectedProfile == null) return;
     try {
-      crypto = new HermesChatCrypto(encodedKey);
+      HermesChatCrypto targetCrypto = new HermesChatCrypto(encodedKey);
       if (client != null) client.shutdown();
+      client = null;
+      sendButton.setEnabled(false);
+      String spaceId = selectedProfile.id;
       long generation = profileGeneration;
-      client = new HermesChatClient(crypto, scopedListener(generation));
-      authenticateAndConnect();
+      status.setText("正在加载本地加密聊天记录…");
+      executor.submit(() -> {
+        HermesChatHistoryStore targetHistory = new HermesChatHistoryStore(
+          this,
+          spaceId,
+          targetCrypto
+        );
+        HermesChatImageCache targetImages = new HermesChatImageCache(this, spaceId);
+        HermesChatHistoryStore.Snapshot snapshot = targetHistory.loadAndCleanup(
+          HermesChatCacheSettings.retentionDays(this),
+          System.currentTimeMillis()
+        );
+        targetImages.retain(snapshot.messages);
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration || selectedProfile == null
+              || !spaceId.equals(selectedProfile.id)) return;
+          crypto = targetCrypto;
+          historyStore = targetHistory;
+          imageCache = targetImages;
+          renderCachedMessages(snapshot);
+          client = new HermesChatClient(
+            targetCrypto,
+            scopedListener(generation),
+            snapshot.lastSequence
+          );
+          authenticateAndConnect();
+        });
+      });
     } catch (Exception error) {
       secureStore.clearHermesChatKey(selectedProfile.id);
       toast(error.getMessage());
@@ -391,6 +443,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       HermesChatCrypto.ChatMessage message = client.sendMessage(value, new JSONArray());
       composer.setText("");
       appendMessage(message);
+      persistMessage(message);
     } catch (Exception error) {
       toast(error.getMessage());
     }
@@ -450,8 +503,12 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
           encrypted.descriptor.getString("id"),
           encrypted.ciphertext
         );
+        HermesChatImageCache targetImages = imageCache;
+        if (targetImages != null) targetImages.write(encrypted.descriptor, encrypted.ciphertext);
         JSONArray attachments = new JSONArray().put(encrypted.descriptor);
         HermesChatCrypto.ChatMessage message = targetClient.sendMessage(caption, attachments);
+        HermesChatHistoryStore targetHistory = historyStore;
+        if (targetHistory != null) targetHistory.record(message);
         runOnUiThread(() -> {
           if (generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)
@@ -469,6 +526,27 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
           status.setText("图片发送失败");
           sendButton.setEnabled(client != null && client.isConnected());
         });
+      }
+    });
+  }
+
+  private void renderCachedMessages(HermesChatHistoryStore.Snapshot snapshot) {
+    renderedMessageIds.clear();
+    renderedMessagesBySequence.clear();
+    messages.removeAllViews();
+    for (HermesChatCrypto.ChatMessage message : snapshot.messages) appendMessage(message);
+    if (!snapshot.messages.isEmpty()) {
+      status.setText("已加载 " + snapshot.messages.size() + " 条本地加密消息，正在连接…");
+    }
+  }
+
+  private void persistMessage(HermesChatCrypto.ChatMessage message) {
+    HermesChatHistoryStore targetStore = historyStore;
+    long generation = profileGeneration;
+    if (targetStore == null) return;
+    executor.submit(() -> {
+      if (!destroyed && generation == profileGeneration && historyStore == targetStore) {
+        targetStore.record(message);
       }
     });
   }
@@ -549,9 +627,10 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   }
 
   private void addAttachmentPreview(LinearLayout bubble, JSONObject descriptor) {
-    if (selectedProfile == null || crypto == null) return;
+    if (selectedProfile == null || crypto == null || imageCache == null) return;
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
+    HermesChatImageCache imageCache = this.imageCache;
     long generation = profileGeneration;
     TextView loading = text("正在解密图片…", 12, R.color.text_secondary);
     LinearLayout.LayoutParams loadingParams = new LinearLayout.LayoutParams(dp(220), dp(42));
@@ -559,13 +638,13 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     bubble.addView(loading, loadingParams);
     executor.submit(() -> {
       try {
-        byte[] ciphertext = api.downloadHermesChatAttachment(
-          spaceId,
-          descriptor.getString("id")
-        );
+        byte[] ciphertext = imageCache.read(descriptor);
+        if (ciphertext == null) {
+          ciphertext = api.downloadHermesChatAttachment(spaceId, descriptor.getString("id"));
+          imageCache.write(descriptor, ciphertext);
+        }
         byte[] plaintext = targetCrypto.decryptAttachment(ciphertext, descriptor);
-        Bitmap bitmap = BitmapFactory.decodeByteArray(plaintext, 0, plaintext.length);
-        if (bitmap == null) throw new IllegalArgumentException("图片格式无法显示。");
+        Bitmap bitmap = decodeBoundedBitmap(plaintext, 1_024);
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
@@ -574,8 +653,9 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
           ImageView image = new ImageView(this);
           image.setImageBitmap(bitmap);
           image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-          image.setContentDescription("加密聊天图片");
+          image.setContentDescription("点击查看加密聊天大图");
           image.setBackground(rounded(R.color.surface, 12));
+          image.setOnClickListener(view -> showImagePreview(descriptor));
           LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(240), dp(180));
           params.topMargin = dp(6);
           bubble.addView(image, Math.max(0, index), params);
@@ -588,6 +668,151 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     });
   }
 
+  private void showImagePreview(JSONObject descriptor) {
+    if (selectedProfile == null || crypto == null || imageCache == null) return;
+    String spaceId = selectedProfile.id;
+    HermesChatCrypto targetCrypto = crypto;
+    HermesChatImageCache targetImages = imageCache;
+    long generation = profileGeneration;
+    status.setText("正在打开大图…");
+    executor.submit(() -> {
+      try {
+        byte[] ciphertext = targetImages.read(descriptor);
+        if (ciphertext == null) {
+          ciphertext = api.downloadHermesChatAttachment(spaceId, descriptor.getString("id"));
+          targetImages.write(descriptor, ciphertext);
+        }
+        byte[] plaintext = targetCrypto.decryptAttachment(ciphertext, descriptor);
+        Bitmap bitmap = decodeBoundedBitmap(plaintext, 2_048);
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration || selectedProfile == null
+              || !spaceId.equals(selectedProfile.id)) return;
+          status.setText("已连接 · 端到端加密");
+          showImagePreview(bitmap, plaintext, descriptor);
+        });
+      } catch (Exception error) {
+        runOnUiThread(() -> {
+          if (!destroyed && generation == profileGeneration) {
+            status.setText("图片打开失败");
+            toast(error.getMessage());
+          }
+        });
+      }
+    });
+  }
+
+  private void showImagePreview(Bitmap bitmap, byte[] plaintext, JSONObject descriptor) {
+    Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+    FrameLayout root = new FrameLayout(this);
+    root.setBackgroundColor(Color.BLACK);
+
+    ImageView image = new ImageView(this);
+    image.setImageBitmap(bitmap);
+    image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    image.setAdjustViewBounds(true);
+    image.setContentDescription("聊天图片大图预览");
+    FrameLayout.LayoutParams imageParams = new FrameLayout.LayoutParams(-1, -1);
+    imageParams.setMargins(0, dp(56), 0, 0);
+    root.addView(image, imageParams);
+
+    LinearLayout actions = horizontal(Gravity.CENTER_VERTICAL);
+    actions.setPadding(dp(8), dp(6), dp(8), dp(6));
+    actions.setBackgroundColor(0xCC000000);
+    Button close = new Button(this);
+    close.setText("关闭");
+    close.setTextColor(Color.WHITE);
+    close.setOnClickListener(view -> dialog.dismiss());
+    actions.addView(close, new LinearLayout.LayoutParams(dp(76), dp(48)));
+    TextView title = text("加密聊天图片", 16, android.R.color.white);
+    title.setGravity(Gravity.CENTER);
+    actions.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+    Button save = new Button(this);
+    save.setText("保存相册");
+    save.setTextColor(Color.WHITE);
+    save.setOnClickListener(view -> saveImageToGallery(plaintext, descriptor));
+    actions.addView(save, new LinearLayout.LayoutParams(dp(104), dp(48)));
+    root.addView(actions, new FrameLayout.LayoutParams(-1, dp(60), Gravity.TOP));
+
+    dialog.setContentView(root);
+    dialog.setOnShowListener(ignored -> {
+      if (dialog.getWindow() != null) {
+        dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+        dialog.getWindow().setLayout(-1, -1);
+      }
+    });
+    dialog.show();
+  }
+
+  private void saveImageToGallery(byte[] plaintext, JSONObject descriptor) {
+    executor.submit(() -> {
+      Uri destination = null;
+      try {
+        String contentType = descriptor.getString("contentType");
+        if (!contentType.startsWith("image/")) throw new IllegalArgumentException("不是有效图片。");
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, galleryFilename(
+          descriptor.optString("name", "Hermes-image"),
+          contentType
+        ));
+        values.put(MediaStore.MediaColumns.MIME_TYPE, contentType);
+        values.put(
+          MediaStore.MediaColumns.RELATIVE_PATH,
+          Environment.DIRECTORY_PICTURES + "/My Notes"
+        );
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        destination = getContentResolver().insert(
+          MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+          values
+        );
+        if (destination == null) throw new IllegalStateException("无法创建相册图片。");
+        try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+          if (output == null) throw new IllegalStateException("无法写入相册图片。");
+          output.write(plaintext);
+        }
+        ContentValues published = new ContentValues();
+        published.put(MediaStore.MediaColumns.IS_PENDING, 0);
+        getContentResolver().update(destination, published, null, null);
+        runOnUiThread(() -> toast("图片已保存到“图片/My Notes”。"));
+      } catch (Exception error) {
+        if (destination != null) getContentResolver().delete(destination, null, null);
+        runOnUiThread(() -> toast("保存图片失败：" + error.getMessage()));
+      }
+    });
+  }
+
+  private static Bitmap decodeBoundedBitmap(byte[] data, int maximumDimension) {
+    BitmapFactory.Options bounds = new BitmapFactory.Options();
+    bounds.inJustDecodeBounds = true;
+    BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
+    if (bounds.outWidth < 1 || bounds.outHeight < 1) {
+      throw new IllegalArgumentException("图片格式无法显示。");
+    }
+    int sample = 1;
+    while (Math.max(bounds.outWidth / sample, bounds.outHeight / sample) > maximumDimension) {
+      sample *= 2;
+    }
+    BitmapFactory.Options options = new BitmapFactory.Options();
+    options.inSampleSize = sample;
+    options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+    Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length, options);
+    if (bitmap == null) throw new IllegalArgumentException("图片格式无法显示。");
+    return bitmap;
+  }
+
+  private static String galleryFilename(String value, String contentType) {
+    String filename = value == null ? "Hermes-image" : value;
+    filename = filename.replaceAll("[^\\p{L}\\p{N}._ -]", "_")
+      .replaceAll("^[ .]+|[ .]+$", "");
+    if (filename.isEmpty()) filename = "Hermes-image";
+    if (!filename.contains(".")) {
+      if ("image/jpeg".equals(contentType)) filename += ".jpg";
+      else if ("image/webp".equals(contentType)) filename += ".webp";
+      else if ("image/gif".equals(contentType)) filename += ".gif";
+      else filename += ".png";
+    }
+    return filename.length() > 120 ? filename.substring(0, 120) : filename;
+  }
+
   private void showSettings(View anchor) {
     if (selectedProfile == null) {
       toast("请先选择 Hermes 聊天对象。");
@@ -596,15 +821,100 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     PopupMenu menu = new PopupMenu(this, anchor);
     menu.getMenu().add(0, 1, 0, "查看并复制聊天密钥").setIcon(R.drawable.ic_key);
     menu.getMenu().add(0, 2, 1, "替换聊天密钥").setIcon(R.drawable.ic_refresh);
+    menu.getMenu().add(
+      0,
+      3,
+      2,
+      "聊天缓存保留时间：" + retentionLabel(HermesChatCacheSettings.retentionDays(this))
+    );
+    menu.getMenu().add(0, 4, 3, "立即清理当前聊天缓存");
     menu.setForceShowIcon(true);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 1) {
         showKeyCopy(secureStore.loadHermesChatKey(selectedProfile.id));
       }
       else if (item.getItemId() == 2) showKeySetup(true);
+      else if (item.getItemId() == 3) showCacheRetentionDialog();
+      else if (item.getItemId() == 4) confirmClearChatCache();
       return true;
     });
     menu.show();
+  }
+
+  private void showCacheRetentionDialog() {
+    int[] values = {7, 30, 90, 0};
+    String[] labels = {"7 天", "30 天（推荐）", "90 天", "永久保留"};
+    int current = HermesChatCacheSettings.retentionDays(this);
+    int selected = 0;
+    for (int index = 0; index < values.length; index++) {
+      if (values[index] == current) selected = index;
+    }
+    AlertDialog dialog = new AlertDialog.Builder(this)
+      .setTitle("聊天缓存保留时间")
+      .setSingleChoiceItems(labels, selected, null)
+      .setPositiveButton("保存", null)
+      .setNegativeButton("取消", null)
+      .create();
+    dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+      .setOnClickListener(view -> {
+        int choice = dialog.getListView().getCheckedItemPosition();
+        if (choice < 0 || choice >= values.length) return;
+        HermesChatCacheSettings.setRetentionDays(this, values[choice]);
+        dialog.dismiss();
+        cleanupCurrentHistory(true);
+      }));
+    dialog.show();
+  }
+
+  private void confirmClearChatCache() {
+    new AlertDialog.Builder(this)
+      .setTitle("清理当前聊天缓存？")
+      .setMessage("会删除本机显示的历史消息和加密图片缓存，但保留同步序号，重连时不会重新下载这些旧消息。")
+      .setPositiveButton("清理", (dialog, which) -> clearCurrentHistory())
+      .setNegativeButton("取消", null)
+      .show();
+  }
+
+  private void cleanupCurrentHistory(boolean showResult) {
+    HermesChatHistoryStore targetHistory = historyStore;
+    HermesChatImageCache targetImages = imageCache;
+    long generation = profileGeneration;
+    if (targetHistory == null || targetImages == null) return;
+    executor.submit(() -> {
+      HermesChatHistoryStore.Snapshot snapshot = targetHistory.loadAndCleanup(
+        HermesChatCacheSettings.retentionDays(this),
+        System.currentTimeMillis()
+      );
+      targetImages.retain(snapshot.messages);
+      runOnUiThread(() -> {
+        if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
+        renderCachedMessages(snapshot);
+        if (showResult) toast("聊天缓存保留策略已更新。");
+      });
+    });
+  }
+
+  private void clearCurrentHistory() {
+    HermesChatHistoryStore targetHistory = historyStore;
+    HermesChatImageCache targetImages = imageCache;
+    long generation = profileGeneration;
+    if (targetHistory == null || targetImages == null) return;
+    executor.submit(() -> {
+      HermesChatHistoryStore.Snapshot snapshot = targetHistory.clearMessages();
+      targetImages.clear();
+      runOnUiThread(() -> {
+        if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
+        renderCachedMessages(snapshot);
+        status.setText(client != null && client.isConnected()
+          ? "已连接 · 本地缓存已清理"
+          : "本地缓存已清理");
+        toast("当前聊天缓存已清理。");
+      });
+    });
+  }
+
+  private static String retentionLabel(int days) {
+    return days <= 0 ? "永久" : days + " 天";
   }
 
   private void showKeySetup(boolean replacing) {

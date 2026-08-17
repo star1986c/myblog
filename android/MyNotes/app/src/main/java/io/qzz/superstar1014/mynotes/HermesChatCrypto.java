@@ -170,6 +170,35 @@ final class HermesChatCrypto {
     return plaintext;
   }
 
+  JSONObject encryptLocalSnapshot(JSONObject payload, String spaceId) throws Exception {
+    byte[] nonce = new byte[12];
+    RANDOM.nextBytes(nonce);
+    byte[] ciphertext = crypt(
+      Cipher.ENCRYPT_MODE,
+      payload.toString().getBytes(StandardCharsets.UTF_8),
+      nonce,
+      localSnapshotAad(spaceId)
+    );
+    return new JSONObject()
+      .put("v", 1)
+      .put("alg", "A256GCM")
+      .put("nonce", encode(nonce))
+      .put("ciphertext", encode(ciphertext));
+  }
+
+  JSONObject decryptLocalSnapshot(JSONObject envelope, String spaceId) throws Exception {
+    if (envelope.optInt("v") != 1 || !"A256GCM".equals(envelope.optString("alg"))) {
+      throw new IllegalArgumentException("本地聊天缓存格式无效。");
+    }
+    byte[] plaintext = crypt(
+      Cipher.DECRYPT_MODE,
+      decode(envelope.getString("ciphertext")),
+      decode(envelope.getString("nonce")),
+      localSnapshotAad(spaceId)
+    );
+    return new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
+  }
+
   private byte[] crypt(int mode, byte[] input, byte[] nonce, byte[] aad) throws Exception {
     if (nonce.length != 12) throw new IllegalArgumentException("AES-GCM nonce 长度无效。");
     Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
@@ -188,6 +217,16 @@ final class HermesChatCrypto {
       .getBytes(StandardCharsets.UTF_8);
   }
 
+  private static byte[] localSnapshotAad(String spaceId) {
+    String normalized = spaceId == null
+      ? ""
+      : spaceId.trim().toLowerCase(java.util.Locale.ROOT);
+    if (!normalized.matches("[a-z0-9][a-z0-9_-]{0,63}")) {
+      throw new IllegalArgumentException("Hermes profile id 无效。");
+    }
+    return ("hermes-chat-local-cache-v1|" + normalized).getBytes(StandardCharsets.UTF_8);
+  }
+
   private static String safeFilename(String value) {
     String filename = value == null ? "image" : value.replaceAll("[^\\p{L}\\p{N}._ -]", "_");
     filename = filename.replaceAll("^[ .]+|[ .]+$", "");
@@ -196,7 +235,9 @@ final class HermesChatCrypto {
   }
 
   private static String safeContentType(String value) {
-    String contentType = value == null ? "application/octet-stream" : value.trim().toLowerCase();
+    String contentType = value == null
+      ? "application/octet-stream"
+      : value.trim().toLowerCase(java.util.Locale.ROOT);
     if (contentType.length() > 100 || !contentType.matches("[a-z0-9!#$&^_.+\\-/]+")) {
       throw new IllegalArgumentException("图片类型无效。");
     }
