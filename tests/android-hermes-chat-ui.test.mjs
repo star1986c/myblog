@@ -6,6 +6,14 @@ const activityPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatActivity.java",
   import.meta.url,
 );
+const conversationsPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesConversationsActivity.java",
+  import.meta.url,
+);
+const mainActivityPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/MainActivity.java",
+  import.meta.url,
+);
 const manifestPath = new URL(
   "../android/MyNotes/app/src/main/AndroidManifest.xml",
   import.meta.url,
@@ -15,11 +23,42 @@ const clientPath = new URL(
   import.meta.url,
 );
 
-test("Hermes chat exposes only the first configured profile in Android", async () => {
-  const source = await readFile(activityPath, "utf8");
+test("Android renders every configured Hermes profile as an isolated conversation", async () => {
+  const [chat, conversations, manifest] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(conversationsPath, "utf8"),
+    readFile(manifestPath, "utf8"),
+  ]);
 
-  assert.match(source, /selectProfile\(profiles\.get\(0\)\)/);
-  assert.doesNotMatch(source, /renderProfiles|profileRail|updateProfileChipStyles/);
+  assert.match(conversations, /api\.hermesChatProfiles\(\)/);
+  assert.match(conversations, /for \(Models\.HermesChatProfile profile : profiles\)/);
+  assert.match(conversations, /putExtra\(HermesChatActivity\.EXTRA_PROFILE_ID, profile\.id\)/);
+  assert.match(chat, /getStringExtra\(EXTRA_PROFILE_ID\)/);
+  assert.match(chat, /profile\.id\.equals\(requestedProfileId\)/);
+  assert.doesNotMatch(chat, /selectProfile\(profiles\.get\(0\)\)/);
+  assert.match(manifest, /HermesConversationsActivity/);
+});
+
+test("Hermes conversation list uses local encrypted previews without opening sockets", async () => {
+  const source = await readFile(conversationsPath, "utf8");
+
+  assert.match(source, /new HermesChatHistoryStore\(/);
+  assert.match(source, /loadAndCleanup\(/);
+  assert.match(source, /搜索聊天对象/);
+  assert.match(source, /端到端加密/);
+  assert.doesNotMatch(source, /HermesChatClient|hermesChatTicket/);
+});
+
+test("main bottom navigation opens Hermes conversations while folders remain reachable", async () => {
+  const source = await readFile(mainActivityPath, "utf8");
+  const start = source.indexOf("private LinearLayout buildBottomNavigation()");
+  const end = source.indexOf("private void showCreateMenu", start);
+  const navigation = source.slice(start, end);
+
+  assert.match(navigation, /navigationButton\("Hermes", R\.drawable\.ic_chat, false\)/);
+  assert.match(navigation, /openHermesConversations\(\)/);
+  assert.doesNotMatch(navigation, /"文件夹"/);
+  assert.match(source, /shortcutButton\("文件夹", R\.drawable\.ic_folder\)/);
 });
 
 test("selected chat images wait for an explicit send and keep the caption", async () => {

@@ -58,6 +58,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class HermesChatActivity extends Activity implements HermesChatClient.Listener {
+  public static final String EXTRA_PROFILE_ID = "hermes_profile_id";
+  public static final String EXTRA_PROFILE_LABEL = "hermes_profile_label";
   private static final int REQUEST_IMAGE = 2201;
   private static final DateTimeFormatter MESSAGE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
     "yyyy-MM-dd HH:mm",
@@ -84,6 +86,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   private LinearLayout pendingImageBar;
   private TextView pendingImageLabel;
   private Uri pendingImageUri;
+  private String requestedProfileId;
+  private boolean demoMode;
   private int reconnectAttempt;
   private boolean destroyed;
   private Models.HermesChatProfile selectedProfile;
@@ -93,11 +97,20 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
     getWindow().setNavigationBarContrastEnforced(false);
+    demoMode = (getApplicationInfo().flags
+      & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+      && getIntent().getBooleanExtra("demo", false);
     api = new NotesApiClient(this);
     secureStore = new SecureSessionStore(this);
-    HermesChatCleanupService.schedule(this);
+    requestedProfileId = getIntent().getStringExtra(EXTRA_PROFILE_ID);
+    if (!demoMode) HermesChatCleanupService.schedule(this);
     buildScreen();
-    loadProfiles();
+    String requestedLabel = getIntent().getStringExtra(EXTRA_PROFILE_LABEL);
+    if (requestedLabel != null && !requestedLabel.trim().isEmpty()) {
+      chatTitle.setText(requestedLabel.trim());
+    }
+    if (demoMode) loadDemoConversation(requestedLabel);
+    else loadProfiles();
   }
 
   @Override
@@ -182,9 +195,15 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
 
     LinearLayout top = horizontal(Gravity.CENTER_VERTICAL);
     top.setPadding(dp(8), dp(8), dp(8), dp(8));
-    ImageButton back = iconButton(R.drawable.ic_arrow_back, "返回笔记");
+    top.setBackgroundColor(getColor(R.color.surface));
+    ImageButton back = iconButton(R.drawable.ic_arrow_back, "返回 Hermes 会话列表");
     back.setOnClickListener(view -> finish());
     top.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+    FrameLayout avatar = chatAvatar();
+    LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+    avatarParams.setMarginStart(dp(4));
+    top.addView(avatar, avatarParams);
 
     LinearLayout heading = vertical();
     chatTitle = text("Hermes", 19, R.color.text_primary);
@@ -194,12 +213,16 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     heading.addView(status);
     LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(0, dp(52), 1);
     headingParams.setMarginStart(dp(8));
+    heading.setContentDescription("返回 Hermes 会话列表");
+    heading.setClickable(true);
+    heading.setFocusable(true);
+    heading.setOnClickListener(view -> finish());
     top.addView(heading, headingParams);
 
     ImageButton reconnect = iconButton(R.drawable.ic_refresh, "重新连接");
     reconnect.setOnClickListener(view -> authenticateAndConnect());
     top.addView(reconnect, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    ImageButton settings = iconButton(R.drawable.ic_key, "聊天与缓存设置");
+    ImageButton settings = iconButton(R.drawable.ic_more, "聊天与缓存设置");
     settings.setOnClickListener(this::showSettings);
     top.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
     column.addView(top, new LinearLayout.LayoutParams(-1, dp(68)));
@@ -210,13 +233,17 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       R.color.text_secondary
     );
     privacy.setGravity(Gravity.CENTER);
-    privacy.setPadding(dp(16), dp(6), dp(16), dp(8));
-    column.addView(privacy, new LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT));
+    privacy.setPadding(dp(16), dp(7), dp(16), dp(7));
+    privacy.setBackground(rounded(R.color.surface_tonal, 14));
+    LinearLayout.LayoutParams privacyParams = new LinearLayout.LayoutParams(-1, -2);
+    privacyParams.setMargins(dp(12), dp(6), dp(12), dp(8));
+    column.addView(privacy, privacyParams);
 
     messageScroll = new ScrollView(this);
     messageScroll.setFillViewport(true);
+    messageScroll.setBackgroundColor(getColor(R.color.surface_variant));
     messages = vertical();
-    messages.setPadding(dp(12), dp(8), dp(12), dp(8));
+    messages.setPadding(dp(12), dp(12), dp(12), dp(12));
     messageScroll.addView(messages, new ScrollView.LayoutParams(-1, -2));
     column.addView(messageScroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
@@ -252,7 +279,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     composer.setTextSize(16);
     composer.setMaxLines(5);
     composer.setPadding(dp(14), dp(8), dp(14), dp(8));
-    composer.setBackground(rounded(R.color.background, 18));
+    composer.setBackground(roundedStroke(R.color.background, R.color.divider, 18, 1));
     composer.addTextChangedListener(new TextWatcher() {
       @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
       @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -287,9 +314,20 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         if (!session.authenticated) throw new IllegalStateException("请先在 My Notes 登录。");
         List<Models.HermesChatProfile> profiles = api.hermesChatProfiles();
         if (profiles.isEmpty()) throw new IllegalStateException("尚未配置 Hermes profile。");
+        Models.HermesChatProfile requestedProfile = null;
+        for (Models.HermesChatProfile profile : profiles) {
+          if (profile.id.equals(requestedProfileId)) {
+            requestedProfile = profile;
+            break;
+          }
+        }
+        if (requestedProfile == null) {
+          throw new IllegalStateException("该 Hermes 聊天对象不存在或已停用。");
+        }
+        Models.HermesChatProfile targetProfile = requestedProfile;
         runOnUiThread(() -> {
           if (destroyed) return;
-          selectProfile(profiles.get(0));
+          selectProfile(targetProfile);
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
@@ -298,6 +336,42 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
         });
       }
     });
+  }
+
+  private void loadDemoConversation(String requestedLabel) {
+    String profileId = requestedProfileId == null ? "personal" : requestedProfileId;
+    String profileLabel = requestedLabel == null || requestedLabel.trim().isEmpty()
+      ? "Hermes 个人助手"
+      : requestedLabel.trim();
+    selectedProfile = new Models.HermesChatProfile(profileId, profileLabel);
+    chatTitle.setText(profileLabel);
+    status.setText("演示模式 · 端到端加密");
+    status.setTextColor(getColor(R.color.brand_primary_dark));
+    long now = System.currentTimeMillis();
+    appendMessage(new HermesChatCrypto.ChatMessage(
+      "demo-agent-1",
+      "agent",
+      now - 180_000,
+      1,
+      "你好，我是这个 profile 的独立 Hermes 助手。消息、图片和本机缓存都按聊天对象隔离。",
+      new JSONArray()
+    ));
+    appendMessage(new HermesChatCrypto.ChatMessage(
+      "demo-client-1",
+      "client",
+      now - 120_000,
+      2,
+      "帮我整理今天的个人计划。",
+      new JSONArray()
+    ));
+    appendMessage(new HermesChatCrypto.ChatMessage(
+      "demo-agent-2",
+      "agent",
+      now - 60_000,
+      3,
+      "可以。先列出最重要的三件事，我会把它们整理成清晰的执行顺序。",
+      new JSONArray()
+    ));
   }
 
   private void selectProfile(Models.HermesChatProfile profile) {
@@ -579,6 +653,8 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
       16,
       outgoing ? R.color.on_brand : R.color.text_primary
     );
+    int maximumWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
+    body.setMaxWidth(Math.min(maximumWidth, dp(520)));
     body.setTextIsSelectable(true);
     body.setVisibility(message.text.trim().isEmpty() ? View.GONE : View.VISIBLE);
     bubble.addView(body, new LinearLayout.LayoutParams(-2, -2));
@@ -595,8 +671,7 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(-2, -2);
     metaParams.topMargin = dp(5);
     bubble.addView(meta, metaParams);
-    int maximumWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.84f);
-    row.addView(bubble, new LinearLayout.LayoutParams(Math.min(maximumWidth, dp(520)), -2));
+    row.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
     LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
     rowParams.setMargins(0, dp(5), 0, dp(5));
     messages.addView(row, rowParams);
@@ -1130,10 +1205,36 @@ public final class HermesChatActivity extends Activity implements HermesChatClie
     return button;
   }
 
+  private FrameLayout chatAvatar() {
+    FrameLayout avatar = new FrameLayout(this);
+    GradientDrawable background = new GradientDrawable();
+    background.setShape(GradientDrawable.OVAL);
+    background.setColor(getColor(R.color.surface_tonal));
+    avatar.setBackground(background);
+    ImageView icon = new ImageView(this);
+    icon.setImageResource(R.drawable.ic_chat);
+    icon.setImageTintList(ColorStateList.valueOf(getColor(R.color.brand_primary_dark)));
+    icon.setPadding(dp(10), dp(10), dp(10), dp(10));
+    icon.setContentDescription(null);
+    avatar.addView(icon, new FrameLayout.LayoutParams(-1, -1));
+    return avatar;
+  }
+
   private GradientDrawable rounded(int color, int radius) {
     GradientDrawable drawable = new GradientDrawable();
     drawable.setColor(getColor(color));
     drawable.setCornerRadius(dp(radius));
+    return drawable;
+  }
+
+  private GradientDrawable roundedStroke(
+    int color,
+    int strokeColor,
+    int radius,
+    int strokeWidth
+  ) {
+    GradientDrawable drawable = rounded(color, radius);
+    drawable.setStroke(dp(strokeWidth), getColor(strokeColor));
     return drawable;
   }
 

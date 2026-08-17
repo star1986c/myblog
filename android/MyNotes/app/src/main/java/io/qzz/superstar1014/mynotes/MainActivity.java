@@ -534,9 +534,6 @@ public final class MainActivity extends Activity {
     headingParams.setMarginStart(dp(12));
     topBar.addView(heading, headingParams);
 
-    ImageButton chat = iconButton(R.drawable.ic_chat, "打开 Hermes 对话", true);
-    chat.setOnClickListener(view -> openHermesChat());
-    topBar.addView(chat, new LinearLayout.LayoutParams(dp(48), dp(48)));
     ImageButton refresh = iconButton(R.drawable.ic_refresh, "刷新笔记", false);
     refresh.setOnClickListener(view -> loadAllData());
     topBar.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -665,13 +662,9 @@ public final class MainActivity extends Activity {
     });
     navigation.addView(recent, weightedNavigationParams());
 
-    Button folder = navigationButton(
-      "文件夹",
-      R.drawable.ic_folder,
-      location.startsWith(LOCATION_FOLDER_PREFIX)
-    );
-    folder.setOnClickListener(this::showLocationMenu);
-    navigation.addView(folder, weightedNavigationParams());
+    Button hermes = navigationButton("Hermes", R.drawable.ic_chat, false);
+    hermes.setOnClickListener(view -> openHermesConversations());
+    navigation.addView(hermes, weightedNavigationParams());
 
     ImageButton add = iconButton(R.drawable.ic_add, getString(R.string.new_note), false);
     add.setImageTintList(ColorStateList.valueOf(getColor(R.color.on_brand)));
@@ -923,7 +916,7 @@ public final class MainActivity extends Activity {
         return true;
       }
       if (item.getItemId() == 9) {
-        openHermesChat();
+        openHermesConversations();
         return true;
       }
       if (item.getItemId() == 5) {
@@ -935,8 +928,10 @@ public final class MainActivity extends Activity {
     menu.show();
   }
 
-  private void openHermesChat() {
-    startActivity(new Intent(this, HermesChatActivity.class));
+  private void openHermesConversations() {
+    startActivity(
+      new Intent(this, HermesConversationsActivity.class).putExtra("demo", demoMode)
+    );
   }
 
   private void showModeMenu(View anchor) {

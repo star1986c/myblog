@@ -33,6 +33,10 @@
       android:name=".HermesChatActivity"
       android:exported="false"
       android:windowSoftInputMode="adjustResize" />
+    <activity
+      android:name=".HermesConversationsActivity"
+      android:exported="false"
+      android:windowSoftInputMode="adjustResize" />
     <service
       android:name=".HermesChatCleanupService"
       android:exported="false"

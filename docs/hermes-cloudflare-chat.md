@@ -5,8 +5,7 @@
 家庭 NAS 不开放公网入站端口。每个 Hermes profile 启动自己的 Gateway 和
 `cloudflare_chat` 插件，由插件主动连接
 `wss://h.superstar1014.qzz.io/api/hermes-chat/ws`。安卓记事本登录现有账号后，
-动态读取可用 profile。当前 Android 界面只显示列表中的第一个聊天对象，协议和
-Worker 仍保留多 profile 能力，后续恢复切换界面时不需要修改后端数据模型。
+动态读取可用 profile，并用 Telegram 风格的会话列表进入各自的独立聊天。
 
 ```mermaid
 flowchart LR
@@ -22,8 +21,8 @@ flowchart LR
 
 profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，安卓端从 API
 动态读取配置。当前实现最多接受 32 个 profile，目的是防止错误配置无限创建
-Durable Object。Android 暂时只进入第一个 profile，但独立密钥、票据和 space
-结构均已预留。
+Durable Object。会话列表不会连接所有 profile，也不会从 Cloudflare 拉取全部历史；
+只读取各 profile 的本机加密缓存作为摘要，进入具体会话后才连接对应 space。
 
 ## 隔离与安全模型
 
@@ -59,7 +58,7 @@ Hermes v0.20.1 的 Gateway 会先调用平台适配器 `send()` 创建一条回�
 ```json
 {
   "vars": {
-    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,secondary:Hermes 第二助手,research:研究助手",
+    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,secondary:Hermes 第二助手,personal:Hermes 个人助手",
     "HERMES_CHAT_CLOUD_RETENTION_DAYS": "30"
   }
 }
@@ -110,15 +109,24 @@ hermes profile list
 /root/.hermes/plugins/cloudflare_chat
 ```
 
-命名 profile（示例 `research`）的插件目录：
+命名 profile（示例 `personal`）的插件目录：
 
 ```text
-/root/.hermes/profiles/research/plugins/cloudflare_chat
+/root/.hermes/profiles/personal/plugins/cloudflare_chat
 ```
 
 把仓库 `integrations/hermes-cloudflare-chat/cloudflare_chat/` 的完整内容复制到每个
 需要聊天能力的 profile。将 `requirements.txt` 安装到运行 `hermes` 的同一个
 Python/虚拟环境中；不要在插件目录保存 secret。
+
+每个 profile 都有独立的插件启用配置。复制完成后为 `personal` 单独启用，并授予
+适配器注册消息工具所需的 override 权限：
+
+```bash
+hermes -p personal plugins enable cloudflare_chat --allow-tool-override
+```
+
+`hermes plugins enable ...` 只会修改默认 profile，不能代替上面的 `-p personal`。
 
 默认 profile 的 `/root/.hermes/.env` 示例：
 
@@ -132,29 +140,41 @@ HERMES_CF_ALLOWED_USERS=android-owner
 HERMES_CF_ALLOW_ALL_USERS=false
 ```
 
-命名 profile 的 `/root/.hermes/profiles/research/.env` 使用相同 relay/agent secret，
-但必须改为自己的 `HERMES_CF_SPACE_ID`、`HERMES_CF_CHAT_KEY` 和 agent id。
+新增 `personal` 的 `/root/.hermes/profiles/personal/.env`：
+
+```dotenv
+HERMES_CF_RELAY_URL=wss://h.superstar1014.qzz.io/api/hermes-chat/ws
+HERMES_CF_AGENT_SECRET=<与 Wrangler Secret 相同>
+HERMES_CF_SPACE_ID=personal
+HERMES_CF_CHAT_KEY=<Android 中 personal 会话生成的独立密钥>
+HERMES_CF_AGENT_ID=nas-personal
+HERMES_CF_ALLOWED_USERS=android-owner
+HERMES_CF_ALLOW_ALL_USERS=false
+```
+
+它与其他 profile 共用 relay URL 和 agent secret，但必须使用独立的
+`HERMES_CF_SPACE_ID`、`HERMES_CF_CHAT_KEY` 和 agent id。
 
 重启并检查每个 Gateway：
 
 ```bash
 hermes gateway restart
-hermes -p research gateway restart
+hermes -p personal gateway restart
 hermes status
-hermes -p research status
+hermes -p personal status
 ```
 
 ## Android 使用流程
 
-1. 登录 My Notes，打开顶部聊天按钮。
-2. 客户端从 Worker 读取 profile 列表；当前选择第一个聊天对象。
-3. 首次进入每个对象时分别生成聊天密钥。
+1. 登录 My Notes，点击底部 `Hermes`。
+2. 客户端从 Worker 动态读取全部 profile，并显示各自的本机加密消息摘要。
+3. 点击聊天对象进入独立会话；首次进入每个对象时分别生成聊天密钥。
 4. 把界面显示的 `HERMES_CF_SPACE_ID` 和密钥写入对应 NAS profile 的 `.env`。
 5. 重启对应 Gateway 后发送文字或图片验证。
 
-Android Keystore 按 profile id 独立保护密钥。后续恢复多对象切换界面时，切换聊天
-对象会关闭旧 WebSocket、清空旧对象的界面状态并连接新的 Durable Object，不会
-混用历史或密钥。
+Android Keystore 按 profile id 独立保护密钥。从聊天页返回会话列表会关闭当前
+WebSocket；进入另一个对象时加载对应缓存和 checkpoint，再连接新的 Durable Object，
+不会混用历史或密钥。
 
 ### Android 本地聊天缓存
 
@@ -176,6 +196,9 @@ Android Keystore 按 profile id 独立保护密钥。后续恢复多对象切换
   任何云端步骤失败时都保留本机数据，便于重试。
 - 消息气泡左下角显示手机本地时区的发送时间（`yyyy-MM-dd HH:mm`），不再显示
   “Hermes”或“你”；流式生成期间只在时间后追加“正在回复”。
+- Android 2.2 起，底部文件夹入口改为 Hermes 会话；文件夹快捷按钮和横向筛选栏
+  继续保留。会话列表支持搜索任意数量的已配置 profile，并从本机加密快照显示末条
+  消息与时间，不会为列表中的其他 profile 建立 WebSocket。
 
 ## 成本边界
 
