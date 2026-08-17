@@ -9,7 +9,9 @@ import sys
 import tempfile
 import types
 import unittest
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import AsyncMock, patch
 
 
@@ -120,6 +122,36 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(context.kwargs["allow_all_env"], "HERMES_CF_ALLOW_ALL_USERS")
         self.assertIn("HERMES_CF_CHAT_KEY", context.kwargs["required_env"])
         self.assertIn("HERMES_CF_SPACE_ID", context.kwargs["required_env"])
+        platform_hint = context.kwargs["platform_hint"]
+        self.assertIn("image_generate", platform_hint)
+        self.assertIn("MEDIA:<absolute-path>", platform_hint)
+        self.assertIn("agent_visible_image", platform_hint)
+
+    def test_attachment_requests_use_explicit_application_user_agent(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        headers = instance._http_headers()
+
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.3")
+        self.assertEqual(headers["Accept"], "application/json")
+        self.assertNotIn("Python-urllib", headers["User-Agent"])
+
+    def test_attachment_http_error_keeps_cloudflare_diagnostics(self):
+        error = HTTPError(
+            "https://h.superstar1014.qzz.io/api/hermes-chat/attachments/test",
+            403,
+            "Forbidden",
+            {"CF-Ray": "test-ray-TPE"},
+            BytesIO(b"error code: 1010"),
+        )
+
+        result = self.adapter._attachment_http_error("upload", error)
+        error.close()
+
+        self.assertIsInstance(result, ConnectionError)
+        self.assertIn("HTTP 403", str(result))
+        self.assertIn("error code: 1010", str(result))
+        self.assertIn("test-ray-TPE", str(result))
 
     def test_resume_sequence_is_scoped_and_persisted_per_profile(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

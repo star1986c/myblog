@@ -27,6 +27,14 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.1.3 fixes Cloudflare Error 1010 on attachment requests by replacing
+Python urllib's default browser signature with an explicit
+`Hermes-Cloudflare-Chat` User-Agent. It also records bounded HTTP response
+details and the Cloudflare Ray ID when an upload fails. No Cloudflare secret,
+chat key, or Android configuration change is required. This version also adds
+explicit Agent guidance to preserve a safe local image path as a standalone
+`MEDIA:` directive when needed.
+
 Version 0.1.2 recovers extensionless Markdown image URLs and local `MEDIA:`
 image directives in the adapter's text send path. This covers Hermes responses
 that older or stricter base media extraction leaves as plain text. Successfully

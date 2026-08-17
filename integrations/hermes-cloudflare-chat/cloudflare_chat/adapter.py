@@ -12,6 +12,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -39,6 +40,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.3"
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]\r\n]*\]\(\s*(?P<source>(?:https?://|file://|/)[^\s)]+)\s*\)",
@@ -369,11 +371,14 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             headers=self._http_headers(),
             method="GET",
         )
-        with urlopen(request, timeout=30) as response:
-            content_length = int(response.headers.get("Content-Length", "0"))
-            if content_length < 17 or content_length > MAX_ATTACHMENT_BYTES + 16:
-                raise ValueError("invalid encrypted attachment size")
-            data = response.read(MAX_ATTACHMENT_BYTES + 17)
+        try:
+            with urlopen(request, timeout=30) as response:
+                content_length = int(response.headers.get("Content-Length", "0"))
+                if content_length < 17 or content_length > MAX_ATTACHMENT_BYTES + 16:
+                    raise ValueError("invalid encrypted attachment size")
+                data = response.read(MAX_ATTACHMENT_BYTES + 17)
+        except HTTPError as error:
+            raise _attachment_http_error("download", error) from error
         if len(data) != content_length:
             raise ValueError("encrypted attachment download was incomplete")
         return data
@@ -390,9 +395,12 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             headers=headers,
             method="POST",
         )
-        with urlopen(request, timeout=45) as response:
-            if response.status != 201:
-                raise ConnectionError(f"attachment upload returned HTTP {response.status}")
+        try:
+            with urlopen(request, timeout=45) as response:
+                if response.status != 201:
+                    raise ConnectionError(f"attachment upload returned HTTP {response.status}")
+        except HTTPError as error:
+            raise _attachment_http_error("upload", error) from error
 
     def _attachment_url(self, attachment_id: str) -> str:
         parsed = urlsplit(self.relay_url)
@@ -402,6 +410,8 @@ class CloudflareChatAdapter(BasePlatformAdapter):
     def _http_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.agent_secret}",
+            "Accept": "application/json",
+            "User-Agent": HTTP_USER_AGENT,
             "X-Hermes-Role": "agent",
             "X-Hermes-Agent-Id": self.agent_id,
             "X-Hermes-Space": self.space_id,
@@ -539,6 +549,22 @@ def _remove_delivered_spans(text: str, spans: list[tuple[int, int]]) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
+def _attachment_http_error(action: str, error: HTTPError) -> ConnectionError:
+    try:
+        detail = error.read(1024).decode("utf-8", errors="replace")
+    except Exception:
+        detail = ""
+    detail = re.sub(r"\s+", " ", detail).strip()[:300]
+    headers = getattr(error, "headers", None)
+    ray_id = headers.get("CF-Ray", "") if headers is not None else ""
+    message = f"attachment {action} returned HTTP {error.code}"
+    if detail:
+        message += f": {detail}"
+    if ray_id:
+        message += f" (CF-Ray {ray_id})"
+    return ConnectionError(message)
+
+
 def _valid_configuration(relay_url: str, secret: str, agent_id: str, space_id: str) -> bool:
     parsed = urlsplit(relay_url)
     return (
@@ -625,6 +651,10 @@ def register(ctx) -> None:
         allow_update_command=True,
         platform_hint=(
             "You are chatting with the owner through a private Android notes app. "
-            "Markdown and image attachments are supported. Keep sensitive data private."
+            "Markdown and image attachments are supported. After image_generate succeeds, "
+            "always include a standalone MEDIA:<absolute-path> line in the final response, "
+            "using the first available local path from agent_visible_image, host_image, or "
+            "image in the tool result. Keep the MEDIA line even when the tool already reports "
+            "success; never use it for credentials, configuration, or other sensitive files."
         ),
     )
