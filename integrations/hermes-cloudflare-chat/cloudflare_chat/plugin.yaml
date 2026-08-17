@@ -1,0 +1,36 @@
+name: cloudflare_chat
+label: Cloudflare Chat
+kind: platform
+version: 0.1.0
+description: End-to-end encrypted Cloudflare WebSocket channel for a private Hermes NAS.
+author: superstar1014
+requires_env:
+  - name: HERMES_CF_RELAY_URL
+    description: Cloudflare relay WebSocket URL.
+    prompt: Relay WebSocket URL
+    password: false
+  - name: HERMES_CF_AGENT_SECRET
+    description: Dedicated NAS-to-Cloudflare authentication secret.
+    prompt: Agent relay secret
+    password: true
+  - name: HERMES_CF_CHAT_KEY
+    description: Base64url-encoded 32-byte end-to-end encryption key shared with Android.
+    prompt: Chat encryption key
+    password: true
+  - name: HERMES_CF_SPACE_ID
+    description: Unique relay space id for this Hermes profile.
+    prompt: Space id
+    password: false
+optional_env:
+  - name: HERMES_CF_AGENT_ID
+    description: Stable name for this NAS Hermes instance.
+    prompt: Agent id
+    password: false
+  - name: HERMES_CF_ALLOWED_USERS
+    description: Comma-separated inbound user ids. Use android-owner for the notes app.
+    prompt: Allowed users
+    password: false
+  - name: HERMES_CF_ALLOW_ALL_USERS
+    description: Explicitly allow every relay user. Keep false for a private channel.
+    prompt: Allow all users
+    password: false

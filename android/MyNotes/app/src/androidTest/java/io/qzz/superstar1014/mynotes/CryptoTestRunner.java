@@ -25,6 +25,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyRoundTripsAndBinding();
       verifySharedProtectionPassword();
       verifyEncryptedAttachments();
+      verifyHermesChatCrypto();
       verifyAttachmentRequestHints();
       verifyAttachmentDiskCache();
       verifySecureSessionStorage();
@@ -38,6 +39,54 @@ public final class CryptoTestRunner extends Instrumentation {
       );
       finish(Activity.RESULT_CANCELED, result);
     }
+  }
+
+  private static void verifyHermesChatCrypto() throws Exception {
+    String key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    HermesChatCrypto crypto = new HermesChatCrypto(key);
+    String messageId = "550e8400-e29b-41d4-a716-446655440000";
+    org.json.JSONArray attachments = new org.json.JSONArray();
+    org.json.JSONObject envelope = crypto.encryptMessage(
+      "client",
+      "profile 隔离消息",
+      attachments,
+      messageId,
+      1_800_000_000_000L
+    );
+    require(!envelope.toString().contains("profile 隔离消息"), "Hermes plaintext leaked");
+    HermesChatCrypto.ChatMessage message = crypto.decryptMessage(envelope, 7);
+    require("profile 隔离消息".equals(message.text), "Hermes message round trip failed");
+    require(message.sequence == 7, "Hermes sequence was not preserved");
+
+    org.json.JSONObject fixture = new org.json.JSONObject()
+      .put("v", 1)
+      .put("type", "message")
+      .put("id", messageId)
+      .put("sender", "agent")
+      .put("sentAt", 1_800_000_000_000L)
+      .put("encrypted", new org.json.JSONObject()
+        .put("alg", "A256GCM")
+        .put("nonce", "AAECAwQFBgcICQoL")
+        .put(
+          "ciphertext",
+          "PCCifr2R4CGvqSAjVkLXTeuz61ifWXNeWROR5H4BbddvZN3elZpP5W00"
+            + "JWv4qPMrDG21sPX9lI0"
+        ));
+    require(
+      "跨端 hello".equals(crypto.decryptMessage(fixture, 8).text),
+      "Hermes Android/Python wire fixture failed"
+    );
+
+    byte[] image = new byte[] {1, 2, 3, 4, 5, 6};
+    HermesChatCrypto.EncryptedAttachment encrypted = crypto.encryptAttachment(
+      image,
+      "image/png",
+      "fixture.png"
+    );
+    require(
+      Arrays.equals(image, crypto.decryptAttachment(encrypted.ciphertext, encrypted.descriptor)),
+      "Hermes attachment round trip failed"
+    );
   }
 
   private static void verifyWebCryptoFixture() throws Exception {
@@ -276,6 +325,8 @@ public final class CryptoTestRunner extends Instrumentation {
     store.clear();
     store.save("site_admin_session=test-token");
     store.saveDeviceToken("device-id.device-secret");
+    store.saveHermesChatKey("primary", "primary-chat-key");
+    store.saveHermesChatKey("secondary", "secondary-chat-key");
     require(
       "site_admin_session=test-token".equals(store.load()),
       "Android Keystore session round trip failed"
@@ -283,6 +334,20 @@ public final class CryptoTestRunner extends Instrumentation {
     require(
       "device-id.device-secret".equals(store.loadDeviceToken()),
       "Android Keystore device token round trip failed"
+    );
+    require(
+      "primary-chat-key".equals(store.loadHermesChatKey("primary")),
+      "Primary Hermes profile key round trip failed"
+    );
+    require(
+      "secondary-chat-key".equals(store.loadHermesChatKey("secondary")),
+      "Secondary Hermes profile key round trip failed"
+    );
+    store.clearHermesChatKey("primary");
+    require(store.loadHermesChatKey("primary").isEmpty(), "Hermes profile key clear failed");
+    require(
+      "secondary-chat-key".equals(store.loadHermesChatKey("secondary")),
+      "Clearing one Hermes profile key cleared another profile"
     );
     store.clearDeviceToken();
     require(store.loadDeviceToken().isEmpty(), "Revoked device token was not cleared");

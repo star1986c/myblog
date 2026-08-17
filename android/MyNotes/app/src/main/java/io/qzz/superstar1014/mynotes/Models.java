@@ -1,12 +1,15 @@
 package io.qzz.superstar1014.mynotes;
 
 import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
 
 final class Models {
   private Models() {}
@@ -27,6 +30,46 @@ final class Models {
 
     static User fromJson(JSONObject json) {
       return new User(json.optString("username"), json.optBoolean("mustChangePassword"));
+    }
+  }
+
+  static final class HermesChatTicket {
+    final String ticket;
+    final String spaceId;
+    final int expiresInSeconds;
+
+    HermesChatTicket(String ticket, String spaceId, int expiresInSeconds) {
+      this.ticket = ticket;
+      this.spaceId = spaceId;
+      this.expiresInSeconds = expiresInSeconds;
+    }
+
+    static HermesChatTicket fromJson(JSONObject json) {
+      return new HermesChatTicket(
+        json.optString("ticket"),
+        json.optString("spaceId", "default"),
+        json.optInt("expiresInSeconds", 90)
+      );
+    }
+  }
+
+  static final class HermesChatProfile {
+    final String id;
+    final String label;
+
+    HermesChatProfile(String id, String label) {
+      this.id = id;
+      this.label = label;
+    }
+
+    static List<HermesChatProfile> listFromJson(JSONObject json) throws JSONException {
+      JSONArray values = json.getJSONArray("profiles");
+      List<HermesChatProfile> profiles = new ArrayList<>();
+      for (int index = 0; index < values.length(); index++) {
+        JSONObject value = values.getJSONObject(index);
+        profiles.add(new HermesChatProfile(value.getString("id"), value.getString("label")));
+      }
+      return profiles;
     }
   }
 

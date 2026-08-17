@@ -52,6 +52,17 @@ import {
   revokeDeviceToken,
   rotateDeviceToken,
 } from "./device-token-repository.js";
+import {
+  downloadHermesChatAttachment,
+  uploadHermesChatAttachment,
+} from "./hermes-chat-attachment-repository.js";
+import {
+  authorizeHermesChatAgent,
+  configuredHermesChatProfiles,
+  handleHermesChatWebSocket,
+  requireConfiguredHermesChatSpace,
+} from "./hermes-chat-gateway.js";
+import { createHermesChatTicket } from "./hermes-chat-protocol.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
@@ -97,6 +108,14 @@ export default {
 
 async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
+
+  if (url.pathname === "/api/hermes-chat/ws") {
+    return await handleHermesChatWebSocket(request, env);
+  }
+
+  if (url.pathname.startsWith("/api/hermes-chat/attachments/")) {
+    return withSiteHeaders(request, await handleHermesChatAttachmentApi(request, env, url.pathname));
+  }
 
   if (url.pathname.startsWith("/api/")) {
     return withSiteHeaders(request, await handleApiRequest(request, env, ctx));
@@ -817,6 +836,24 @@ async function handleAdminApi(request, env, path) {
 
   const db = requireDatabase(env);
 
+  if (path === "/api/admin/hermes-chat/profiles" && request.method === "GET") {
+    return jsonResponse({ profiles: configuredHermesChatProfiles(env) });
+  }
+
+  if (path === "/api/admin/hermes-chat/ticket" && request.method === "POST") {
+    const payload = await readJson(request);
+    const spaceId = requireConfiguredHermesChatSpace(env, payload.spaceId).id;
+    return jsonResponse({
+      ticket: await createHermesChatTicket({
+        secret: resolveSessionSecret(env),
+        username: session.username,
+        spaceId,
+      }),
+      spaceId,
+      expiresInSeconds: 90,
+    });
+  }
+
   if (path === "/api/admin/workspace-key" && request.method === "GET") {
     return jsonResponse({
       workspaceKey: await readOrCreateWorkspaceDataKey(
@@ -1023,6 +1060,63 @@ async function handleAdminApi(request, env, path) {
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
+}
+
+async function handleHermesChatAttachmentApi(request, env, pathname) {
+  const prefix = "/api/hermes-chat/attachments/";
+  const suffix = pathname.slice(prefix.length);
+  if (!suffix || suffix.includes("/")) {
+    return jsonResponse({ error: "Not found" }, { status: 404 });
+  }
+  const attachmentId = decodeURIComponent(suffix);
+  const spaceId = requireConfiguredHermesChatSpace(
+    env,
+    request.headers.get("X-Hermes-Space"),
+  ).id;
+
+  const agent = await authorizeHermesChatAgent(request, env);
+  let principal = agent;
+  if (!principal) {
+    const session = await readAdminSession(request, env);
+    if (!session) {
+      return jsonResponse({ error: "Authentication required." }, { status: 401 });
+    }
+    if (request.method === "POST") {
+      const csrfToken = request.headers.get("X-CSRF-Token") || "";
+      if (csrfToken !== session.csrfToken) {
+        return jsonResponse({ error: "Invalid CSRF token." }, { status: 403 });
+      }
+    }
+    principal = { role: "client", id: session.username };
+  }
+
+  if (request.method === "POST") {
+    return jsonResponse({
+      attachment: await uploadHermesChatAttachment(env.NOTE_ATTACHMENTS, request, {
+        attachmentId,
+        spaceId,
+        uploader: `${principal.role}:${principal.id}`,
+      }),
+    }, { status: 201 });
+  }
+  if (request.method === "GET") {
+    const object = await downloadHermesChatAttachment(env.NOTE_ATTACHMENTS, {
+      attachmentId,
+      spaceId,
+    });
+    return new Response(object.body, {
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Length": String(object.size),
+        "Content-Type": "application/octet-stream",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+  return jsonResponse(
+    { error: "Method not allowed" },
+    { status: 405, headers: { Allow: "GET, POST" } },
+  );
 }
 
 function readExpectedRevision(request) {

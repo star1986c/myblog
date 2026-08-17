@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { lookupVisitorNetworkInfo } from "../src/worker.js";
 import { createPasswordHash, readSession, signSession, verifyPasswordHash } from "../src/auth.js";
+import { verifyHermesChatTicket } from "../src/hermes-chat-protocol.js";
 
 function bytesToBase64Url(value) {
   return Buffer.from(value).toString("base64url");
@@ -1416,6 +1417,52 @@ test("workspace key API requires an authenticated administrator session", async 
 
   assert.equal(response.status, 401);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("authenticated Android client lists dynamic Hermes profiles and requests a bound ticket", async () => {
+  const env = makeEnv({
+    HERMES_CHAT_PROFILES: "primary:主助手,secondary:研究助手,third:代码助手",
+  });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "hermes-csrf-token",
+  });
+  const profilesResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/profiles", {
+      headers: { Cookie: cookie },
+    }),
+    env,
+  );
+  assert.deepEqual(await profilesResponse.json(), {
+    profiles: [
+      { id: "primary", label: "主助手" },
+      { id: "secondary", label: "研究助手" },
+      { id: "third", label: "代码助手" },
+    ],
+  });
+
+  const ticketResponse = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "hermes-csrf-token",
+      },
+      body: JSON.stringify({ spaceId: "third" }),
+    }),
+    env,
+  );
+  const ticketBody = await ticketResponse.json();
+  assert.equal(ticketResponse.status, 200);
+  assert.equal(ticketBody.spaceId, "third");
+  const ticket = await verifyHermesChatTicket({
+    token: ticketBody.ticket,
+    secret: env.SESSION_SECRET,
+  });
+  assert.equal(ticket.spaceId, "third");
+  assert.equal(ticket.username, env.ADMIN_USERNAME);
 });
 
 test("authenticated workspace key is created once and returned without a master password", async () => {

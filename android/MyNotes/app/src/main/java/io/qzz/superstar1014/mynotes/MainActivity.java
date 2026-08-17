@@ -534,6 +534,9 @@ public final class MainActivity extends Activity {
     headingParams.setMarginStart(dp(12));
     topBar.addView(heading, headingParams);
 
+    ImageButton chat = iconButton(R.drawable.ic_chat, "打开 Hermes 对话", true);
+    chat.setOnClickListener(view -> openHermesChat());
+    topBar.addView(chat, new LinearLayout.LayoutParams(dp(48), dp(48)));
     ImageButton refresh = iconButton(R.drawable.ic_refresh, "刷新笔记", false);
     refresh.setOnClickListener(view -> loadAllData());
     topBar.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -906,8 +909,9 @@ public final class MainActivity extends Activity {
     if (!fingerprintConfigured && !biometricStore.isAvailable()) {
       fingerprint.setTitle("指纹解锁不可用");
     }
-    menu.getMenu().add(0, 7, 1, "修改登录密码").setIcon(R.drawable.ic_key);
-    menu.getMenu().add(0, 5, 2, "退出登录").setIcon(R.drawable.ic_logout);
+    menu.getMenu().add(0, 9, 1, "Hermes 对话").setIcon(R.drawable.ic_chat);
+    menu.getMenu().add(0, 7, 2, "修改登录密码").setIcon(R.drawable.ic_key);
+    menu.getMenu().add(0, 5, 3, "退出登录").setIcon(R.drawable.ic_logout);
     menu.setOnMenuItemClickListener(item -> {
       if (item.getItemId() == 8) {
         if (fingerprintConfigured) disableBiometric();
@@ -918,6 +922,10 @@ public final class MainActivity extends Activity {
         showChangePasswordDialog();
         return true;
       }
+      if (item.getItemId() == 9) {
+        openHermesChat();
+        return true;
+      }
       if (item.getItemId() == 5) {
         logout();
         return true;
@@ -925,6 +933,10 @@ public final class MainActivity extends Activity {
       return false;
     });
     menu.show();
+  }
+
+  private void openHermesChat() {
+    startActivity(new Intent(this, HermesChatActivity.class));
   }
 
   private void showModeMenu(View anchor) {

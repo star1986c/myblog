@@ -1,12 +1,25 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "wispy-cloud-0978",
-  "main": "./src/worker.js",
+  "main": "./src/cloudflare-entry.js",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
-    "required": ["SESSION_SECRET", "NOTES_KEY_ENCRYPTION_SECRET"]
+    "required": [
+      "SESSION_SECRET",
+      "NOTES_KEY_ENCRYPTION_SECRET",
+      "HERMES_CHAT_AGENT_SECRET"
+    ]
   },
+  "vars": {
+    "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,secondary:Hermes 第二助手"
+  },
+  "routes": [
+    {
+      "pattern": "h.superstar1014.qzz.io",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -26,6 +39,20 @@
     {
       "binding": "NOTE_ATTACHMENTS",
       "bucket_name": "notes"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HERMES_CHAT_ROOMS",
+        "class_name": "HermesChatRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-hermes-chat-room",
+      "new_sqlite_classes": ["HermesChatRoom"]
     }
   ],
   "ratelimits": [

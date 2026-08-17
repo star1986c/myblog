@@ -20,6 +20,7 @@ final class SecureSessionStore {
   private static final String PREFS = "my_notes_secure_session";
   private static final String COOKIE_KEY = "encrypted_cookie";
   private static final String TOKEN_KEY = "encrypted_device_token";
+  private static final String HERMES_CHAT_KEY_PREFIX = "encrypted_hermes_chat_key_";
 
   private final SharedPreferences preferences;
   private final String keyAlias;
@@ -39,6 +40,13 @@ final class SecureSessionStore {
 
   String loadDeviceToken() {
     return loadEncrypted(TOKEN_KEY, "my-notes:device-token:v1");
+  }
+
+  String loadHermesChatKey(String spaceId) {
+    return loadEncrypted(
+      chatPreferenceKey(spaceId),
+      "my-notes:hermes-chat-key:v1:" + normalizedSpaceId(spaceId)
+    );
   }
 
   private String loadEncrypted(String preferenceKey, String aad) {
@@ -73,6 +81,18 @@ final class SecureSessionStore {
     preferences.edit().remove(TOKEN_KEY).apply();
   }
 
+  void saveHermesChatKey(String spaceId, String key) {
+    saveEncrypted(
+      chatPreferenceKey(spaceId),
+      "my-notes:hermes-chat-key:v1:" + normalizedSpaceId(spaceId),
+      key
+    );
+  }
+
+  void clearHermesChatKey(String spaceId) {
+    preferences.edit().remove(chatPreferenceKey(spaceId)).apply();
+  }
+
   private void saveEncrypted(String preferenceKey, String aad, String value) {
     if (value == null || value.isEmpty()) {
       preferences.edit().remove(preferenceKey).apply();
@@ -92,7 +112,19 @@ final class SecureSessionStore {
   }
 
   void clear() {
-    preferences.edit().remove(COOKIE_KEY).remove(TOKEN_KEY).apply();
+    preferences.edit().clear().apply();
+  }
+
+  private static String chatPreferenceKey(String spaceId) {
+    return HERMES_CHAT_KEY_PREFIX + normalizedSpaceId(spaceId);
+  }
+
+  private static String normalizedSpaceId(String value) {
+    String spaceId = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+    if (!spaceId.matches("[a-z0-9][a-z0-9_-]{0,63}")) {
+      throw new IllegalArgumentException("Hermes profile id 无效。");
+    }
+    return spaceId;
   }
 
   private SecretKey key() throws Exception {

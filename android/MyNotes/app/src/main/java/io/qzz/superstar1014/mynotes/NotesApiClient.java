@@ -90,6 +90,64 @@ final class NotesApiClient {
     return Models.User.fromJson(json.getJSONObject("account"));
   }
 
+  List<Models.HermesChatProfile> hermesChatProfiles() throws Exception {
+    return Models.HermesChatProfile.listFromJson(
+      request("GET", "api/admin/hermes-chat/profiles", null, null)
+    );
+  }
+
+  Models.HermesChatTicket hermesChatTicket(String spaceId) throws Exception {
+    return Models.HermesChatTicket.fromJson(
+      request(
+        "POST",
+        "api/admin/hermes-chat/ticket",
+        new JSONObject().put("spaceId", spaceId),
+        null
+      )
+    );
+  }
+
+  void uploadHermesChatAttachment(
+    String spaceId,
+    String attachmentId,
+    byte[] encryptedBody
+  ) throws Exception {
+    HttpURLConnection connection = open(
+      "POST",
+      "api/hermes-chat/attachments/" + attachmentId
+    );
+    connection.setDoOutput(true);
+    connection.setFixedLengthStreamingMode(encryptedBody.length);
+    connection.setRequestProperty("Accept", "application/json");
+    connection.setRequestProperty("Content-Type", "application/octet-stream");
+    connection.setRequestProperty("X-Hermes-Space", spaceId);
+    if (!csrfToken.isEmpty()) connection.setRequestProperty("X-CSRF-Token", csrfToken);
+    try (OutputStream output = connection.getOutputStream()) {
+      output.write(encryptedBody);
+    }
+    readJsonResponse(connection);
+  }
+
+  byte[] downloadHermesChatAttachment(String spaceId, String attachmentId) throws Exception {
+    HttpURLConnection connection = open(
+      "GET",
+      "api/hermes-chat/attachments/" + attachmentId
+    );
+    connection.setRequestProperty("Accept", "application/octet-stream");
+    connection.setRequestProperty("X-Hermes-Space", spaceId);
+    int status = connection.getResponseCode();
+    storeSessionCookie(connection.getHeaderFields());
+    if (status < 200 || status >= 300) {
+      String responseBody = readBody(connection.getErrorStream());
+      connection.disconnect();
+      JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
+      throw new ApiException(status, response.optString("error", "图片下载失败。"));
+    }
+    byte[] data = readBytes(connection.getInputStream(), Models.MAX_ATTACHMENT_BYTES + 16);
+    connection.disconnect();
+    return data;
+  }
+
   private JSONObject refreshDeviceToken() throws Exception {
     String token = sessionStore.loadDeviceToken();
     HttpURLConnection connection = open("POST", "api/auth/token");

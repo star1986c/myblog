@@ -10,8 +10,8 @@ android {
     applicationId "io.qzz.superstar1014.mynotes"
     minSdk 36
     targetSdk 36
-    versionCode 7
-    versionName "1.6"
+    versionCode 8
+    versionName "1.7"
     testInstrumentationRunner "io.qzz.superstar1014.mynotes.CryptoTestRunner"
   }
 
@@ -26,6 +26,10 @@ android {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
   }
+}
+
+dependencies {
+  implementation "com.squareup.okhttp3:okhttp:5.4.0"
 }
 
 tasks.withType(JavaCompile).configureEach {
