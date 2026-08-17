@@ -214,6 +214,14 @@ WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不�
   Android 先删除 Durable Object 中的目标消息及关联流式最终更新，再按精确 R2 key
   删除所选消息的附件；云端成功后才删除本机加密快照和附件缓存。此操作不会使用
   R2 ListObjects，也不会撤回 Hermes 已经吸收到 NAS Agent 当前上下文中的内容。
+- Android 2.6 起，输入框左侧的斜杠按钮可打开 Hermes 快捷指令面板；直接在输入框
+  键入斜杠也会显示最多 6 条即时建议。内置目录只收录官方 Slash Commands Reference
+  标记为 Messaging 的指令，不混入 quit、browser、config 等终端专用命令。
+  model、sessions、reasoning、goal 等带参数指令提供分步选项或参数输入，最终都只
+  填入输入框，不会自动发送；new、stop、restart、update、yolo 等会额外显示风险提示。
+  使用 /commands 可查询当前 NAS 版本实际注册的指令、已安装 skills 和 quick_commands，
+  因此无需修改 Cloudflare 协议或保存指令目录。官方参考：
+  <https://hermes-agent.nousresearch.com/docs/reference/slash-commands/>。
 
 ### Android 2.5 附件白名单
 

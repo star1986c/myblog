@@ -30,6 +30,10 @@ const markdownPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatMarkdown.java",
   import.meta.url,
 );
+const commandCatalogPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesCommandCatalog.java",
+  import.meta.url,
+);
 
 test("Android renders every configured Hermes profile as an isolated conversation", async () => {
   const [chat, conversations, manifest] = await Promise.all([
@@ -196,6 +200,39 @@ test("Hermes chat renders Telegram-style Markdown and fenced code blocks", async
   assert.match(markdown, /BackgroundColorSpan/);
   assert.match(markdown, /StrikethroughSpan/);
   assert.match(markdown, /headingLevel/);
+});
+
+test("Hermes chat offers official messaging command autocomplete and guided quick actions", async () => {
+  const [activity, catalog] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(commandCatalogPath, "utf8"),
+  ]);
+
+  assert.match(activity, /updateCommandSuggestions\(s\.toString\(\)\)/);
+  assert.match(activity, /HermesCommandCatalog\.suggestions\(value, 6\)/);
+  assert.match(activity, /打开 Hermes 快捷指令/);
+  assert.match(activity, /选择后只会填入输入框，不会自动执行/);
+  assert.match(activity, /insertCommand\(action\.commandWith\(value\), command\.caution\)/);
+  assert.doesNotMatch(
+    activity.slice(
+      activity.indexOf("private void insertCommand"),
+      activity.indexOf("private void sendCurrentMessage"),
+    ),
+    /sendMessage\(/,
+  );
+
+  for (const command of [
+    "help", "commands", "status", "model", "sessions", "stop", "new",
+    "background", "queue", "steer", "goal", "context", "usage", "egress",
+    "debug", "update", "restart",
+  ]) {
+    assert.match(catalog, new RegExp("command\\(\\\"" + command + "\\\""));
+  }
+  assert.match(catalog, /provider:model 或模型别名/);
+  assert.match(activity, /当前 NAS 版本[\s\S]*以 \/commands 的回复为准/);
+  for (const cliOnly of ["quit", "clear", "tools", "browser", "config", "plugins"]) {
+    assert.doesNotMatch(catalog, new RegExp("command\\(\\\"" + cliOnly + "\\\""));
+  }
 });
 
 test("encrypted attachments cover requested formats, SAF saving, and media playback", async () => {

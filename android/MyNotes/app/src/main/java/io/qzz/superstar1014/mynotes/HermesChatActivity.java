@@ -29,10 +29,12 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -104,6 +106,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private TextView selectionCount;
   private EditText composer;
   private Button sendButton;
+  private LinearLayout commandSuggestions;
+  private Dialog commandPaletteDialog;
+  private String suppressedCommandSuggestionText;
   private LinearLayout pendingAttachmentBar;
   private TextView pendingAttachmentLabel;
   private Uri pendingAttachmentUri;
@@ -165,6 +170,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     destroyed = true;
     handler.removeCallbacksAndMessages(null);
     if (connectionListener != null) connection.detach(connectionListener);
+    if (commandPaletteDialog != null) commandPaletteDialog.dismiss();
     cleanupPlaybackDialogs();
     cleanupPlaybackFiles();
     getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
@@ -405,6 +411,20 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     LinearLayout composePanel = vertical();
     composePanel.setPadding(dp(10), dp(8), dp(10), dp(10));
     composePanel.setBackgroundColor(getColor(R.color.surface));
+
+    commandSuggestions = vertical();
+    commandSuggestions.setPadding(dp(6), dp(6), dp(6), dp(6));
+    commandSuggestions.setBackground(roundedStroke(
+      R.color.background,
+      R.color.divider,
+      16,
+      1
+    ));
+    commandSuggestions.setVisibility(View.GONE);
+    LinearLayout.LayoutParams suggestionParams = new LinearLayout.LayoutParams(-1, -2);
+    suggestionParams.setMargins(0, 0, 0, dp(8));
+    composePanel.addView(commandSuggestions, suggestionParams);
+
     pendingAttachmentBar = horizontal(Gravity.CENTER_VERTICAL);
     pendingAttachmentBar.setPadding(dp(12), dp(7), dp(8), dp(7));
     pendingAttachmentBar.setBackground(rounded(R.color.surface_tonal, 14));
@@ -435,6 +455,18 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     ImageButton attachment = iconButton(R.drawable.ic_attach_file, "添加图片或文件");
     attachment.setOnClickListener(view -> chooseAttachment());
     compose.addView(attachment, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    Button commandButton = new Button(this);
+    commandButton.setText("/");
+    commandButton.setTextSize(23);
+    commandButton.setTextColor(getColor(R.color.brand_primary_dark));
+    commandButton.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+    commandButton.setAllCaps(false);
+    commandButton.setContentDescription("打开 Hermes 快捷指令");
+    commandButton.setBackground(rounded(R.color.surface_tonal, 16));
+    commandButton.setOnClickListener(view -> showCommandPalette());
+    LinearLayout.LayoutParams commandButtonParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+    commandButtonParams.setMarginStart(dp(6));
+    compose.addView(commandButton, commandButtonParams);
     composer = new EditText(this);
     composer.setHint("给 Hermes 发消息");
     composer.setTextColor(getColor(R.color.text_primary));
@@ -447,6 +479,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
       @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
         connection.sendTyping(s.length() > 0);
+        updateCommandSuggestions(s.toString());
       }
       @Override public void afterTextChanged(Editable editable) {}
     });
@@ -649,6 +682,304 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         if (active()) HermesChatActivity.this.onDisconnected(reason);
       }
     };
+  }
+
+  private void updateCommandSuggestions(String value) {
+    if (commandSuggestions == null) return;
+    if (suppressedCommandSuggestionText != null
+        && suppressedCommandSuggestionText.equals(value)) {
+      commandSuggestions.setVisibility(View.GONE);
+      return;
+    }
+    suppressedCommandSuggestionText = null;
+    if (!isSlashCommandPrefix(value)) {
+      commandSuggestions.setVisibility(View.GONE);
+      return;
+    }
+    List<HermesCommandCatalog.Command> suggestions =
+      HermesCommandCatalog.suggestions(value, 6);
+    commandSuggestions.removeAllViews();
+    if (suggestions.isEmpty()) {
+      commandSuggestions.setVisibility(View.GONE);
+      return;
+    }
+    TextView heading = text("Hermes 指令 · 点按后填入输入框", 12, R.color.text_secondary);
+    heading.setPadding(dp(10), dp(4), dp(10), dp(6));
+    commandSuggestions.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+    for (HermesCommandCatalog.Command command : suggestions) {
+      commandSuggestions.addView(
+        commandRow(command, true),
+        commandRowParams()
+      );
+    }
+    TextView all = text("查看全部快捷指令", 13, R.color.brand_primary_dark);
+    all.setGravity(Gravity.CENTER);
+    all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    all.setPadding(dp(10), dp(10), dp(10), dp(10));
+    all.setBackground(rounded(R.color.surface_tonal, 12));
+    all.setClickable(true);
+    all.setFocusable(true);
+    all.setOnClickListener(view -> showCommandPalette());
+    LinearLayout.LayoutParams allParams = new LinearLayout.LayoutParams(-1, dp(44));
+    allParams.setMargins(dp(2), dp(3), dp(2), dp(2));
+    commandSuggestions.addView(all, allParams);
+    commandSuggestions.setVisibility(View.VISIBLE);
+  }
+
+  private static boolean isSlashCommandPrefix(String value) {
+    if (value == null || !value.startsWith("/") || value.contains("\n")) return false;
+    for (int index = 1; index < value.length(); index++) {
+      if (Character.isWhitespace(value.charAt(index))) return false;
+    }
+    return true;
+  }
+
+  private View commandRow(HermesCommandCatalog.Command command, boolean compact) {
+    LinearLayout row = vertical();
+    row.setPadding(dp(12), compact ? dp(7) : dp(10), dp(12), compact ? dp(7) : dp(10));
+    row.setBackground(rounded(R.color.surface_tonal, 12));
+    TextView name = text(command.usage(), compact ? 14 : 15, R.color.text_primary);
+    name.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+    name.setSingleLine(true);
+    name.setEllipsize(TextUtils.TruncateAt.END);
+    row.addView(name, new LinearLayout.LayoutParams(-1, -2));
+    String detail = (command.caution ? "需确认 · " : "") + command.description;
+    TextView description = text(detail, compact ? 11 : 12,
+      command.caution ? R.color.warning : R.color.text_secondary);
+    description.setMaxLines(compact ? 1 : 2);
+    description.setEllipsize(TextUtils.TruncateAt.END);
+    row.addView(description, new LinearLayout.LayoutParams(-1, -2));
+    row.setContentDescription(command.usage() + "，" + detail);
+    row.setClickable(true);
+    row.setFocusable(true);
+    row.setOnClickListener(view -> chooseCommand(command));
+    return row;
+  }
+
+  private LinearLayout.LayoutParams commandRowParams() {
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+    params.setMargins(dp(2), dp(2), dp(2), dp(2));
+    return params;
+  }
+
+  private void showCommandPalette() {
+    if (commandPaletteDialog != null) commandPaletteDialog.dismiss();
+    android.view.WindowInsetsController insetsController = getWindow().getInsetsController();
+    if (insetsController != null) insetsController.hide(WindowInsets.Type.ime());
+
+    Dialog dialog = new Dialog(this);
+    commandPaletteDialog = dialog;
+    LinearLayout root = vertical();
+    root.setPadding(dp(16), dp(14), dp(16), dp(12));
+    root.setBackground(rounded(R.color.surface, 24));
+
+    LinearLayout titleRow = horizontal(Gravity.CENTER_VERTICAL);
+    LinearLayout titleText = vertical();
+    TextView title = text("Hermes 快捷指令", 20, R.color.text_primary);
+    title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    titleText.addView(title);
+    TextView subtitle = text(
+      "选择后只会填入输入框，不会自动执行",
+      12,
+      R.color.text_secondary
+    );
+    titleText.addView(subtitle);
+    titleRow.addView(titleText, new LinearLayout.LayoutParams(0, -2, 1));
+    Button close = new Button(this);
+    close.setText("关闭");
+    close.setTextSize(13);
+    close.setTextColor(getColor(R.color.brand_primary_dark));
+    close.setAllCaps(false);
+    close.setBackground(rounded(R.color.surface_tonal, 14));
+    close.setOnClickListener(view -> {
+      dialog.dismiss();
+      focusComposer(true);
+    });
+    titleRow.addView(close, new LinearLayout.LayoutParams(dp(64), dp(44)));
+    root.addView(titleRow, new LinearLayout.LayoutParams(-1, -2));
+
+    TextView sourceNote = text(
+      "内置目录按 Hermes 官方“消息平台指令”整理；当前 NAS 版本、已安装 skills "
+        + "和 quick_commands 以 /commands 的回复为准。",
+      12,
+      R.color.text_secondary
+    );
+    sourceNote.setPadding(0, dp(10), 0, dp(10));
+    root.addView(sourceNote, new LinearLayout.LayoutParams(-1, -2));
+
+    ScrollView scroll = new ScrollView(this);
+    LinearLayout content = vertical();
+    TextView quickTitle = text("常用操作", 14, R.color.text_primary);
+    quickTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    quickTitle.setPadding(dp(2), dp(2), dp(2), dp(6));
+    content.addView(quickTitle, new LinearLayout.LayoutParams(-1, -2));
+
+    HorizontalScrollView quickScroll = new HorizontalScrollView(this);
+    quickScroll.setHorizontalScrollBarEnabled(false);
+    LinearLayout quickActions = horizontal(Gravity.CENTER_VERTICAL);
+    for (HermesCommandCatalog.Command command : HermesCommandCatalog.featured()) {
+      Button chip = new Button(this);
+      chip.setText(command.invocation());
+      chip.setTextSize(13);
+      chip.setTextColor(getColor(command.caution
+        ? R.color.warning
+        : R.color.brand_primary_dark));
+      chip.setAllCaps(false);
+      chip.setMinWidth(dp(76));
+      chip.setBackground(rounded(R.color.surface_tonal, 14));
+      chip.setContentDescription(command.description);
+      chip.setOnClickListener(view -> chooseCommand(command));
+      LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-2, dp(46));
+      chipParams.setMargins(0, 0, dp(8), 0);
+      quickActions.addView(chip, chipParams);
+    }
+    quickScroll.addView(quickActions, new HorizontalScrollView.LayoutParams(-2, -1));
+    LinearLayout.LayoutParams quickScrollParams = new LinearLayout.LayoutParams(-1, dp(48));
+    quickScrollParams.setMargins(0, 0, 0, dp(10));
+    content.addView(quickScroll, quickScrollParams);
+
+    for (String category : HermesCommandCatalog.categories()) {
+      TextView categoryTitle = text(category, 14, R.color.text_primary);
+      categoryTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      categoryTitle.setPadding(dp(2), dp(12), dp(2), dp(4));
+      content.addView(categoryTitle, new LinearLayout.LayoutParams(-1, -2));
+      for (HermesCommandCatalog.Command command : HermesCommandCatalog.all()) {
+        if (!category.equals(command.category)) continue;
+        content.addView(commandRow(command, false), commandRowParams());
+      }
+    }
+
+    Button officialReference = new Button(this);
+    officialReference.setText("打开 Hermes 官方指令文档");
+    officialReference.setTextSize(13);
+    officialReference.setTextColor(getColor(R.color.brand_primary_dark));
+    officialReference.setAllCaps(false);
+    officialReference.setBackground(roundedStroke(
+      R.color.background,
+      R.color.divider,
+      14,
+      1
+    ));
+    officialReference.setOnClickListener(view -> {
+      Intent intent = new Intent(
+        Intent.ACTION_VIEW,
+        Uri.parse(HermesCommandCatalog.OFFICIAL_REFERENCE)
+      );
+      startActivity(intent);
+    });
+    LinearLayout.LayoutParams referenceParams = new LinearLayout.LayoutParams(-1, dp(48));
+    referenceParams.setMargins(dp(2), dp(14), dp(2), dp(8));
+    content.addView(officialReference, referenceParams);
+
+    scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+    root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+    dialog.setContentView(root);
+    dialog.setOnDismissListener(ignored -> {
+      if (commandPaletteDialog == dialog) commandPaletteDialog = null;
+    });
+    dialog.show();
+    Window window = dialog.getWindow();
+    if (window != null) {
+      window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+      window.setGravity(Gravity.BOTTOM);
+      window.setDimAmount(0.36f);
+      window.setLayout(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        Math.round(getResources().getDisplayMetrics().heightPixels * 0.86f)
+      );
+    }
+  }
+
+  private void chooseCommand(HermesCommandCatalog.Command command) {
+    Dialog palette = commandPaletteDialog;
+    if (palette != null) palette.dismiss();
+    commandSuggestions.setVisibility(View.GONE);
+    if (command.actions.isEmpty()) {
+      insertCommand(command.invocation(), command.caution);
+      return;
+    }
+    String[] labels = new String[command.actions.size()];
+    for (int index = 0; index < command.actions.size(); index++) {
+      labels[index] = command.actions.get(index).label;
+    }
+    AlertDialog dialog = new AlertDialog.Builder(this)
+      .setTitle(command.usage() + (command.caution ? " · 需确认" : ""))
+      .setItems(labels, (ignored, which) -> {
+        HermesCommandCatalog.Action action = command.actions.get(which);
+        if (action.needsInput()) showCommandInput(command, action);
+        else insertCommand(action.fixedCommand(), command.caution);
+      })
+      .setNegativeButton("取消", null)
+      .create();
+    dialog.setOnDismissListener(ignored -> {
+      if (!destroyed && (composer == null || composer.getText().length() == 0)) {
+        focusComposer(true);
+      }
+    });
+    dialog.show();
+  }
+
+  private void showCommandInput(
+    HermesCommandCatalog.Command command,
+    HermesCommandCatalog.Action action
+  ) {
+    EditText field = new EditText(this);
+    field.setHint(action.inputHint);
+    field.setTextColor(getColor(R.color.text_primary));
+    field.setHintTextColor(getColor(R.color.text_secondary));
+    field.setTextSize(16);
+    field.setMaxLines(3);
+    field.setPadding(dp(14), dp(10), dp(14), dp(10));
+    field.setBackground(roundedStroke(R.color.background, R.color.divider, 16, 1));
+    LinearLayout wrapper = vertical();
+    wrapper.setPadding(dp(24), dp(4), dp(24), 0);
+    TextView explanation = text(
+      "会生成 " + action.prefix + "…" + action.suffix + "，填入后可继续编辑。",
+      12,
+      R.color.text_secondary
+    );
+    wrapper.addView(explanation, new LinearLayout.LayoutParams(-1, -2));
+    LinearLayout.LayoutParams fieldParams = new LinearLayout.LayoutParams(-1, -2);
+    fieldParams.setMargins(0, dp(10), 0, 0);
+    wrapper.addView(field, fieldParams);
+
+    AlertDialog dialog = new AlertDialog.Builder(this)
+      .setTitle(action.label)
+      .setView(wrapper)
+      .setPositiveButton("填入输入框", null)
+      .setNegativeButton("取消", null)
+      .create();
+    dialog.setOnShowListener(ignored -> {
+      dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+        String value = field.getText().toString().trim();
+        if (value.isEmpty()) {
+          field.setError("请填写参数");
+          return;
+        }
+        dialog.dismiss();
+        insertCommand(action.commandWith(value), command.caution);
+      });
+      field.requestFocus();
+      android.view.WindowInsetsController controller = dialog.getWindow() == null
+        ? null
+        : dialog.getWindow().getInsetsController();
+      if (controller != null) controller.show(WindowInsets.Type.ime());
+    });
+    dialog.setOnDismissListener(ignored -> {
+      if (!destroyed && (composer == null || composer.getText().length() == 0)) {
+        focusComposer(true);
+      }
+    });
+    dialog.show();
+  }
+
+  private void insertCommand(String value, boolean caution) {
+    suppressedCommandSuggestionText = value;
+    composer.setText(value);
+    composer.setSelection(composer.length());
+    commandSuggestions.setVisibility(View.GONE);
+    if (caution) toast("指令已填入，发送前请确认影响。");
+    focusComposer(true);
   }
 
   private void sendCurrentMessage() {
