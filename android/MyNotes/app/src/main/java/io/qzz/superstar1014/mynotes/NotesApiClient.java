@@ -108,6 +108,21 @@ final class NotesApiClient {
     );
   }
 
+  Models.HermesChatMultiplexTicket hermesChatMultiplexTicket(
+    List<String> spaceIds
+  ) throws Exception {
+    JSONArray values = new JSONArray();
+    for (String spaceId : spaceIds) values.put(spaceId);
+    return Models.HermesChatMultiplexTicket.fromJson(
+      request(
+        "POST",
+        "api/admin/hermes-chat/multiplex-ticket",
+        new JSONObject().put("spaceIds", values),
+        null
+      )
+    );
+  }
+
   JSONObject purgeHermesChatCloudData(String spaceId) throws Exception {
     return request(
       "POST",

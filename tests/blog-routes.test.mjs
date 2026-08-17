@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, { lookupVisitorNetworkInfo } from "../src/worker.js";
 import { createPasswordHash, readSession, signSession, verifyPasswordHash } from "../src/auth.js";
-import { verifyHermesChatTicket } from "../src/hermes-chat-protocol.js";
+import {
+  verifyHermesChatMultiplexTicket,
+  verifyHermesChatTicket,
+} from "../src/hermes-chat-protocol.js";
 
 function bytesToBase64Url(value) {
   return Buffer.from(value).toString("base64url");
@@ -1477,6 +1480,60 @@ test("authenticated Android client lists dynamic Hermes profiles and requests a 
   });
   assert.equal(ticket.spaceId, "third");
   assert.equal(ticket.username, env.ADMIN_USERNAME);
+});
+
+test("authenticated Android client requests one ticket for multiple configured Hermes profiles", async () => {
+  const env = makeEnv({
+    HERMES_CHAT_PROFILES: "primary:主助手,personal:个人助手,third:代码助手",
+  });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "hermes-multiplex-csrf-token",
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/multiplex-ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "hermes-multiplex-csrf-token",
+      },
+      body: JSON.stringify({ spaceIds: ["primary", "personal", "primary"] }),
+    }),
+    env,
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.spaceIds, ["primary", "personal"]);
+  const ticket = await verifyHermesChatMultiplexTicket({
+    token: body.ticket,
+    secret: env.SESSION_SECRET,
+  });
+  assert.equal(ticket.username, env.ADMIN_USERNAME);
+  assert.deepEqual(ticket.spaceIds, ["primary", "personal"]);
+});
+
+test("multiplex ticket rejects an unconfigured Hermes profile", async () => {
+  const env = makeEnv({ HERMES_CHAT_PROFILES: "primary:主助手" });
+  const cookie = await signSession({
+    secret: env.SESSION_SECRET,
+    username: env.ADMIN_USERNAME,
+    csrfToken: "hermes-multiplex-csrf-token",
+  });
+  const response = await worker.fetch(
+    new Request("https://superstar1014.qzz.io/api/admin/hermes-chat/multiplex-ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "X-CSRF-Token": "hermes-multiplex-csrf-token",
+      },
+      body: JSON.stringify({ spaceIds: ["primary", "missing"] }),
+    }),
+    env,
+  );
+  assert.equal(response.status, 404);
 });
 
 test("authenticated Android client purges only the selected Hermes cloud profile", async () => {

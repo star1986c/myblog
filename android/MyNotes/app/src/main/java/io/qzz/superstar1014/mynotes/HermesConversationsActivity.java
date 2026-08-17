@@ -35,7 +35,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** Telegram-inspired, configuration-driven entry point for isolated Hermes chats. */
-public final class HermesConversationsActivity extends Activity {
+public final class HermesConversationsActivity extends Activity
+    implements HermesChatConnectionManager.UnreadListener {
   private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern(
     "HH:mm",
     Locale.ROOT
@@ -51,6 +52,8 @@ public final class HermesConversationsActivity extends Activity {
 
   private NotesApiClient api;
   private SecureSessionStore secureStore;
+  private HermesChatProfileStore profileStore;
+  private HermesChatConnectionManager connection;
   private LinearLayout profileList;
   private TextView profileCount;
   private boolean demoMode;
@@ -67,9 +70,12 @@ public final class HermesConversationsActivity extends Activity {
       && getIntent().getBooleanExtra("demo", false);
     api = new NotesApiClient(this);
     secureStore = new SecureSessionStore(this);
+    profileStore = new HermesChatProfileStore(this);
+    connection = HermesChatConnectionManager.get(this);
+    connection.addUnreadListener(this);
     buildScreen();
     if (demoMode) loadDemoProfiles();
-    else loadProfiles();
+    else loadCachedProfiles();
   }
 
   @Override
@@ -87,6 +93,7 @@ public final class HermesConversationsActivity extends Activity {
   protected void onDestroy() {
     destroyed = true;
     loadGeneration += 1;
+    if (connection != null) connection.removeUnreadListener(this);
     executor.shutdownNow();
     super.onDestroy();
   }
@@ -115,7 +122,7 @@ public final class HermesConversationsActivity extends Activity {
     top.addView(heading, headingParams);
 
     ImageButton refresh = iconButton(R.drawable.ic_refresh, "刷新聊天对象");
-    refresh.setOnClickListener(view -> loadProfiles());
+    refresh.setOnClickListener(view -> loadProfilesFromServer());
     top.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
     column.addView(top, new LinearLayout.LayoutParams(-1, dp(66)));
 
@@ -155,7 +162,16 @@ public final class HermesConversationsActivity extends Activity {
     setContentView(applyInsets(root));
   }
 
-  private void loadProfiles() {
+  private void loadCachedProfiles() {
+    List<Models.HermesChatProfile> cachedProfiles = profileStore.load();
+    if (cachedProfiles.isEmpty()) {
+      loadProfilesFromServer();
+      return;
+    }
+    applyProfiles(cachedProfiles, true);
+  }
+
+  private void loadProfilesFromServer() {
     long generation = ++loadGeneration;
     profileCount.setText("正在同步聊天对象…");
     executor.submit(() -> {
@@ -163,6 +179,7 @@ public final class HermesConversationsActivity extends Activity {
         NotesApiClient.SessionResult session = api.restoreSession();
         if (!session.authenticated) throw new IllegalStateException("请先在 My Notes 登录。");
         List<Models.HermesChatProfile> loadedProfiles = api.hermesChatProfiles();
+        profileStore.save(loadedProfiles);
         Map<String, ConversationSummary> loadedSummaries = loadSummaries(loadedProfiles);
         runOnUiThread(() -> {
           if (destroyed || generation != loadGeneration) return;
@@ -171,15 +188,48 @@ public final class HermesConversationsActivity extends Activity {
           summaries.clear();
           summaries.putAll(loadedSummaries);
           profileCount.setText(profiles.size() + " 个聊天对象 · 端到端加密");
+          connection.syncProfiles(profiles);
           renderProfiles();
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (destroyed || generation != loadGeneration) return;
-          profileCount.setText("聊天对象加载失败 · 点右侧重试");
-          showListMessage("无法加载 Hermes 会话\n" + safeMessage(error));
+          if (profiles.isEmpty()) {
+            profileCount.setText("聊天对象加载失败 · 点右侧重试");
+            showListMessage("无法加载 Hermes 会话\n" + safeMessage(error));
+          } else {
+            profileCount.setText(profiles.size() + " 个聊天对象 · 本地缓存（刷新失败）");
+            renderProfiles();
+          }
         });
       }
+    });
+  }
+
+  private void applyProfiles(List<Models.HermesChatProfile> loadedProfiles, boolean cached) {
+    long generation = ++loadGeneration;
+    profiles.clear();
+    profiles.addAll(loadedProfiles);
+    profileCount.setText(
+      profiles.size() + " 个聊天对象 · " + (cached ? "本地缓存" : "端到端加密")
+    );
+    connection.syncProfiles(profiles);
+    renderProfiles();
+    executor.submit(() -> {
+      Map<String, ConversationSummary> loadedSummaries = loadSummaries(loadedProfiles);
+      runOnUiThread(() -> {
+        if (destroyed || generation != loadGeneration) return;
+        summaries.clear();
+        summaries.putAll(loadedSummaries);
+        renderProfiles();
+      });
+    });
+  }
+
+  @Override
+  public void onUnreadChanged(String profileId, int unreadCount) {
+    runOnUiThread(() -> {
+      if (!destroyed) renderProfiles();
     });
   }
 
@@ -314,10 +364,26 @@ public final class HermesConversationsActivity extends Activity {
     TextView time = text(formatSummaryTime(summary.sentAt), 12, R.color.text_secondary);
     time.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
     trailing.addView(time, new LinearLayout.LayoutParams(dp(72), dp(25)));
-    TextView keyState = text(summary.keyConfigured ? "已加密" : "需密钥", 12,
-      summary.keyConfigured ? R.color.brand_primary_dark : R.color.warning);
-    keyState.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-    trailing.addView(keyState, new LinearLayout.LayoutParams(dp(72), dp(25)));
+    int unreadCount = connection.unreadCount(profile.id);
+    if (unreadCount > 0) {
+      TextView badge = text(unreadCount > 99 ? "99+" : String.valueOf(unreadCount), 11,
+        R.color.on_brand);
+      badge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      badge.setGravity(Gravity.CENTER);
+      badge.setBackground(oval(R.color.brand_primary));
+      badge.setContentDescription(unreadCount + " 条未读消息");
+      LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(
+        unreadCount > 99 ? dp(38) : dp(26),
+        dp(24)
+      );
+      badgeParams.gravity = Gravity.END;
+      trailing.addView(badge, badgeParams);
+    } else {
+      TextView keyState = text(summary.keyConfigured ? "已加密" : "需密钥", 12,
+        summary.keyConfigured ? R.color.brand_primary_dark : R.color.warning);
+      keyState.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+      trailing.addView(keyState, new LinearLayout.LayoutParams(dp(72), dp(25)));
+    }
     row.addView(trailing, new LinearLayout.LayoutParams(dp(72), dp(54)));
 
     profileList.addView(row, new LinearLayout.LayoutParams(-1, dp(82)));

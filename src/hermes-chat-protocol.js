@@ -34,6 +34,29 @@ async function createHermesChatTicket({
   return `${payloadPart}.${signaturePart}`;
 }
 
+async function createHermesChatMultiplexTicket({
+  secret,
+  username,
+  spaceIds,
+  now = Date.now(),
+  maxAgeSeconds = CHAT_TICKET_MAX_AGE_SECONDS,
+}) {
+  if (!secret) throw new ServiceError("Hermes chat authentication is unavailable.", 503);
+  const normalizedSpaceIds = normalizeHermesChatSpaceIds(spaceIds);
+  const issuedAt = Math.floor(now / 1000);
+  const payload = {
+    sub: "hermes-chat-multiplex-client",
+    username: String(username || ""),
+    spaceIds: normalizedSpaceIds,
+    jti: crypto.randomUUID(),
+    iat: issuedAt,
+    exp: issuedAt + Math.min(Math.max(Number(maxAgeSeconds) || 1, 1), 300),
+  };
+  const payloadPart = bytesToBase64Url(encoder.encode(JSON.stringify(payload)));
+  const signaturePart = bytesToBase64Url(await hmacSha256(secret, payloadPart));
+  return `${payloadPart}.${signaturePart}`;
+}
+
 async function verifyHermesChatTicket({ token, secret, now = Date.now() }) {
   if (!token || !secret) return null;
   const [payloadPart, signaturePart, extra] = String(token).split(".");
@@ -57,12 +80,70 @@ async function verifyHermesChatTicket({ token, secret, now = Date.now() }) {
   return payload;
 }
 
+async function verifyHermesChatMultiplexTicket({ token, secret, now = Date.now() }) {
+  const payload = await verifySignedHermesChatTicket({ token, secret, now });
+  if (!payload || payload.sub !== "hermes-chat-multiplex-client") return null;
+  let spaceIds;
+  try {
+    spaceIds = normalizeHermesChatSpaceIds(payload.spaceIds);
+  } catch {
+    return null;
+  }
+  return { ...payload, spaceIds };
+}
+
+async function verifySignedHermesChatTicket({ token, secret, now }) {
+  if (!token || !secret) return null;
+  const [payloadPart, signaturePart, extra] = String(token).split(".");
+  if (!payloadPart || !signaturePart || extra !== undefined) return null;
+
+  let expected;
+  let payload;
+  try {
+    expected = base64UrlToBytes(signaturePart);
+    payload = JSON.parse(decoder.decode(base64UrlToBytes(payloadPart)));
+  } catch {
+    return null;
+  }
+  const actual = await hmacSha256(secret, payloadPart);
+  if (!constantTimeEqual(actual, expected)) return null;
+  if (typeof payload?.username !== "string" || !payload.username) return null;
+  if (!MESSAGE_ID_PATTERN.test(payload.jti || "")) return null;
+  if (!Number.isInteger(payload.exp) || payload.exp <= Math.floor(now / 1000)) return null;
+  return payload;
+}
+
 function normalizeHermesChatSpaceId(value) {
   const spaceId = String(value || "default").trim().toLowerCase();
   if (!isHermesChatSpaceId(spaceId)) {
     throw new ServiceError("Invalid Hermes chat space.", 400);
   }
   return spaceId;
+}
+
+function normalizeHermesChatSpaceIds(values) {
+  if (!Array.isArray(values) || values.length < 1 || values.length > 32) {
+    throw new ServiceError("Invalid Hermes chat spaces.", 400);
+  }
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const spaceId = normalizeHermesChatSpaceId(value);
+    if (seen.has(spaceId)) continue;
+    seen.add(spaceId);
+    result.push(spaceId);
+  }
+  if (!result.length) throw new ServiceError("Invalid Hermes chat spaces.", 400);
+  return result;
+}
+
+async function hermesChatHubKey(username) {
+  const normalized = String(username || "").trim().toLowerCase();
+  if (!normalized) throw new ServiceError("Invalid Hermes chat user.", 400);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", encoder.encode(normalized)),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function isHermesChatSpaceId(value) {
@@ -238,13 +319,17 @@ export {
   CHAT_PROTOCOL_VERSION,
   buildHermesChatDeliveryFrame,
   constantTimeSecretEqual,
+  createHermesChatMultiplexTicket,
   createHermesChatTicket,
   hasConnectedHermesChatAgent,
+  hermesChatHubKey,
   normalizeHermesChatSpaceId,
+  normalizeHermesChatSpaceIds,
   parseHermesChatFrame,
   readBearerToken,
   validateHermesChatMessage,
   validateHermesChatEdit,
   validateHermesChatReceipt,
+  verifyHermesChatMultiplexTicket,
   verifyHermesChatTicket,
 };

@@ -65,7 +65,11 @@ import {
   hermesChatRoom,
   requireConfiguredHermesChatSpace,
 } from "./hermes-chat-gateway.js";
-import { createHermesChatTicket } from "./hermes-chat-protocol.js";
+import {
+  createHermesChatMultiplexTicket,
+  createHermesChatTicket,
+  normalizeHermesChatSpaceIds,
+} from "./hermes-chat-protocol.js";
 import { resolveHermesChatCloudRetentionDays } from "./hermes-chat-retention.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
@@ -855,6 +859,22 @@ async function handleAdminApi(request, env, path) {
         spaceId,
       }),
       spaceId,
+      expiresInSeconds: 90,
+    });
+  }
+
+  if (path === "/api/admin/hermes-chat/multiplex-ticket" && request.method === "POST") {
+    const payload = await readJson(request);
+    const spaceIds = normalizeHermesChatSpaceIds(payload.spaceIds).map(
+      (spaceId) => requireConfiguredHermesChatSpace(env, spaceId).id,
+    );
+    return jsonResponse({
+      ticket: await createHermesChatMultiplexTicket({
+        secret: resolveSessionSecret(env),
+        username: session.username,
+        spaceIds,
+      }),
+      spaceIds,
       expiresInSeconds: 90,
     });
   }

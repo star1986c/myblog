@@ -149,19 +149,25 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       chatTitle.setText(requestedLabel.trim());
     }
     if (demoMode) loadDemoConversation(requestedLabel);
-    else loadProfiles();
+    else loadRequestedProfile(requestedLabel);
   }
 
   @Override
   protected void onResume() {
     super.onResume();
     resumed = true;
+    if (selectedProfile != null && connectionListener != null) {
+      connection.setProfileVisible(selectedProfile.id, connectionListener, true);
+    }
     focusComposer(true);
   }
 
   @Override
   protected void onPause() {
     resumed = false;
+    if (selectedProfile != null && connectionListener != null) {
+      connection.setProfileVisible(selectedProfile.id, connectionListener, false);
+    }
     super.onPause();
   }
 
@@ -478,7 +484,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     composer.addTextChangedListener(new TextWatcher() {
       @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
       @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-        connection.sendTyping(s.length() > 0);
+        if (selectedProfile != null) {
+          connection.sendTyping(selectedProfile.id, s.length() > 0);
+        }
         updateCommandSuggestions(s.toString());
       }
       @Override public void afterTextChanged(Editable editable) {}
@@ -502,36 +510,17 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     setContentView(applyInsets(root));
   }
 
-  private void loadProfiles() {
-    showConnectionAwareStatus("正在加载 Hermes 聊天对象…");
-    executor.submit(() -> {
-      try {
-        NotesApiClient.SessionResult session = api.restoreSession();
-        if (!session.authenticated) throw new IllegalStateException("请先在 My Notes 登录。");
-        List<Models.HermesChatProfile> profiles = api.hermesChatProfiles();
-        if (profiles.isEmpty()) throw new IllegalStateException("尚未配置 Hermes profile。");
-        Models.HermesChatProfile requestedProfile = null;
-        for (Models.HermesChatProfile profile : profiles) {
-          if (profile.id.equals(requestedProfileId)) {
-            requestedProfile = profile;
-            break;
-          }
-        }
-        if (requestedProfile == null) {
-          throw new IllegalStateException("该 Hermes 聊天对象不存在或已停用。");
-        }
-        Models.HermesChatProfile targetProfile = requestedProfile;
-        runOnUiThread(() -> {
-          if (destroyed) return;
-          selectProfile(targetProfile);
-        });
-      } catch (Exception error) {
-        runOnUiThread(() -> {
-          showConnectionAwareStatus("无法加载 Hermes 聊天对象");
-          toast(error.getMessage());
-        });
-      }
-    });
+  private void loadRequestedProfile(String requestedLabel) {
+    String profileId = requestedProfileId == null
+      ? ""
+      : requestedProfileId.trim().toLowerCase(Locale.ROOT);
+    String profileLabel = requestedLabel == null ? "" : requestedLabel.trim();
+    if (!profileId.matches("[a-z0-9][a-z0-9_-]{0,63}") || profileLabel.isEmpty()) {
+      showConnectionAwareStatus("无法加载 Hermes 聊天对象");
+      toast("该 Hermes 聊天对象不存在或本地缓存已失效，请返回会话列表刷新。");
+      return;
+    }
+    selectProfile(new Models.HermesChatProfile(profileId, profileLabel));
   }
 
   private void loadDemoConversation(String requestedLabel) {
@@ -583,7 +572,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     awaitingAgentResponse = false;
     if (connectionListener != null) connection.detach(connectionListener);
     connectionListener = null;
-    connection.closeUnless(profile.id);
     selectedProfile = profile;
     crypto = null;
     historyStore = null;
@@ -638,6 +626,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
               encodedKey,
               snapshot.lastSequence,
               connectionListener
+            );
+            connection.setProfileVisible(
+              spaceId,
+              connectionListener,
+              resumed
             );
           } catch (Exception error) {
             toast(error.getMessage());
@@ -989,9 +982,13 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
   private void sendText() {
     String value = composer.getText().toString().trim();
-    if (value.isEmpty()) return;
+    if (value.isEmpty() || selectedProfile == null) return;
     try {
-      HermesChatCrypto.ChatMessage message = connection.sendMessage(value, new JSONArray());
+      HermesChatCrypto.ChatMessage message = connection.sendMessage(
+        selectedProfile.id,
+        value,
+        new JSONArray()
+      );
       composer.setText("");
       appendMessage(message);
       persistMessage(message);
@@ -1051,7 +1048,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void sendAttachment(Uri uri) {
-    if (!connection.isReady() || selectedProfile == null) {
+    if (selectedProfile == null || !connection.isReady(selectedProfile.id)) {
       toast("请等待 Hermes 连接成功后再发送附件。");
       return;
     }
@@ -1084,7 +1081,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         HermesChatImageCache targetImages = imageCache;
         if (targetImages != null) targetImages.write(encrypted.descriptor, encrypted.ciphertext);
         JSONArray attachments = new JSONArray().put(encrypted.descriptor);
-        HermesChatCrypto.ChatMessage message = targetConnection.sendMessage(caption, attachments);
+        HermesChatCrypto.ChatMessage message = targetConnection.sendMessage(
+          spaceId,
+          caption,
+          attachments
+        );
         HermesChatHistoryStore targetHistory = historyStore;
         if (targetHistory != null) targetHistory.record(message);
         runOnUiThread(() -> {
@@ -1103,7 +1104,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           if (destroyed || generation != profileGeneration) return;
           toast(error.getMessage());
           showConnectionAwareStatus("附件发送失败");
-          sendButton.setEnabled(connection.isReady());
+          sendButton.setEnabled(
+            selectedProfile != null && connection.isReady(selectedProfile.id)
+          );
           focusComposer(true);
         });
       }
@@ -2165,7 +2168,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
           renderCachedMessages(snapshot);
           showConnectionAwareStatus("本机和云端已清理");
-          sendButton.setEnabled(connection.isReady());
+          sendButton.setEnabled(
+            selectedProfile != null && connection.isReady(selectedProfile.id)
+          );
           toast(
             "清理完成：Cloudflare 消息 " + cloudMessages
               + " 条，附件 " + cloudAttachments + " 个。"
@@ -2175,7 +2180,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
           showConnectionAwareStatus("云端清理失败，本机数据未删除");
-          sendButton.setEnabled(connection.isReady());
+          sendButton.setEnabled(
+            selectedProfile != null && connection.isReady(selectedProfile.id)
+          );
           toast(error.getMessage());
         });
       }

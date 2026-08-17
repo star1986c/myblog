@@ -1,8 +1,10 @@
 import { ServiceError } from "./blog-repository.js";
 import {
   constantTimeSecretEqual,
+  hermesChatHubKey,
   normalizeHermesChatSpaceId,
   readBearerToken,
+  verifyHermesChatMultiplexTicket,
   verifyHermesChatTicket,
 } from "./hermes-chat-protocol.js";
 
@@ -11,10 +13,13 @@ async function handleHermesChatWebSocket(request, env) {
     throw new ServiceError("WebSocket upgrade required.", 426);
   }
   const requestedRole = request.headers.get("X-Hermes-Role") || "";
-  const requestedSpace = requireConfiguredHermesChatSpace(
-    env,
-    request.headers.get("X-Hermes-Space"),
-  ).id;
+  const requestedMode = request.headers.get("X-Hermes-Mode") || "";
+
+  if (requestedRole === "client" && requestedMode === "multiplex") {
+    return await handleHermesChatMultiplexWebSocket(request, env);
+  }
+
+  const requestedSpace = requireConfiguredHermesChatSpace(env, request.headers.get("X-Hermes-Space")).id;
 
   let principal;
   let ticketId = "";
@@ -58,11 +63,48 @@ async function handleHermesChatWebSocket(request, env) {
   return await room.fetch(internalRequest);
 }
 
+async function handleHermesChatMultiplexWebSocket(request, env) {
+  const ticket = await verifyHermesChatMultiplexTicket({
+    token: readBearerToken(request),
+    secret: env.SESSION_SECRET,
+  });
+  if (!ticket) {
+    throw new ServiceError("Hermes chat ticket is invalid or expired.", 401);
+  }
+  const configuredSpaces = ticket.spaceIds.map(
+    (spaceId) => requireConfiguredHermesChatSpace(env, spaceId).id,
+  );
+  const hubKey = await hermesChatHubKey(ticket.username);
+  const headers = new Headers(request.headers);
+  headers.delete("Authorization");
+  headers.set("X-Hermes-Role", "client");
+  headers.set("X-Hermes-Mode", "multiplex");
+  headers.set("X-Hermes-Spaces", JSON.stringify(configuredSpaces));
+  headers.set("X-Hermes-User", ticket.username);
+  headers.set("X-Hermes-Hub-Key", hubKey);
+  headers.set("X-Hermes-Ticket-Id", ticket.jti);
+  headers.set("X-Hermes-Ticket-Expires", String(ticket.exp * 1000));
+  const internalRequest = new Request("https://hermes-chat.internal/multiplex-ws", {
+    method: "GET",
+    headers,
+  });
+  return await hermesChatHub(env, hubKey).fetch(internalRequest);
+}
+
 function hermesChatRoom(env, spaceId) {
   if (!env.HERMES_CHAT_ROOMS || typeof env.HERMES_CHAT_ROOMS.getByName !== "function") {
     throw new ServiceError("Hermes chat is unavailable.", 503);
   }
   return env.HERMES_CHAT_ROOMS.getByName(`space:${spaceId}`, {
+    locationHint: "apac",
+  });
+}
+
+function hermesChatHub(env, hubKey) {
+  if (!env.HERMES_CHAT_HUBS || typeof env.HERMES_CHAT_HUBS.getByName !== "function") {
+    throw new ServiceError("Hermes chat multiplexing is unavailable.", 503);
+  }
+  return env.HERMES_CHAT_HUBS.getByName(`user:${hubKey}`, {
     locationHint: "apac",
   });
 }
@@ -126,7 +168,9 @@ function normalizeAgentId(value) {
 export {
   authorizeHermesChatAgent,
   configuredHermesChatProfiles,
+  handleHermesChatMultiplexWebSocket,
   handleHermesChatWebSocket,
+  hermesChatHub,
   hermesChatRoom,
   requireConfiguredHermesChatSpace,
 };

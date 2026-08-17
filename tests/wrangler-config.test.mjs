@@ -24,9 +24,11 @@ test("deployment config binds the Hermes chat Durable Object", () => {
   assert.equal(wrangler.main, "./src/cloudflare-entry.js");
   assert.deepEqual(wrangler.durable_objects.bindings, [
     { name: "HERMES_CHAT_ROOMS", class_name: "HermesChatRoom" },
+    { name: "HERMES_CHAT_HUBS", class_name: "HermesChatHub" },
   ]);
   assert.deepEqual(wrangler.migrations, [
     { tag: "v1-hermes-chat-room", new_sqlite_classes: ["HermesChatRoom"] },
+    { tag: "v2-hermes-chat-hub", new_sqlite_classes: ["HermesChatHub"] },
   ]);
   assert.equal(
     wrangler.vars.HERMES_CHAT_PROFILES,

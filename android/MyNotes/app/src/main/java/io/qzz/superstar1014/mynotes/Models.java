@@ -53,6 +53,31 @@ final class Models {
     }
   }
 
+  static final class HermesChatMultiplexTicket {
+    final String ticket;
+    final List<String> spaceIds;
+    final int expiresInSeconds;
+
+    HermesChatMultiplexTicket(String ticket, List<String> spaceIds, int expiresInSeconds) {
+      this.ticket = ticket;
+      this.spaceIds = List.copyOf(spaceIds);
+      this.expiresInSeconds = expiresInSeconds;
+    }
+
+    static HermesChatMultiplexTicket fromJson(JSONObject json) throws JSONException {
+      JSONArray values = json.getJSONArray("spaceIds");
+      List<String> spaceIds = new ArrayList<>();
+      for (int index = 0; index < values.length(); index++) {
+        spaceIds.add(values.getString(index));
+      }
+      return new HermesChatMultiplexTicket(
+        json.optString("ticket"),
+        spaceIds,
+        json.optInt("expiresInSeconds", 90)
+      );
+    }
+  }
+
   static final class HermesChatProfile {
     final String id;
     final String label;

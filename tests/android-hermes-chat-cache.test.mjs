@@ -16,16 +16,18 @@ test("Hermes chat resumes from the encrypted per-profile local checkpoint", asyn
   assert.match(history, /getNoBackupFilesDir\(\)/);
   assert.match(history, /encryptLocalSnapshot/);
   assert.match(history, /lastSequence/);
-  assert.match(client, /long initialSequence/);
+  assert.match(client, /ProfileState\(HermesChatCrypto crypto, long initialSequence\)/);
   assert.match(client, /this\.lastSequence = initialSequence/);
-  assert.match(manager, /new HermesChatClient\([\s\S]*initialSequence/);
+  assert.match(manager, /configureClientProfile\(session\)/);
+  assert.match(manager, /session\.lastSequence/);
   assert.match(activity, /connection\.attach\([\s\S]*snapshot\.lastSequence/);
   assert.match(activity, /targetStore\.acknowledge\(messageId, sequence\)/);
 });
 
-test("Hermes keeps only the active profile socket for the Android process lifetime", async () => {
-  const [activity, manager, main] = await Promise.all([
+test("Hermes keeps one routed socket for all cached profiles for the Android process lifetime", async () => {
+  const [activity, client, manager, main] = await Promise.all([
     source("HermesChatActivity.java"),
+    source("HermesChatClient.java"),
     source("HermesChatConnectionManager.java"),
     source("MainActivity.java"),
   ]);
@@ -36,12 +38,37 @@ test("Hermes keeps only the active profile socket for the Android process lifeti
 
   assert.match(manager, /static volatile HermesChatConnectionManager instance/);
   assert.match(manager, /context\.getApplicationContext\(\)/);
-  assert.match(manager, /closeUnless\(String requestedProfileId\)/);
+  assert.match(manager, /Map<String, ProfileSession> sessions/);
+  assert.match(manager, /hermesChatMultiplexTicket\(targetProfiles\)/);
   assert.match(manager, /pendingMessages/);
-  assert.match(manager, /handler\.postDelayed\(reconnectTask, delay\)/);
+  assert.match(manager, /handler\.postDelayed\(reconnectTask, baseDelay \+ jitter\)/);
+  assert.match(manager, /void markAuthenticated\(\)[\s\S]*authenticated = true/);
+  assert.match(client, /\.header\("X-Hermes-Mode", "multiplex"\)/);
+  assert.match(client, /frame\.put\("spaceId", spaceId\)/);
+  assert.match(client, /if \(webSocket != socket\)[\s\S]*Replaced by a newer chat connection/);
+  assert.doesNotMatch(manager, /closeUnless/);
   assert.match(onDestroy, /connection\.detach\(connectionListener\)/);
   assert.doesNotMatch(onDestroy, /shutdown\(\)/);
   assert.match(main, /private void logout\(\)[\s\S]*HermesChatConnectionManager\.get\(this\)\.shutdown\(\)/);
+  assert.equal(
+    (main.match(/HermesChatConnectionManager\.get\(this\)\.markAuthenticated\(\)/g) || []).length,
+    2,
+  );
+});
+
+test("inactive routed profiles persist messages and unread counts locally", async () => {
+  const [manager, profiles, unread] = await Promise.all([
+    source("HermesChatConnectionManager.java"),
+    source("HermesChatProfileStore.java"),
+    source("HermesChatUnreadStore.java"),
+  ]);
+
+  assert.match(manager, /persistMessage\(session, message\)/);
+  assert.match(manager, /!session\.visible[\s\S]*unreadStore\.increment\(profileId\)/);
+  assert.match(manager, /clearUnread\(profileId\)/);
+  assert.match(profiles, /SharedPreferences/);
+  assert.match(profiles, /List<Models\.HermesChatProfile> load\(\)/);
+  assert.match(unread, /int increment\(String spaceId\)/);
 });
 
 test("Hermes chat schedules retention cleanup without resetting the relay checkpoint", async () => {

@@ -51,6 +51,10 @@
       {
         "name": "HERMES_CHAT_ROOMS",
         "class_name": "HermesChatRoom"
+      },
+      {
+        "name": "HERMES_CHAT_HUBS",
+        "class_name": "HermesChatHub"
       }
     ]
   },
@@ -58,6 +62,10 @@
     {
       "tag": "v1-hermes-chat-room",
       "new_sqlite_classes": ["HermesChatRoom"]
+    },
+    {
+      "tag": "v2-hermes-chat-hub",
+      "new_sqlite_classes": ["HermesChatHub"]
     }
   ],
   "ratelimits": [

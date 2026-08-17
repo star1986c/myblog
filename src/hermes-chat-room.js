@@ -17,6 +17,7 @@ import { resolveHermesChatMessageDeletion } from "./hermes-chat-message-deletion
 
 const MESSAGE_RETENTION_COUNT = 500;
 const REPLAY_BATCH_SIZE = 100;
+const CLIENT_HUB_REGISTRATION_GRACE_MS = 30_000;
 
 class HermesChatRoom extends DurableObject {
   constructor(ctx, env) {
@@ -51,12 +52,20 @@ class HermesChatRoom extends DurableObject {
           key TEXT PRIMARY KEY,
           value INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS client_hubs (
+          hub_key TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          space_id TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (1, unixepoch() * 1000);
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (2, unixepoch() * 1000);
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (3, unixepoch() * 1000);
+        INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
+        VALUES (4, unixepoch() * 1000);
       `);
     });
   }
@@ -137,7 +146,7 @@ class HermesChatRoom extends DurableObject {
           type: "typing",
           sender: attachment.role,
           active: frame.active === true,
-        });
+        }, attachment.spaceId);
         return;
       }
       if (frame.type === "edit") {
@@ -161,6 +170,7 @@ class HermesChatRoom extends DurableObject {
             stored
               ? buildHermesChatDeliveryFrame(edit, stored.seq)
               : edit,
+            attachment.spaceId,
           );
         }
         return;
@@ -182,6 +192,7 @@ class HermesChatRoom extends DurableObject {
         this.broadcastToOtherRole(
           attachment.role,
           buildHermesChatDeliveryFrame(envelope, stored.seq),
+          attachment.spaceId,
         );
       }
     } catch (error) {
@@ -252,6 +263,72 @@ class HermesChatRoom extends DurableObject {
       requestedMessages: deletion.requestedIds.length,
       lastSequence,
     };
+  }
+
+  async registerClientHub(hubKey, userId, spaceId) {
+    if (!/^[0-9a-f]{64}$/.test(String(hubKey || ""))) {
+      throw new Error("Invalid Hermes chat hub.");
+    }
+    if (!String(userId || "").trim() || String(userId).length > 256) {
+      throw new Error("Invalid Hermes chat hub user.");
+    }
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(spaceId || ""))) {
+      throw new Error("Invalid Hermes chat hub space.");
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO client_hubs (hub_key, user_id, space_id, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (hub_key) DO UPDATE SET
+         user_id = excluded.user_id,
+         space_id = excluded.space_id,
+         updated_at = excluded.updated_at`,
+      hubKey,
+      userId,
+      spaceId,
+      Date.now(),
+    );
+    return { latestSeq: this.latestSequence() };
+  }
+
+  async handleMultiplexClientFrame(spaceId, userId, rawFrame) {
+    if (!String(userId || "").trim()) throw new Error("Invalid Hermes chat user.");
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(spaceId || ""))) {
+      throw new Error("Invalid Hermes chat space.");
+    }
+    const frame = parseHermesChatFrame(JSON.stringify(rawFrame));
+    const receiver = { role: "client", userId };
+    if (frame.type === "resume") {
+      return this.replayFrames(receiver, frame.afterSeq);
+    }
+    if (frame.type === "typing") {
+      this.broadcastToOtherRole("client", {
+        v: CHAT_PROTOCOL_VERSION,
+        type: "typing",
+        sender: "client",
+        active: frame.active === true,
+      }, spaceId);
+      return [];
+    }
+    if (frame.type !== "message") {
+      throw new Error("Unsupported Hermes chat frame.");
+    }
+    const envelope = validateHermesChatMessage(frame, "client");
+    const stored = this.storeMessage(envelope);
+    if (!stored.duplicate) await this.ensureCleanupAlarm();
+    if (!stored.duplicate) {
+      this.broadcastToOtherRole(
+        "client",
+        buildHermesChatDeliveryFrame(envelope, stored.seq),
+        spaceId,
+      );
+    }
+    return [{
+      v: CHAT_PROTOCOL_VERSION,
+      type: "ack",
+      id: envelope.id,
+      seq: stored.seq,
+      duplicate: stored.duplicate,
+    }];
   }
 
   latestSequence() {
@@ -347,6 +424,12 @@ class HermesChatRoom extends DurableObject {
   }
 
   replay(socket, receiver, afterSeqValue) {
+    for (const frame of this.replayFrames(receiver, afterSeqValue)) {
+      socket.send(JSON.stringify(frame));
+    }
+  }
+
+  replayFrames(receiver, afterSeqValue) {
     const afterSeq = Number(afterSeqValue);
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
       throw new Error("Invalid Hermes chat resume sequence.");
@@ -372,19 +455,18 @@ class HermesChatRoom extends DurableObject {
         receiverRole,
         REPLAY_BATCH_SIZE,
       ).toArray();
-    for (const row of rows) {
-      socket.send(JSON.stringify(buildHermesChatDeliveryFrame(
+    const frames = rows.map((row) => buildHermesChatDeliveryFrame(
         JSON.parse(row.envelope),
         row.seq,
         true,
-      )));
-    }
-    socket.send(JSON.stringify({
+      ));
+    frames.push({
       v: CHAT_PROTOCOL_VERSION,
       type: "resume_complete",
       latestSeq: this.latestSequence(),
       hasMore: rows.length === REPLAY_BATCH_SIZE,
-    }));
+    });
+    return frames;
   }
 
   consumerOffset(role, userId) {
@@ -414,7 +496,7 @@ class HermesChatRoom extends DurableObject {
     );
   }
 
-  broadcastToOtherRole(senderRole, frame) {
+  broadcastToOtherRole(senderRole, frame, spaceId = "") {
     const receiverRole = senderRole === "client" ? "agent" : "client";
     const encoded = JSON.stringify(frame);
     for (const socket of this.ctx.getWebSockets(`role:${receiverRole}`)) {
@@ -428,6 +510,41 @@ class HermesChatRoom extends DurableObject {
         }));
       }
     }
+    if (receiverRole === "client") {
+      this.ctx.waitUntil(this.broadcastToClientHubs(spaceId, frame));
+    }
+  }
+
+  async broadcastToClientHubs(spaceId, frame) {
+    const hubs = this.ctx.storage.sql
+      .exec("SELECT hub_key, space_id, updated_at FROM client_hubs")
+      .toArray();
+    await Promise.all(hubs.map(async (hub) => {
+      try {
+        const routedSpace = String(hub.space_id || spaceId || "");
+        const stub = this.env.HERMES_CHAT_HUBS.getByName(`user:${hub.hub_key}`, {
+          locationHint: "apac",
+        });
+        const delivered = await stub.deliver(routedSpace, frame);
+        if (
+          Number(delivered || 0) === 0
+          && Number(hub.updated_at) <= Date.now() - CLIENT_HUB_REGISTRATION_GRACE_MS
+        ) {
+          this.ctx.storage.sql.exec(
+            "DELETE FROM client_hubs WHERE hub_key = ? AND updated_at = ?",
+            hub.hub_key,
+            hub.updated_at,
+          );
+        }
+      } catch (error) {
+        console.warn(JSON.stringify({
+          level: "warn",
+          event: "hermes_chat_hub_broadcast_failed",
+          spaceId,
+          message: error instanceof Error ? error.message : "Unknown hub delivery error",
+        }));
+      }
+    }));
   }
 }
 

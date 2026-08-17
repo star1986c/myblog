@@ -114,12 +114,13 @@ final class HermesCommandCatalog {
         input("按标题或 ID 搜索", "/sessions search ", "会话标题或 ID", "")
       )),
     command("stop", "", "停止运行中的 Agent 和后台进程", "常用", true, true),
-    command("new", "[name]", "开始全新会话（别名 /reset）", "会话", true, true,
-      aliases("reset"),
+    command("new", "[name]", "开始全新会话，可选会话名称", "会话", true, true,
+      List.of(),
       actions(
         fixed("开始未命名新会话", "/new"),
         input("开始并命名会话", "/new ", "新会话名称", "")
       )),
+    command("reset", "", "重置当前会话并重新开始", "会话", true, true),
     command("retry", "", "重试上一条用户消息", "会话", false, false),
     command("undo", "[N]", "撤回最近的用户/助手交换", "会话", false, true,
       actions(

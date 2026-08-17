@@ -43,10 +43,13 @@ test("Android renders every configured Hermes profile as an isolated conversatio
   ]);
 
   assert.match(conversations, /api\.hermesChatProfiles\(\)/);
+  assert.match(conversations, /HermesChatProfileStore/);
+  assert.match(conversations, /loadCachedProfiles\(\)/);
   assert.match(conversations, /for \(Models\.HermesChatProfile profile : profiles\)/);
   assert.match(conversations, /putExtra\(HermesChatActivity\.EXTRA_PROFILE_ID, profile\.id\)/);
   assert.match(chat, /getStringExtra\(EXTRA_PROFILE_ID\)/);
-  assert.match(chat, /profile\.id\.equals\(requestedProfileId\)/);
+  assert.match(chat, /loadRequestedProfile\(requestedLabel\)/);
+  assert.doesNotMatch(chat, /api\.hermesChatProfiles\(\)/);
   assert.doesNotMatch(chat, /selectProfile\(profiles\.get\(0\)\)/);
   assert.match(manifest, /HermesConversationsActivity/);
 });
@@ -222,7 +225,7 @@ test("Hermes chat offers official messaging command autocomplete and guided quic
   );
 
   for (const command of [
-    "help", "commands", "status", "model", "sessions", "stop", "new",
+    "help", "commands", "status", "model", "sessions", "stop", "new", "reset",
     "background", "queue", "steer", "goal", "context", "usage", "egress",
     "debug", "update", "restart",
   ]) {
@@ -233,6 +236,15 @@ test("Hermes chat offers official messaging command autocomplete and guided quic
   for (const cliOnly of ["quit", "clear", "tools", "browser", "config", "plugins"]) {
     assert.doesNotMatch(catalog, new RegExp("command\\(\\\"" + cliOnly + "\\\""));
   }
+});
+
+test("Hermes conversation list shows persistent per-profile unread badges", async () => {
+  const source = await readFile(conversationsPath, "utf8");
+
+  assert.match(source, /implements HermesChatConnectionManager\.UnreadListener/);
+  assert.match(source, /connection\.unreadCount\(profile\.id\)/);
+  assert.match(source, /unreadCount > 99 \? "99\+"/);
+  assert.match(source, /onUnreadChanged\(String profileId, int unreadCount\)/);
 });
 
 test("encrypted attachments cover requested formats, SAF saving, and media playback", async () => {

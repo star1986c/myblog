@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildHermesChatDeliveryFrame,
+  createHermesChatMultiplexTicket,
   createHermesChatTicket,
   hasConnectedHermesChatAgent,
   parseHermesChatFrame,
   validateHermesChatEdit,
   validateHermesChatMessage,
   validateHermesChatReceipt,
+  verifyHermesChatMultiplexTicket,
   verifyHermesChatTicket,
 } from "../src/hermes-chat-protocol.js";
 import {
@@ -72,7 +74,32 @@ test("rejects expired and tampered Hermes chat tickets", async () => {
     now: now + 91_000,
   }), null);
   assert.equal(await verifyHermesChatTicket({
-    token: `${ticket.slice(0, -1)}x`,
+    token: `${ticket.slice(0, -1)}${ticket.endsWith("x") ? "y" : "x"}`,
+    secret: "test-session-secret",
+    now,
+  }), null);
+});
+
+test("issues a short-lived multiplex ticket bound to a deduplicated profile list", async () => {
+  const now = 1_800_000_000_000;
+  const token = await createHermesChatMultiplexTicket({
+    secret: "test-session-secret",
+    username: "star",
+    spaceIds: ["primary", "personal", "primary"],
+    now,
+  });
+  const payload = await verifyHermesChatMultiplexTicket({
+    token,
+    secret: "test-session-secret",
+    now: now + 30_000,
+  });
+
+  assert.equal(payload.username, "star");
+  assert.deepEqual(payload.spaceIds, ["primary", "personal"]);
+  assert.equal(payload.sub, "hermes-chat-multiplex-client");
+  assert.equal(payload.exp - payload.iat, 90);
+  assert.equal(await verifyHermesChatTicket({
+    token,
     secret: "test-session-secret",
     now,
   }), null);
