@@ -1,7 +1,9 @@
 import base64
+import asyncio
 import dataclasses
 import enum
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -127,6 +129,86 @@ class AdapterContractTests(unittest.TestCase):
             second = self.adapter.CloudflareChatAdapter(config)
             self.assertEqual(second._last_sequence, 42)
             self.assertIn("primary", str(second._state_path))
+
+    def test_duplicate_and_out_of_order_sequences_are_not_dispatched(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 42
+            with patch.object(
+                instance,
+                "_handle_inbound_message",
+            ) as handle_inbound, patch.object(instance, "_save_last_sequence") as save:
+                asyncio.run(instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 42,
+                    "message": {"id": "duplicate"},
+                })))
+                asyncio.run(instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 41,
+                    "message": {"id": "out-of-order"},
+                })))
+
+            handle_inbound.assert_not_called()
+            save.assert_not_called()
+            self.assertEqual(instance._last_sequence, 42)
+
+    def test_new_sequence_advances_only_after_dispatch_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 42
+            with patch.object(
+                instance,
+                "_handle_inbound_message",
+            ) as handle_inbound, patch.object(instance, "_save_last_sequence") as save:
+                asyncio.run(instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 43,
+                    "message": {"id": "new"},
+                })))
+
+            handle_inbound.assert_called_once_with({"id": "new"})
+            save.assert_called_once_with()
+            self.assertEqual(instance._last_sequence, 43)
+
+    def test_failed_dispatch_keeps_sequence_available_for_replay(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 42
+
+            async def reject(_message):
+                raise RuntimeError("dispatch failed")
+
+            with patch.object(
+                instance,
+                "_handle_inbound_message",
+                side_effect=reject,
+            ), patch.object(instance, "_save_last_sequence") as save:
+                with self.assertRaisesRegex(RuntimeError, "dispatch failed"):
+                    asyncio.run(instance._handle_frame(json.dumps({
+                        "v": 1,
+                        "type": "message",
+                        "seq": 43,
+                        "message": {"id": "retryable"},
+                    })))
+
+            save.assert_not_called()
+            self.assertEqual(instance._last_sequence, 42)
 
 
 if __name__ == "__main__":

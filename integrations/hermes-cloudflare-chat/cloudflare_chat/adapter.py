@@ -258,8 +258,17 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             return
         if frame_type == "message":
             sequence = int(frame.get("seq") or 0)
+            if sequence < 1:
+                raise ValueError("Cloudflare Chat message sequence is invalid")
+            if sequence <= self._last_sequence:
+                logger.debug(
+                    "Cloudflare Chat ignored duplicate or out-of-order sequence %s (last=%s)",
+                    sequence,
+                    self._last_sequence,
+                )
+                return
             await self._handle_inbound_message(frame.get("message") or {})
-            self._last_sequence = max(self._last_sequence, sequence)
+            self._last_sequence = sequence
             await asyncio.to_thread(self._save_last_sequence)
             return
         if frame_type == "resume_complete":

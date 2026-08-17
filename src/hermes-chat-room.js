@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   CHAT_PROTOCOL_VERSION,
+  hasConnectedHermesChatAgent,
   parseHermesChatFrame,
   validateHermesChatMessage,
 } from "./hermes-chat-protocol.js";
@@ -65,12 +66,9 @@ class HermesChatRoom extends DurableObject {
         return jsonError("Hermes chat ticket was already used.", 401);
       }
     } else {
-      for (const existing of this.ctx.getWebSockets("role:agent")) {
-        try {
-          existing.close(1012, "Replaced by a newer Hermes agent connection");
-        } catch {
-          // The old connection may already be closing; accepting the new agent is safe.
-        }
+      const existingAgents = this.ctx.getWebSockets("role:agent");
+      if (hasConnectedHermesChatAgent(existingAgents)) {
+        return jsonError("Another Hermes agent is already connected for this space.", 409);
       }
     }
 
@@ -145,6 +143,14 @@ class HermesChatRoom extends DurableObject {
       connectionId: readSocketAttachment(socket).connectionId,
       message: error instanceof Error ? error.message : "Unknown WebSocket error",
     }));
+  }
+
+  webSocketClose(socket, code, reason) {
+    try {
+      socket.close(code, reason);
+    } catch {
+      // The runtime may already have completed the reciprocal close handshake.
+    }
   }
 
   latestSequence() {

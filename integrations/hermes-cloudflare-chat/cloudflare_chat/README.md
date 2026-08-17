@@ -24,3 +24,10 @@ same interpreter or virtual environment that owns the `hermes` executable.
 Each profile has its own `.env`. The default profile uses `/root/.hermes/.env`;
 a named profile uses `/root/.hermes/profiles/<name>/.env`. Every profile must
 set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
+
+## Upgrade notes
+
+Version 0.1.1 ignores duplicate and out-of-order relay sequences before they
+reach Hermes. Stop the profile gateway, replace the complete plugin directory,
+and restart the gateway. Existing environment variables and chat keys do not
+need to change.

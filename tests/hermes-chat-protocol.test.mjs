@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createHermesChatTicket,
+  hasConnectedHermesChatAgent,
   parseHermesChatFrame,
   validateHermesChatMessage,
   verifyHermesChatTicket,
@@ -10,6 +11,13 @@ import {
   configuredHermesChatProfiles,
   requireConfiguredHermesChatSpace,
 } from "../src/hermes-chat-gateway.js";
+
+test("allows only one connected agent in each chat space", () => {
+  assert.equal(hasConnectedHermesChatAgent([]), false);
+  assert.equal(hasConnectedHermesChatAgent(["nas-primary"]), true);
+  assert.equal(hasConnectedHermesChatAgent(["nas-secondary"]), true);
+  assert.equal(hasConnectedHermesChatAgent([null]), true);
+});
 
 test("maps configured Hermes profiles to separate chat spaces", () => {
   const env = {

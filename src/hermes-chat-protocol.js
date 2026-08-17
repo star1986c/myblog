@@ -69,6 +69,10 @@ function isHermesChatSpaceId(value) {
   return typeof value === "string" && SPACE_ID_PATTERN.test(value);
 }
 
+function hasConnectedHermesChatAgent(existingConnections) {
+  return Array.from(existingConnections || []).length > 0;
+}
+
 function readBearerToken(request) {
   const authorization = request.headers.get("Authorization") || "";
   const match = /^Bearer ([^\s]+)$/.exec(authorization);
@@ -182,6 +186,7 @@ export {
   CHAT_PROTOCOL_VERSION,
   constantTimeSecretEqual,
   createHermesChatTicket,
+  hasConnectedHermesChatAgent,
   normalizeHermesChatSpaceId,
   parseHermesChatFrame,
   readBearerToken,
