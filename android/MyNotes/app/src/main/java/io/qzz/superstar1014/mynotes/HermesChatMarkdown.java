@@ -12,11 +12,62 @@ import android.text.style.StyleSpan;
 import android.text.style.TypefaceSpan;
 import android.text.style.UnderlineSpan;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /** Small, deterministic Markdown renderer for Hermes/Telegram-style chat messages. */
 final class HermesChatMarkdown {
   private static final int SPAN_FLAGS = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE;
 
   private HermesChatMarkdown() {}
+
+  static List<Block> parseBlocks(String source) {
+    String markdown = source == null ? "" : source.replace("\r\n", "\n").replace('\r', '\n');
+    List<Block> blocks = new ArrayList<>();
+    int cursor = 0;
+    while (cursor < markdown.length()) {
+      int fenceStart = markdown.indexOf("```", cursor);
+      if (fenceStart < 0) {
+        addTextBlock(blocks, markdown.substring(cursor));
+        break;
+      }
+      addTextBlock(blocks, markdown.substring(cursor, fenceStart));
+
+      int openingEnd = markdown.indexOf('\n', fenceStart + 3);
+      if (openingEnd < 0) {
+        addTextBlock(blocks, markdown.substring(fenceStart));
+        break;
+      }
+      String language = markdown.substring(fenceStart + 3, openingEnd).trim();
+      int closingStart = markdown.indexOf("```", openingEnd + 1);
+      int codeEnd = closingStart < 0 ? markdown.length() : closingStart;
+      String code = markdown.substring(openingEnd + 1, codeEnd);
+      if (code.endsWith("\n")) code = code.substring(0, code.length() - 1);
+      blocks.add(new Block(true, language, code));
+
+      if (closingStart < 0) break;
+      cursor = closingStart + 3;
+      if (cursor < markdown.length() && markdown.charAt(cursor) == '\n') cursor += 1;
+    }
+    return blocks;
+  }
+
+  private static void addTextBlock(List<Block> blocks, String value) {
+    if (value == null || value.isEmpty()) return;
+    blocks.add(new Block(false, "", value));
+  }
+
+  static final class Block {
+    final boolean code;
+    final String language;
+    final String text;
+
+    Block(boolean code, String language, String text) {
+      this.code = code;
+      this.language = language == null ? "" : language;
+      this.text = text == null ? "" : text;
+    }
+  }
 
   static CharSequence render(
     String source,

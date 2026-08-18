@@ -34,6 +34,14 @@ const commandCatalogPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesCommandCatalog.java",
   import.meta.url,
 );
+const copyIconPath = new URL(
+  "../android/MyNotes/app/src/main/res/drawable/ic_copy.xml",
+  import.meta.url,
+);
+const shareProviderPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesShareFileProvider.java",
+  import.meta.url,
+);
 
 test("Android renders every configured Hermes profile as an isolated conversation", async () => {
   const [chat, conversations, manifest] = await Promise.all([
@@ -106,7 +114,7 @@ test("Hermes stream edits update an existing Android message bubble", async () =
   assert.match(client, /replaceSequence != frame\.getLong\("targetSeq"\)/);
   assert.match(activity, /renderedMessagesBySequence/);
   assert.match(activity, /replaceMessage\(message\)/);
-  assert.match(activity, /setMessageBody\(body, message\.text/);
+  assert.match(activity, /rendered\.message = new HermesChatCrypto\.ChatMessage[\s\S]*renderMessageContent\(rendered\)/);
 });
 
 test("Hermes message footers show the local send time instead of a sender label", async () => {
@@ -205,6 +213,52 @@ test("Hermes chat renders Telegram-style Markdown and fenced code blocks", async
   assert.match(markdown, /headingLevel/);
 });
 
+test("Hermes messages and fenced code blocks expose scoped copy actions", async () => {
+  const [activity, markdown, copyIcon] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(markdownPath, "utf8"),
+    readFile(copyIconPath, "utf8"),
+  ]);
+
+  assert.match(copyIcon, /android:pathData=/);
+  assert.match(activity, /R\.drawable\.ic_copy, "复制整条消息文字"/);
+  assert.match(activity, /safeMessageText\(rendered\.message\)/);
+  assert.match(activity, /R\.drawable\.ic_copy, "复制此代码块"/);
+  assert.match(activity, /copyText\("代码", block\.text, "代码块已复制"\)/);
+  assert.match(activity, /HorizontalScrollView/);
+  assert.match(markdown, /static List<Block> parseBlocks/);
+  assert.match(markdown, /new Block\(true, language, code\)/);
+});
+
+test("Hermes chat searches only ordered messages already loaded in the Android app", async () => {
+  const activity = await readFile(activityPath, "utf8");
+  const search = activity.slice(
+    activity.indexOf("private void refreshMessageSearch()"),
+    activity.indexOf("private void navigateMessageSearch"),
+  );
+
+  assert.match(activity, /R\.drawable\.ic_search, "搜索本地聊天消息"/);
+  assert.match(search, /for \(RenderedMessage rendered : renderedMessageOrder\)/);
+  assert.match(search, /rendered\.message\.text/);
+  assert.match(search, /toLowerCase\(Locale\.ROOT\)\.contains\(query\)/);
+  assert.doesNotMatch(search, /api\.|connection\.|hermesChat/);
+  assert.match(activity, /smoothScrollTo\(0, Math\.max\(0, rendered\.row\.getTop\(\) - dp\(12\)\)\)/);
+  assert.match(activity, /isMessageSearchActive\(\) \|\| !composer\.isAttachedToWindow\(\)/);
+});
+
+test("composer attachment and slash tools share centered 48dp controls", async () => {
+  const activity = await readFile(activityPath, "utf8");
+  const compose = activity.slice(
+    activity.indexOf("LinearLayout compose = horizontal(Gravity.BOTTOM)"),
+    activity.indexOf("composer = new EditText", activity.indexOf("LinearLayout compose = horizontal(Gravity.BOTTOM)")),
+  );
+
+  assert.match(compose, /attachment\.setBackground\(rounded\(R\.color\.surface_tonal, 16\)\)/);
+  assert.match(compose, /TextView commandButton = text\("\/", 23, R\.color\.brand_primary_dark\)/);
+  assert.match(compose, /commandButton\.setGravity\(Gravity\.CENTER\)/);
+  assert.equal((compose.match(/new LinearLayout\.LayoutParams\(dp\(48\), dp\(48\)\)/g) || []).length, 2);
+});
+
 test("Hermes chat offers official messaging command autocomplete and guided quick actions", async () => {
   const [activity, catalog] = await Promise.all([
     readFile(activityPath, "utf8"),
@@ -265,4 +319,30 @@ test("encrypted attachments cover requested formats, SAF saving, and media playb
   assert.match(activity, /new VideoView\(this\)/);
   assert.match(activity, /hermes-chat-playback/);
   assert.match(activity, /deletePlaybackFile/);
+});
+
+test("decrypted chat images share through a temporary read-only content URI", async () => {
+  const [activity, provider, manifest] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(shareProviderPath, "utf8"),
+    readFile(manifestPath, "utf8"),
+  ]);
+
+  assert.match(activity, /share\.setText\("分享"\)/);
+  assert.match(activity, /new Intent\(Intent\.ACTION_SEND\)/);
+  assert.match(activity, /Intent\.EXTRA_STREAM, shareUri/);
+  assert.match(activity, /Intent\.FLAG_GRANT_READ_URI_PERMISSION/);
+  assert.match(activity, /ClipData\.newUri/);
+  assert.match(
+    activity,
+    /SHARE_CLEANUP_HANDLER\.postDelayed\(readyFile::delete, SHARE_FILE_LIFETIME_MS\)/,
+  );
+  assert.match(provider, /getCacheDir\(\), DIRECTORY/);
+  assert.match(provider, /ParcelFileDescriptor\.MODE_READ_ONLY/);
+  assert.match(provider, /if \(!"r"\.equals\(mode\)\)/);
+  assert.match(provider, /file\.lastModified\(\) < cutoffMillis/);
+  assert.match(
+    manifest,
+    /android:name="\.HermesShareFileProvider"[\s\S]*android:exported="false"[\s\S]*android:grantUriPermissions="true"/,
+  );
 });

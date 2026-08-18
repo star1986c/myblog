@@ -59,6 +59,7 @@ import java.io.OutputStream;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -75,16 +76,20 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private static final int REQUEST_ATTACHMENT = 2201;
   private static final int REQUEST_SAVE_ATTACHMENT = 2202;
   private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
+  private static final long SHARE_FILE_LIFETIME_MS = 60 * 60 * 1_000L;
+  private static final long STALE_SHARE_FILE_AGE_MS = 24 * 60 * 60 * 1_000L;
   private static final DateTimeFormatter MESSAGE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
     "yyyy-MM-dd HH:mm",
     Locale.ROOT
   );
+  private static final Handler SHARE_CLEANUP_HANDLER = new Handler(Looper.getMainLooper());
 
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
   private final Set<String> renderedMessageIds = new HashSet<>();
   private final Map<Long, RenderedMessage> renderedMessagesBySequence = new HashMap<>();
   private final Map<String, RenderedMessage> renderedMessagesById = new HashMap<>();
+  private final List<RenderedMessage> renderedMessageOrder = new ArrayList<>();
   private final Set<String> selectedMessageIds = new HashSet<>();
   private final Set<File> playbackFiles = new HashSet<>();
   private final Set<Dialog> playbackDialogs = new HashSet<>();
@@ -103,7 +108,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private TextView status;
   private LinearLayout normalHeader;
   private LinearLayout selectionHeader;
+  private LinearLayout searchHeader;
   private TextView selectionCount;
+  private EditText searchInput;
+  private TextView searchCount;
+  private ImageButton searchPrevious;
+  private ImageButton searchNext;
   private EditText composer;
   private Button sendButton;
   private LinearLayout commandSuggestions;
@@ -123,6 +133,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private boolean destroyed;
   private boolean resumed;
   private boolean deletingMessages;
+  private final List<RenderedMessage> messageSearchMatches = new ArrayList<>();
+  private int messageSearchIndex = -1;
+  private RenderedMessage highlightedSearchMessage;
   private Models.HermesChatProfile selectedProfile;
   private volatile long profileGeneration;
 
@@ -143,6 +156,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     requestedProfileId = getIntent().getStringExtra(EXTRA_PROFILE_ID);
     if (!demoMode) HermesChatCleanupService.schedule(this);
     cleanupStalePlaybackFiles();
+    HermesShareFileProvider.cleanupStale(
+      this,
+      System.currentTimeMillis() - STALE_SHARE_FILE_AGE_MS
+    );
     buildScreen();
     String requestedLabel = getIntent().getStringExtra(EXTRA_PROFILE_LABEL);
     if (requestedLabel != null && !requestedLabel.trim().isEmpty()) {
@@ -185,6 +202,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void handleSystemBack() {
+    if (isMessageSearchActive()) {
+      closeMessageSearch();
+      return;
+    }
     if (!selectedMessageIds.isEmpty()) {
       exitMessageSelection();
       return;
@@ -366,6 +387,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     heading.setOnClickListener(view -> finish());
     top.addView(heading, headingParams);
 
+    ImageButton search = iconButton(R.drawable.ic_search, "搜索本地聊天消息");
+    search.setOnClickListener(view -> openMessageSearch());
+    top.addView(search, new LinearLayout.LayoutParams(dp(48), dp(48)));
     ImageButton reconnect = iconButton(R.drawable.ic_refresh, "重新连接");
     reconnect.setOnClickListener(view -> connection.reconnect());
     top.addView(reconnect, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -392,6 +416,42 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     deleteSelection.setOnClickListener(view -> confirmDeleteSelectedMessages());
     selectionHeader.addView(deleteSelection, new LinearLayout.LayoutParams(dp(48), dp(48)));
     headerContainer.addView(selectionHeader, new FrameLayout.LayoutParams(-1, -1));
+
+    searchHeader = horizontal(Gravity.CENTER_VERTICAL);
+    searchHeader.setPadding(dp(8), dp(8), dp(8), dp(8));
+    searchHeader.setBackgroundColor(getColor(R.color.surface));
+    searchHeader.setVisibility(View.GONE);
+    ImageButton closeSearch = iconButton(R.drawable.ic_arrow_back, "关闭消息搜索");
+    closeSearch.setOnClickListener(view -> closeMessageSearch());
+    searchHeader.addView(closeSearch, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    searchInput = new EditText(this);
+    searchInput.setSingleLine(true);
+    searchInput.setHint("搜索本地消息");
+    searchInput.setTextSize(15);
+    searchInput.setTextColor(getColor(R.color.text_primary));
+    searchInput.setHintTextColor(getColor(R.color.text_secondary));
+    searchInput.setPadding(dp(12), 0, dp(12), 0);
+    searchInput.setBackground(roundedStroke(R.color.background, R.color.divider, 15, 1));
+    searchInput.addTextChangedListener(new TextWatcher() {
+      @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+      @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+        refreshMessageSearch();
+      }
+      @Override public void afterTextChanged(Editable editable) {}
+    });
+    LinearLayout.LayoutParams searchInputParams = new LinearLayout.LayoutParams(0, dp(44), 1);
+    searchInputParams.setMargins(dp(4), 0, dp(4), 0);
+    searchHeader.addView(searchInput, searchInputParams);
+    searchCount = text("0/0", 12, R.color.text_secondary);
+    searchCount.setGravity(Gravity.CENTER);
+    searchHeader.addView(searchCount, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    searchPrevious = iconButton(R.drawable.ic_arrow_up, "上一个搜索结果");
+    searchPrevious.setOnClickListener(view -> navigateMessageSearch(-1));
+    searchHeader.addView(searchPrevious, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    searchNext = iconButton(R.drawable.ic_arrow_down, "下一个搜索结果");
+    searchNext.setOnClickListener(view -> navigateMessageSearch(1));
+    searchHeader.addView(searchNext, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    headerContainer.addView(searchHeader, new FrameLayout.LayoutParams(-1, -1));
     column.addView(headerContainer, new LinearLayout.LayoutParams(-1, dp(68)));
 
     TextView privacy = text(
@@ -459,15 +519,15 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
     LinearLayout compose = horizontal(Gravity.BOTTOM);
     ImageButton attachment = iconButton(R.drawable.ic_attach_file, "添加图片或文件");
+    attachment.setBackground(rounded(R.color.surface_tonal, 16));
     attachment.setOnClickListener(view -> chooseAttachment());
     compose.addView(attachment, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    Button commandButton = new Button(this);
-    commandButton.setText("/");
-    commandButton.setTextSize(23);
-    commandButton.setTextColor(getColor(R.color.brand_primary_dark));
+    TextView commandButton = text("/", 23, R.color.brand_primary_dark);
+    commandButton.setGravity(Gravity.CENTER);
     commandButton.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-    commandButton.setAllCaps(false);
     commandButton.setContentDescription("打开 Hermes 快捷指令");
+    commandButton.setClickable(true);
+    commandButton.setFocusable(true);
     commandButton.setBackground(rounded(R.color.surface_tonal, 16));
     commandButton.setOnClickListener(view -> showCommandPalette());
     LinearLayout.LayoutParams commandButtonParams = new LinearLayout.LayoutParams(dp(48), dp(48));
@@ -508,6 +568,99 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     column.addView(composePanel, new LinearLayout.LayoutParams(-1, -2));
 
     setContentView(applyInsets(root));
+  }
+
+  private boolean isMessageSearchActive() {
+    return searchHeader != null && searchHeader.getVisibility() == View.VISIBLE;
+  }
+
+  private void openMessageSearch() {
+    if (searchHeader == null || searchInput == null || deletingMessages) return;
+    normalHeader.setVisibility(View.GONE);
+    selectionHeader.setVisibility(View.GONE);
+    searchHeader.setVisibility(View.VISIBLE);
+    refreshMessageSearch();
+    searchInput.post(() -> {
+      if (!isMessageSearchActive() || destroyed) return;
+      searchInput.requestFocus();
+      searchInput.setSelection(searchInput.length());
+      android.view.WindowInsetsController controller = getWindow().getInsetsController();
+      if (controller != null) controller.show(WindowInsets.Type.ime());
+    });
+  }
+
+  private void closeMessageSearch() {
+    closeMessageSearch(true);
+  }
+
+  private void closeMessageSearch(boolean restoreComposerFocus) {
+    if (searchHeader != null) searchHeader.setVisibility(View.GONE);
+    RenderedMessage previous = highlightedSearchMessage;
+    highlightedSearchMessage = null;
+    messageSearchMatches.clear();
+    messageSearchIndex = -1;
+    if (searchInput != null && searchInput.length() > 0) searchInput.setText("");
+    if (searchCount != null) searchCount.setText("0/0");
+    if (searchPrevious != null) searchPrevious.setEnabled(false);
+    if (searchNext != null) searchNext.setEnabled(false);
+    if (previous != null) applyBubbleAppearance(previous);
+    updateMessageSelectionUi();
+    if (restoreComposerFocus) focusComposer(true);
+  }
+
+  private void refreshMessageSearch() {
+    if (!isMessageSearchActive() || searchInput == null) return;
+    String query = searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
+    RenderedMessage previous = highlightedSearchMessage;
+    messageSearchMatches.clear();
+    highlightedSearchMessage = null;
+    messageSearchIndex = -1;
+    if (!query.isEmpty()) {
+      for (RenderedMessage rendered : renderedMessageOrder) {
+        String value = rendered.message.text == null ? "" : rendered.message.text;
+        if (value.toLowerCase(Locale.ROOT).contains(query)) {
+          messageSearchMatches.add(rendered);
+        }
+      }
+      if (!messageSearchMatches.isEmpty()) {
+        int previousIndex = messageSearchMatches.indexOf(previous);
+        messageSearchIndex = previousIndex >= 0 ? previousIndex : 0;
+        highlightedSearchMessage = messageSearchMatches.get(messageSearchIndex);
+      }
+    }
+    if (previous != null && previous != highlightedSearchMessage) applyBubbleAppearance(previous);
+    if (highlightedSearchMessage != null) applyBubbleAppearance(highlightedSearchMessage);
+    updateMessageSearchControls();
+    if (highlightedSearchMessage != null) scrollToSearchResult(highlightedSearchMessage);
+  }
+
+  private void navigateMessageSearch(int direction) {
+    if (messageSearchMatches.isEmpty()) return;
+    RenderedMessage previous = highlightedSearchMessage;
+    int size = messageSearchMatches.size();
+    messageSearchIndex = (messageSearchIndex + direction + size) % size;
+    highlightedSearchMessage = messageSearchMatches.get(messageSearchIndex);
+    if (previous != null && previous != highlightedSearchMessage) applyBubbleAppearance(previous);
+    applyBubbleAppearance(highlightedSearchMessage);
+    updateMessageSearchControls();
+    scrollToSearchResult(highlightedSearchMessage);
+  }
+
+  private void updateMessageSearchControls() {
+    int count = messageSearchMatches.size();
+    if (searchCount != null) {
+      searchCount.setText(count == 0 ? "0/0" : (messageSearchIndex + 1) + "/" + count);
+    }
+    if (searchPrevious != null) searchPrevious.setEnabled(count > 0);
+    if (searchNext != null) searchNext.setEnabled(count > 0);
+  }
+
+  private void scrollToSearchResult(RenderedMessage rendered) {
+    if (rendered == null || messageScroll == null) return;
+    messageScroll.post(() -> {
+      if (!isMessageSearchActive() || highlightedSearchMessage != rendered) return;
+      messageScroll.smoothScrollTo(0, Math.max(0, rendered.row.getTop() - dp(12)));
+    });
   }
 
   private void loadRequestedProfile(String requestedLabel) {
@@ -579,7 +732,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     renderedMessageIds.clear();
     renderedMessagesBySequence.clear();
     renderedMessagesById.clear();
+    renderedMessageOrder.clear();
     selectedMessageIds.clear();
+    closeMessageSearch(false);
     updateMessageSelectionUi();
     messages.removeAllViews();
     composer.setText("");
@@ -1117,6 +1272,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     renderedMessageIds.clear();
     renderedMessagesBySequence.clear();
     renderedMessagesById.clear();
+    renderedMessageOrder.clear();
     selectedMessageIds.clear();
     updateMessageSelectionUi();
     messages.removeAllViews();
@@ -1141,6 +1297,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
   private void toggleMessageSelection(RenderedMessage rendered) {
     if (rendered == null || deletingMessages) return;
+    if (isMessageSearchActive()) closeMessageSearch(false);
     if (rendered.streaming) {
       toast("请等待 Hermes 完成这条回复后再删除。");
       return;
@@ -1164,18 +1321,30 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
   private void updateMessageSelectionUi() {
     boolean selecting = !selectedMessageIds.isEmpty();
-    if (normalHeader != null) normalHeader.setVisibility(selecting ? View.GONE : View.VISIBLE);
+    boolean searching = isMessageSearchActive();
+    if (normalHeader != null) {
+      normalHeader.setVisibility(selecting || searching ? View.GONE : View.VISIBLE);
+    }
     if (selectionHeader != null) selectionHeader.setVisibility(selecting ? View.VISIBLE : View.GONE);
+    if (searchHeader != null) {
+      searchHeader.setVisibility(searching && !selecting ? View.VISIBLE : View.GONE);
+    }
     if (selectionCount != null) {
       selectionCount.setText("已选择 " + selectedMessageIds.size() + " 条");
     }
     for (RenderedMessage rendered : renderedMessagesById.values()) {
-      boolean selected = selectedMessageIds.contains(rendered.message.id);
-      rendered.body.setTextIsSelectable(!selecting);
-      int background = rendered.outgoing ? R.color.brand_primary : R.color.surface_tonal;
-      rendered.bubble.setBackground(selected
-        ? roundedStroke(background, R.color.brand_primary_dark, 18, 2)
-        : rounded(background, 18));
+      for (TextView selectable : rendered.selectableTextViews) {
+        selectable.setTextIsSelectable(!selecting);
+      }
+      rendered.messageCopy.setVisibility(
+        selecting || safeMessageText(rendered.message).trim().isEmpty()
+          ? View.GONE
+          : View.VISIBLE
+      );
+      for (ImageButton codeCopy : rendered.codeCopyButtons) {
+        codeCopy.setVisibility(selecting ? View.INVISIBLE : View.VISIBLE);
+      }
+      applyBubbleAppearance(rendered);
     }
     if (selecting) {
       android.view.WindowInsetsController controller = getWindow().getInsetsController();
@@ -1263,13 +1432,31 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       RenderedMessage rendered = renderedMessagesById.remove(messageId);
       if (rendered == null) continue;
       messages.removeView(rendered.row);
+      renderedMessageOrder.remove(rendered);
       renderedMessageIds.remove(messageId);
       renderedMessagesBySequence.entrySet().removeIf(
         entry -> entry.getValue() == rendered
       );
     }
     selectedMessageIds.removeAll(messageIds);
+    if (isMessageSearchActive()) refreshMessageSearch();
     updateMessageSelectionUi();
+  }
+
+  private void applyBubbleAppearance(RenderedMessage rendered) {
+    if (rendered == null) return;
+    int background = rendered.outgoing ? R.color.brand_primary : R.color.surface_tonal;
+    if (selectedMessageIds.contains(rendered.message.id)) {
+      rendered.bubble.setBackground(
+        roundedStroke(background, R.color.brand_primary_dark, 18, 2)
+      );
+    } else if (rendered == highlightedSearchMessage) {
+      rendered.bubble.setBackground(
+        roundedStroke(background, R.color.brand_primary_dark, 18, 2)
+      );
+    } else {
+      rendered.bubble.setBackground(rounded(background, 18));
+    }
   }
 
   private void appendMessage(HermesChatCrypto.ChatMessage message) {
@@ -1287,32 +1474,53 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     LinearLayout bubble = vertical();
     bubble.setPadding(dp(14), dp(10), dp(14), dp(10));
     bubble.setBackground(rounded(outgoing ? R.color.brand_primary : R.color.surface_tonal, 18));
-    TextView body = text("", 16, outgoing ? R.color.on_brand : R.color.text_primary);
-    setMessageBody(body, message.text, outgoing);
-    int maximumWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
-    body.setMaxWidth(Math.min(maximumWidth, dp(520)));
-    body.setTextIsSelectable(selectedMessageIds.isEmpty());
-    body.setVisibility(message.text.trim().isEmpty() ? View.GONE : View.VISIBLE);
-    bubble.addView(body, new LinearLayout.LayoutParams(-2, -2));
+    LinearLayout content = vertical();
+    bubble.addView(content, new LinearLayout.LayoutParams(-2, -2));
     for (int index = 0; index < message.attachments.length(); index++) {
       JSONObject descriptor = message.attachments.optJSONObject(index);
       if (descriptor != null) addAttachmentPreview(bubble, descriptor, outgoing);
     }
+    LinearLayout footer = horizontal(Gravity.END | Gravity.CENTER_VERTICAL);
     TextView meta = text(
       formatMessageTime(message.sentAt),
       11,
       outgoing ? R.color.on_brand : R.color.text_secondary
     );
     meta.setAlpha(0.78f);
-    LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(-2, -2);
-    metaParams.topMargin = dp(5);
-    bubble.addView(meta, metaParams);
+    meta.setGravity(Gravity.CENTER_VERTICAL);
+    footer.addView(meta, new LinearLayout.LayoutParams(-2, dp(44)));
+    ImageButton messageCopy = iconButton(R.drawable.ic_copy, "复制整条消息文字");
+    messageCopy.setImageTintList(ColorStateList.valueOf(getColor(
+      outgoing ? R.color.on_brand : R.color.brand_primary_dark
+    )));
+    messageCopy.setBackground(rounded(
+      outgoing ? R.color.brand_primary : R.color.surface_tonal,
+      12
+    ));
+    footer.addView(messageCopy, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(44));
+    footerParams.topMargin = dp(2);
+    bubble.addView(footer, footerParams);
     row.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
     LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
     rowParams.setMargins(0, dp(5), 0, dp(5));
     messages.addView(row, rowParams);
-    RenderedMessage rendered = new RenderedMessage(message, row, bubble, body, meta, outgoing);
+    RenderedMessage rendered = new RenderedMessage(
+      message,
+      row,
+      bubble,
+      content,
+      meta,
+      messageCopy,
+      outgoing
+    );
     bubble.setTag(rendered);
+    renderMessageContent(rendered);
+    messageCopy.setOnClickListener(view -> copyText(
+      "Hermes 消息",
+      safeMessageText(rendered.message),
+      "消息文字已复制"
+    ));
     bubble.setOnLongClickListener(view -> {
       toggleMessageSelection(rendered);
       return true;
@@ -1320,18 +1528,13 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     bubble.setOnClickListener(view -> {
       if (!selectedMessageIds.isEmpty()) toggleMessageSelection(rendered);
     });
-    body.setOnLongClickListener(view -> {
-      toggleMessageSelection(rendered);
-      return true;
-    });
-    body.setOnClickListener(view -> {
-      if (!selectedMessageIds.isEmpty()) toggleMessageSelection(rendered);
-    });
     renderedMessagesById.put(message.id, rendered);
+    renderedMessageOrder.add(rendered);
     if (message.sequence > 0) {
       renderedMessagesBySequence.put(message.sequence, rendered);
     }
-    messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+    if (isMessageSearchActive()) refreshMessageSearch();
+    else messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
   }
 
   private void replaceMessage(HermesChatCrypto.ChatMessage message) {
@@ -1349,9 +1552,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       }
       return;
     }
-    TextView body = rendered.body;
-    setMessageBody(body, message.text, "client".equals(message.sender));
-    body.setVisibility(message.text.trim().isEmpty() ? View.GONE : View.VISIBLE);
     HermesChatCrypto.ChatMessage original = rendered.message;
     JSONArray attachments = message.attachments.length() > 0
       ? message.attachments
@@ -1364,10 +1564,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       message.text,
       attachments
     );
+    renderMessageContent(rendered);
     String sentTime = formatMessageTime(original.sentAt);
     rendered.meta.setText(message.finalUpdate ? sentTime : sentTime + " · 正在回复");
     rendered.streaming = !message.finalUpdate;
-    messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+    if (isMessageSearchActive()) refreshMessageSearch();
+    else messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
   }
 
   private static String formatMessageTime(long sentAt) {
@@ -1381,26 +1583,135 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     HermesChatCrypto.ChatMessage message;
     final LinearLayout row;
     final LinearLayout bubble;
-    final TextView body;
+    final LinearLayout content;
     final TextView meta;
+    final ImageButton messageCopy;
     final boolean outgoing;
+    final List<TextView> selectableTextViews = new ArrayList<>();
+    final List<ImageButton> codeCopyButtons = new ArrayList<>();
     boolean streaming;
 
     RenderedMessage(
       HermesChatCrypto.ChatMessage message,
       LinearLayout row,
       LinearLayout bubble,
-      TextView body,
+      LinearLayout content,
       TextView meta,
+      ImageButton messageCopy,
       boolean outgoing
     ) {
       this.message = message;
       this.row = row;
       this.bubble = bubble;
-      this.body = body;
+      this.content = content;
       this.meta = meta;
+      this.messageCopy = messageCopy;
       this.outgoing = outgoing;
     }
+  }
+
+  private void renderMessageContent(RenderedMessage rendered) {
+    rendered.content.removeAllViews();
+    rendered.selectableTextViews.clear();
+    rendered.codeCopyButtons.clear();
+    String value = safeMessageText(rendered.message);
+    rendered.content.setVisibility(value.trim().isEmpty() ? View.GONE : View.VISIBLE);
+    boolean first = true;
+    for (HermesChatMarkdown.Block block : HermesChatMarkdown.parseBlocks(value)) {
+      View blockView;
+      if (block.code) {
+        blockView = codeBlockView(rendered, block);
+      } else {
+        TextView body = text(
+          "",
+          16,
+          rendered.outgoing ? R.color.on_brand : R.color.text_primary
+        );
+        setMessageBody(body, block.text, rendered.outgoing);
+        body.setMaxWidth(messageContentMaximumWidth());
+        bindMessageTextView(body, rendered);
+        blockView = body;
+      }
+      LinearLayout.LayoutParams blockParams = new LinearLayout.LayoutParams(-2, -2);
+      if (!first) blockParams.topMargin = dp(8);
+      rendered.content.addView(blockView, blockParams);
+      first = false;
+    }
+    boolean selecting = !selectedMessageIds.isEmpty();
+    rendered.messageCopy.setVisibility(
+      selecting || value.trim().isEmpty() ? View.GONE : View.VISIBLE
+    );
+    applyBubbleAppearance(rendered);
+  }
+
+  private View codeBlockView(RenderedMessage rendered, HermesChatMarkdown.Block block) {
+    int background = rendered.outgoing
+      ? R.color.outgoing_code_background
+      : R.color.code_background;
+    int foreground = rendered.outgoing ? R.color.outgoing_code_text : R.color.code_text;
+    LinearLayout card = vertical();
+    card.setBackground(roundedStroke(background, R.color.divider, 10, 1));
+    LinearLayout header = horizontal(Gravity.CENTER_VERTICAL);
+    header.setPadding(dp(12), 0, 0, 0);
+    TextView language = text(
+      block.language.isEmpty() ? "代码" : block.language,
+      12,
+      rendered.outgoing ? R.color.outgoing_code_text : R.color.brand_primary_dark
+    );
+    language.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    header.addView(language, new LinearLayout.LayoutParams(0, dp(44), 1));
+    ImageButton copy = iconButton(R.drawable.ic_copy, "复制此代码块");
+    copy.setImageTintList(ColorStateList.valueOf(getColor(
+      rendered.outgoing ? R.color.outgoing_code_text : R.color.brand_primary_dark
+    )));
+    copy.setBackground(rounded(background, 10));
+    copy.setOnClickListener(view -> copyText("代码", block.text, "代码块已复制"));
+    header.addView(copy, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    card.addView(header, new LinearLayout.LayoutParams(-1, dp(44)));
+
+    HorizontalScrollView scroll = new HorizontalScrollView(this);
+    scroll.setFillViewport(false);
+    TextView code = text(block.text.isEmpty() ? " " : block.text, 14, foreground);
+    code.setGravity(Gravity.START);
+    code.setTypeface(Typeface.MONOSPACE);
+    code.setPadding(dp(12), dp(8), dp(12), dp(12));
+    bindMessageTextView(code, rendered);
+    scroll.addView(code, new HorizontalScrollView.LayoutParams(-2, -2));
+    card.addView(scroll, new LinearLayout.LayoutParams(messageContentMaximumWidth(), -2));
+    rendered.codeCopyButtons.add(copy);
+    return card;
+  }
+
+  private void bindMessageTextView(TextView view, RenderedMessage rendered) {
+    view.setTextIsSelectable(selectedMessageIds.isEmpty());
+    view.setOnLongClickListener(target -> {
+      toggleMessageSelection(rendered);
+      return true;
+    });
+    view.setOnClickListener(target -> {
+      if (!selectedMessageIds.isEmpty()) toggleMessageSelection(rendered);
+    });
+    rendered.selectableTextViews.add(view);
+  }
+
+  private int messageContentMaximumWidth() {
+    int available = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
+    return Math.min(available, dp(520));
+  }
+
+  private static String safeMessageText(HermesChatCrypto.ChatMessage message) {
+    return message == null || message.text == null ? "" : message.text;
+  }
+
+  private void copyText(String label, String value, String successMessage) {
+    String text = value == null ? "" : value;
+    if (text.isEmpty()) {
+      toast("没有可复制的文字。");
+      return;
+    }
+    ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text));
+    toast(successMessage);
   }
 
   private void setMessageBody(TextView body, String value, boolean outgoing) {
@@ -1976,6 +2287,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     TextView title = text("加密聊天图片", 16, android.R.color.white);
     title.setGravity(Gravity.CENTER);
     actions.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+    Button share = new Button(this);
+    share.setText("分享");
+    share.setTextColor(Color.WHITE);
+    share.setOnClickListener(view -> shareImage(plaintext, descriptor));
+    actions.addView(share, new LinearLayout.LayoutParams(dp(76), dp(48)));
     Button save = new Button(this);
     save.setText("保存相册");
     save.setTextColor(Color.WHITE);
@@ -1992,6 +2308,60 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     });
     dialog.setOnDismissListener(ignored -> focusComposer(true));
     dialog.show();
+  }
+
+  private void shareImage(byte[] plaintext, JSONObject descriptor) {
+    executor.submit(() -> {
+      File shareFile = null;
+      try {
+        String contentType = descriptor.getString("contentType");
+        String name = descriptor.optString("name", "Hermes-image");
+        HermesChatAttachmentPolicy.ResolvedType resolved =
+          HermesChatAttachmentPolicy.resolve(contentType, name);
+        if (resolved.category != HermesChatAttachmentPolicy.Category.IMAGE
+            || !resolved.contentType.startsWith("image/")) {
+          throw new IllegalArgumentException("不是有效图片。");
+        }
+        shareFile = HermesShareFileProvider.createImageFile(this, resolved.extension);
+        try (FileOutputStream output = new FileOutputStream(shareFile)) {
+          output.write(plaintext);
+          output.getFD().sync();
+        }
+        Uri shareUri = HermesShareFileProvider.uriFor(
+          this,
+          shareFile,
+          galleryFilename(name, resolved.contentType)
+        );
+        File readyFile = shareFile;
+        runOnUiThread(() -> {
+          if (destroyed) {
+            readyFile.delete();
+            return;
+          }
+          try {
+            Intent shareIntent = new Intent(Intent.ACTION_SEND);
+            shareIntent.setType(resolved.contentType);
+            shareIntent.putExtra(Intent.EXTRA_STREAM, shareUri);
+            shareIntent.setClipData(ClipData.newUri(
+              getContentResolver(),
+              "Hermes chat image",
+              shareUri
+            ));
+            shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(shareIntent, "分享图片到");
+            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(chooser);
+            SHARE_CLEANUP_HANDLER.postDelayed(readyFile::delete, SHARE_FILE_LIFETIME_MS);
+          } catch (Exception error) {
+            readyFile.delete();
+            toast("无法分享图片：" + error.getMessage());
+          }
+        });
+      } catch (Exception error) {
+        if (shareFile != null) shareFile.delete();
+        runOnUiThread(() -> toast("无法分享图片：" + error.getMessage()));
+      }
+    });
   }
 
   private void saveImageToGallery(byte[] plaintext, JSONObject descriptor) {
@@ -2323,10 +2693,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void focusComposer(boolean showKeyboard) {
-    if (!resumed || destroyed || composer == null || !selectedMessageIds.isEmpty()) return;
+    if (!resumed || destroyed || composer == null || !selectedMessageIds.isEmpty()
+        || isMessageSearchActive()) return;
     composer.post(() -> {
       if (!resumed || destroyed || !selectedMessageIds.isEmpty()
-          || !composer.isAttachedToWindow()) return;
+          || isMessageSearchActive() || !composer.isAttachedToWindow()) return;
       composer.requestFocus();
       composer.setSelection(composer.length());
       if (showKeyboard) {

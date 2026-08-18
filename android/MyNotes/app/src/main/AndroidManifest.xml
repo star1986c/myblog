@@ -46,5 +46,10 @@
       android:authorities="io.qzz.superstar1014.mynotes.camera"
       android:exported="false"
       android:grantUriPermissions="true" />
+    <provider
+      android:name=".HermesShareFileProvider"
+      android:authorities="io.qzz.superstar1014.mynotes.hermes-share"
+      android:exported="false"
+      android:grantUriPermissions="true" />
   </application>
 </manifest>

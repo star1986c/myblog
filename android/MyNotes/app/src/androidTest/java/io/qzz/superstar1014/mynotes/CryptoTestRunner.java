@@ -2,9 +2,13 @@ package io.qzz.superstar1014.mynotes;
 
 import android.app.Activity;
 import android.app.Instrumentation;
+import android.content.Context;
+import android.net.Uri;
 import android.os.Bundle;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -28,6 +32,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyEncryptedAttachments();
       verifyHermesChatCrypto();
       verifyHermesChatRichMessages();
+      verifyHermesImageShareProvider();
       verifyHermesChatHistoryCache();
       verifyAttachmentRequestHints();
       verifyAttachmentDiskCache();
@@ -147,6 +152,51 @@ public final class CryptoTestRunner extends Instrumentation {
       styled.getSpans(0, styled.length(), android.text.style.TypefaceSpan.class).length >= 2,
       "Hermes code styles were not applied"
     );
+    List<HermesChatMarkdown.Block> blocks = HermesChatMarkdown.parseBlocks(
+      "说明\n```bash\nhermes status\n```\n完成"
+    );
+    require(blocks.size() == 3, "Hermes Markdown blocks were not split deterministically");
+    require(!blocks.get(0).code && blocks.get(0).text.contains("说明"), "Text block was lost");
+    require(
+      blocks.get(1).code
+        && "bash".equals(blocks.get(1).language)
+        && "hermes status".equals(blocks.get(1).text),
+      "Fenced code metadata was not preserved for copy actions"
+    );
+    require(!blocks.get(2).code && blocks.get(2).text.contains("完成"), "Tail text was lost");
+  }
+
+  private void verifyHermesImageShareProvider() throws Exception {
+    Context context = getTargetContext();
+    byte[] image = new byte[] {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
+    File file = HermesShareFileProvider.createImageFile(context, "PNG");
+    try {
+      try (FileOutputStream output = new FileOutputStream(file)) {
+        output.write(image);
+      }
+      Uri uri = HermesShareFileProvider.uriFor(context, file, "Hermes 测试图片.png");
+      require("content".equals(uri.getScheme()), "Hermes share URI was not a content URI");
+      require(
+        "image/png".equals(context.getContentResolver().getType(uri)),
+        "Hermes share provider returned the wrong MIME type"
+      );
+      byte[] opened = new byte[image.length];
+      try (InputStream input = context.getContentResolver().openInputStream(uri)) {
+        require(input != null, "Hermes share provider did not open the image");
+        require(input.read(opened) == image.length, "Hermes shared image was truncated");
+      }
+      require(Arrays.equals(image, opened), "Hermes shared image bytes changed");
+
+      boolean writeRejected = false;
+      try {
+        context.getContentResolver().openOutputStream(uri);
+      } catch (Exception expected) {
+        writeRejected = true;
+      }
+      require(writeRejected, "Hermes share URI allowed write access");
+    } finally {
+      file.delete();
+    }
   }
 
   private void verifyHermesChatHistoryCache() throws Exception {
