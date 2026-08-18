@@ -46,6 +46,14 @@ const fullscreenIconPath = new URL(
   "../android/MyNotes/app/src/main/res/drawable/ic_fullscreen.xml",
   import.meta.url,
 );
+const shareIconPath = new URL(
+  "../android/MyNotes/app/src/main/res/drawable/ic_share.xml",
+  import.meta.url,
+);
+const selectIconPath = new URL(
+  "../android/MyNotes/app/src/main/res/drawable/ic_select.xml",
+  import.meta.url,
+);
 const shareProviderPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesShareFileProvider.java",
   import.meta.url,
@@ -221,21 +229,54 @@ test("Hermes chat renders Telegram-style Markdown and fenced code blocks", async
   assert.match(markdown, /headingLevel/);
 });
 
-test("Hermes messages and fenced code blocks expose scoped copy actions", async () => {
-  const [activity, markdown, copyIcon] = await Promise.all([
+test("Hermes message actions move to a long-press sheet while code blocks keep copy", async () => {
+  const [activity, markdown, copyIcon, shareIcon, selectIcon] = await Promise.all([
     readFile(activityPath, "utf8"),
     readFile(markdownPath, "utf8"),
     readFile(copyIconPath, "utf8"),
+    readFile(shareIconPath, "utf8"),
+    readFile(selectIconPath, "utf8"),
   ]);
 
   assert.match(copyIcon, /android:pathData=/);
-  assert.match(activity, /R\.drawable\.ic_copy, "复制整条消息文字"/);
-  assert.match(activity, /safeMessageText\(rendered\.message\)/);
+  assert.match(shareIcon, /android:pathData=/);
+  assert.match(selectIcon, /android:pathData=/);
+  assert.doesNotMatch(activity, /复制整条消息文字/);
+  assert.doesNotMatch(activity, /final ImageButton messageCopy/);
+  assert.match(activity, /bubble\.setOnLongClickListener[\s\S]*showMessageActions\(rendered\)/);
+  assert.match(activity, /messageActionRow\([\s\S]*R\.drawable\.ic_copy,[\s\S]*"复制文字"/);
+  assert.match(activity, /messageActionRow\([\s\S]*R\.drawable\.ic_share,[\s\S]*"分享文字"/);
+  assert.match(activity, /shareMessageText\(rendered\)/);
+  assert.match(activity, /R\.drawable\.ic_select,[\s\S]*"选择消息"/);
+  assert.match(activity, /R\.drawable\.ic_trash,[\s\S]*"删除消息"/);
   assert.match(activity, /R\.drawable\.ic_copy, "复制此代码块"/);
   assert.match(activity, /copyText\("代码", block\.text, "代码块已复制"\)/);
   assert.match(activity, /HorizontalScrollView/);
   assert.match(markdown, /static List<Block> parseBlocks/);
   assert.match(markdown, /new Block\(true, language, code\)/);
+});
+
+test("long-press message actions route attachment share, save, and playback by type", async () => {
+  const [activity, provider] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(shareProviderPath, "utf8"),
+  ]);
+  const sheet = activity.slice(
+    activity.indexOf("private void showMessageActions"),
+    activity.indexOf("private View messageActionRow"),
+  );
+
+  assert.match(sheet, /shareMessageAttachments\(rendered\)/);
+  assert.match(sheet, /saveImageAttachment\(descriptor\)/);
+  assert.match(sheet, /requestSaveAttachment\(descriptor\)/);
+  assert.match(sheet, /playAttachment\(descriptor, resolved\)/);
+  assert.match(sheet, /confirmDeleteMessage\(rendered\)/);
+  assert.match(activity, /Intent\.EXTRA_TEXT, text/);
+  assert.match(activity, /Intent\.ACTION_SEND_MULTIPLE/);
+  assert.match(activity, /Intent\.FLAG_GRANT_READ_URI_PERMISSION/);
+  assert.match(provider, /createAttachmentFile/);
+  assert.match(provider, /HermesChatAttachmentPolicy\.resolve/);
+  assert.match(provider, /ParcelFileDescriptor\.MODE_READ_ONLY/);
 });
 
 test("Hermes chat searches only ordered messages already loaded in the Android app", async () => {

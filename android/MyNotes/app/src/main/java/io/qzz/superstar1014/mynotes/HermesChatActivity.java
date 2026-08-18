@@ -15,6 +15,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
@@ -28,6 +29,7 @@ import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -1335,11 +1337,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       for (TextView selectable : rendered.selectableTextViews) {
         selectable.setTextIsSelectable(!selecting);
       }
-      rendered.messageCopy.setVisibility(
-        selecting || safeMessageText(rendered.message).trim().isEmpty()
-          ? View.GONE
-          : View.VISIBLE
-      );
       for (ImageButton codeCopy : rendered.codeCopyButtons) {
         codeCopy.setVisibility(selecting ? View.INVISIBLE : View.VISIBLE);
       }
@@ -1360,29 +1357,55 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
   private void confirmDeleteSelectedMessages() {
     if (selectedMessageIds.isEmpty() || deletingMessages) return;
-    if (demoMode) {
-      toast("演示模式只展示消息选择，不执行云端删除。");
+    confirmDeleteMessages(
+      new HashSet<>(selectedMessageIds),
+      this::deleteSelectedMessages
+    );
+  }
+
+  private void confirmDeleteMessage(RenderedMessage rendered) {
+    if (rendered == null || deletingMessages) return;
+    if (rendered.streaming) {
+      toast("请等待 Hermes 完成这条回复后再删除。");
       return;
     }
-    int count = selectedMessageIds.size();
+    if (rendered.message.sequence < 1) {
+      toast("消息正在发送，请收到服务器确认后再删除。");
+      return;
+    }
+    Set<String> messageIds = new HashSet<>();
+    messageIds.add(rendered.message.id);
+    confirmDeleteMessages(messageIds, () -> deleteMessages(messageIds));
+  }
+
+  private void confirmDeleteMessages(Set<String> messageIds, Runnable confirmedAction) {
+    if (messageIds == null || messageIds.isEmpty() || deletingMessages) return;
+    if (demoMode) {
+      toast("演示模式只展示消息操作，不执行云端删除。");
+      return;
+    }
+    int count = messageIds.size();
     new AlertDialog.Builder(this)
       .setTitle("永久删除 " + count + " 条消息？")
       .setMessage(
         "会从本机加密缓存、Cloudflare 消息历史和对应 R2 附件中删除，无法恢复。"
           + "已经由 Hermes 处理过的内容不会从 NAS Agent 当前上下文中撤回。"
       )
-      .setPositiveButton("删除", (dialog, which) -> deleteSelectedMessages())
+      .setPositiveButton("删除", (dialog, which) -> confirmedAction.run())
       .setNegativeButton("取消", null)
       .show();
   }
 
   private void deleteSelectedMessages() {
+    deleteMessages(new HashSet<>(selectedMessageIds));
+  }
+
+  private void deleteMessages(Set<String> messageIds) {
     Models.HermesChatProfile targetProfile = selectedProfile;
     HermesChatHistoryStore targetHistory = historyStore;
     HermesChatImageCache targetCache = imageCache;
     if (targetProfile == null || targetHistory == null || targetCache == null
-        || selectedMessageIds.isEmpty()) return;
-    Set<String> messageIds = new HashSet<>(selectedMessageIds);
+        || messageIds == null || messageIds.isEmpty()) return;
     Set<String> attachmentIds = new HashSet<>();
     for (String messageId : messageIds) {
       RenderedMessage rendered = renderedMessagesById.get(messageId);
@@ -1487,18 +1510,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     );
     meta.setAlpha(0.78f);
     meta.setGravity(Gravity.CENTER_VERTICAL);
-    footer.addView(meta, new LinearLayout.LayoutParams(-2, dp(44)));
-    ImageButton messageCopy = iconButton(R.drawable.ic_copy, "复制整条消息文字");
-    messageCopy.setImageTintList(ColorStateList.valueOf(getColor(
-      outgoing ? R.color.on_brand : R.color.brand_primary_dark
-    )));
-    messageCopy.setBackground(rounded(
-      outgoing ? R.color.brand_primary : R.color.surface_tonal,
-      12
-    ));
-    footer.addView(messageCopy, new LinearLayout.LayoutParams(dp(44), dp(44)));
-    LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(44));
-    footerParams.topMargin = dp(2);
+    footer.addView(meta, new LinearLayout.LayoutParams(-2, dp(24)));
+    LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(24));
+    footerParams.topMargin = dp(4);
     bubble.addView(footer, footerParams);
     row.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
     LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
@@ -1510,18 +1524,17 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       bubble,
       content,
       meta,
-      messageCopy,
       outgoing
     );
     bubble.setTag(rendered);
     renderMessageContent(rendered);
-    messageCopy.setOnClickListener(view -> copyText(
-      "Hermes 消息",
-      safeMessageText(rendered.message),
-      "消息文字已复制"
-    ));
     bubble.setOnLongClickListener(view -> {
-      toggleMessageSelection(rendered);
+      if (!selectedMessageIds.isEmpty()) {
+        toggleMessageSelection(rendered);
+      } else {
+        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        showMessageActions(rendered);
+      }
       return true;
     });
     bubble.setOnClickListener(view -> {
@@ -1584,7 +1597,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     final LinearLayout bubble;
     final LinearLayout content;
     final TextView meta;
-    final ImageButton messageCopy;
     final boolean outgoing;
     final List<TextView> selectableTextViews = new ArrayList<>();
     final List<ImageButton> codeCopyButtons = new ArrayList<>();
@@ -1596,7 +1608,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       LinearLayout bubble,
       LinearLayout content,
       TextView meta,
-      ImageButton messageCopy,
       boolean outgoing
     ) {
       this.message = message;
@@ -1604,7 +1615,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       this.bubble = bubble;
       this.content = content;
       this.meta = meta;
-      this.messageCopy = messageCopy;
       this.outgoing = outgoing;
     }
   }
@@ -1636,10 +1646,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       rendered.content.addView(blockView, blockParams);
       first = false;
     }
-    boolean selecting = !selectedMessageIds.isEmpty();
-    rendered.messageCopy.setVisibility(
-      selecting || value.trim().isEmpty() ? View.GONE : View.VISIBLE
-    );
     applyBubbleAppearance(rendered);
   }
 
@@ -1658,15 +1664,15 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       rendered.outgoing ? R.color.outgoing_code_text : R.color.brand_primary_dark
     );
     language.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-    header.addView(language, new LinearLayout.LayoutParams(0, dp(44), 1));
+    header.addView(language, new LinearLayout.LayoutParams(0, dp(48), 1));
     ImageButton copy = iconButton(R.drawable.ic_copy, "复制此代码块");
     copy.setImageTintList(ColorStateList.valueOf(getColor(
       rendered.outgoing ? R.color.outgoing_code_text : R.color.brand_primary_dark
     )));
     copy.setBackground(rounded(background, 10));
     copy.setOnClickListener(view -> copyText("代码", block.text, "代码块已复制"));
-    header.addView(copy, new LinearLayout.LayoutParams(dp(44), dp(44)));
-    card.addView(header, new LinearLayout.LayoutParams(-1, dp(44)));
+    header.addView(copy, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    card.addView(header, new LinearLayout.LayoutParams(-1, dp(48)));
 
     HorizontalScrollView scroll = new HorizontalScrollView(this);
     scroll.setFillViewport(false);
@@ -1684,8 +1690,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private void bindMessageTextView(TextView view, RenderedMessage rendered) {
     view.setTextIsSelectable(selectedMessageIds.isEmpty());
     view.setOnLongClickListener(target -> {
-      toggleMessageSelection(rendered);
-      return true;
+      return rendered.bubble.performLongClick();
     });
     view.setOnClickListener(target -> {
       if (!selectedMessageIds.isEmpty()) toggleMessageSelection(rendered);
@@ -1711,6 +1716,444 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
     clipboard.setPrimaryClip(ClipData.newPlainText(label, text));
     toast(successMessage);
+  }
+
+  private void showMessageActions(RenderedMessage rendered) {
+    if (rendered == null || deletingMessages || !selectedMessageIds.isEmpty()) return;
+    if (isMessageSearchActive()) closeMessageSearch(false);
+
+    String messageText = safeMessageText(rendered.message);
+    JSONArray attachments = rendered.message.attachments;
+    JSONObject descriptor = attachments.length() == 1
+      ? attachments.optJSONObject(0)
+      : null;
+    HermesChatAttachmentPolicy.ResolvedType resolved = resolveAttachment(descriptor);
+
+    Dialog dialog = new Dialog(this);
+    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+    dialog.setCanceledOnTouchOutside(true);
+    LinearLayout root = vertical();
+    root.setPadding(dp(16), dp(10), dp(16), dp(12));
+    root.setBackground(rounded(R.color.surface, 24));
+
+    View handle = new View(this);
+    handle.setBackground(rounded(R.color.divider, 2));
+    LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(36), dp(4));
+    handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+    root.addView(handle, handleParams);
+
+    TextView title = text("消息操作", 18, R.color.text_primary);
+    title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, dp(36));
+    titleParams.topMargin = dp(8);
+    root.addView(title, titleParams);
+
+    String messageKind = attachments.length() > 0
+      ? (messageText.trim().isEmpty() ? "附件消息" : "文字与附件")
+      : "文字消息";
+    TextView subtitle = text(
+      messageKind + " · " + formatMessageTime(rendered.message.sentAt),
+      12,
+      R.color.text_secondary
+    );
+    subtitle.setSingleLine(true);
+    subtitle.setEllipsize(TextUtils.TruncateAt.END);
+    root.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(28)));
+
+    ScrollView scroll = new ScrollView(this);
+    scroll.setFillViewport(false);
+    LinearLayout actionList = vertical();
+    int actionCount = 0;
+
+    if (!messageText.trim().isEmpty()) {
+      actionList.addView(messageActionRow(
+        dialog,
+        R.drawable.ic_copy,
+        "复制文字",
+        "复制这条消息的完整文字",
+        false,
+        () -> copyText("Hermes 消息", messageText, "消息文字已复制")
+      ), messageActionParams());
+      actionCount++;
+      actionList.addView(messageActionRow(
+        dialog,
+        R.drawable.ic_share,
+        "分享文字",
+        "通过系统分享面板发送到其他 App",
+        false,
+        () -> shareMessageText(rendered)
+      ), messageActionParams());
+      actionCount++;
+    }
+
+    if (attachments.length() > 0 && allAttachmentsShareable(attachments)) {
+      actionList.addView(messageActionRow(
+        dialog,
+        R.drawable.ic_share,
+        attachments.length() == 1 ? "分享附件" : "分享 " + attachments.length() + " 个附件",
+        "临时解密后通过只读链接分享",
+        false,
+        () -> shareMessageAttachments(rendered)
+      ), messageActionParams());
+      actionCount++;
+    }
+
+    if (descriptor != null && resolved != null) {
+      if (resolved.previewableImage) {
+        actionList.addView(messageActionRow(
+          dialog,
+          R.drawable.ic_save,
+          "保存到相册",
+          "保存到“图片/My Notes”",
+          false,
+          () -> saveImageAttachment(descriptor)
+        ), messageActionParams());
+        actionCount++;
+      } else {
+        actionList.addView(messageActionRow(
+          dialog,
+          R.drawable.ic_save,
+          "保存附件",
+          "选择手机中的保存位置",
+          false,
+          () -> requestSaveAttachment(descriptor)
+        ), messageActionParams());
+        actionCount++;
+      }
+      if (resolved.category == HermesChatAttachmentPolicy.Category.AUDIO
+          || resolved.category == HermesChatAttachmentPolicy.Category.VIDEO) {
+        actionList.addView(messageActionRow(
+          dialog,
+          R.drawable.ic_play,
+          "播放" + resolved.category.label,
+          "使用应用内播放器打开",
+          false,
+          () -> playAttachment(descriptor, resolved)
+        ), messageActionParams());
+        actionCount++;
+      }
+    }
+
+    actionList.addView(messageActionRow(
+      dialog,
+      R.drawable.ic_select,
+      "选择消息",
+      "进入单条或多条消息选择模式",
+      false,
+      () -> toggleMessageSelection(rendered)
+    ), messageActionParams());
+    actionCount++;
+
+    if (!rendered.streaming && rendered.message.sequence > 0) {
+      actionList.addView(messageActionRow(
+        dialog,
+        R.drawable.ic_trash,
+        "删除消息",
+        "从本机和 Cloudflare 永久删除",
+        true,
+        () -> confirmDeleteMessage(rendered)
+      ), messageActionParams());
+      actionCount++;
+    }
+
+    scroll.addView(actionList, new ScrollView.LayoutParams(-1, -2));
+    root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+    TextView cancel = text("取消", 15, R.color.brand_primary_dark);
+    cancel.setGravity(Gravity.CENTER);
+    cancel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    cancel.setClickable(true);
+    cancel.setFocusable(true);
+    cancel.setContentDescription("关闭消息操作");
+    cancel.setBackground(messageActionBackground(false));
+    cancel.setOnClickListener(view -> dialog.dismiss());
+    LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(-1, dp(48));
+    cancelParams.topMargin = dp(8);
+    root.addView(cancel, cancelParams);
+
+    applyMessageSheetInsets(root);
+    dialog.setContentView(root);
+    dialog.show();
+    Window window = dialog.getWindow();
+    if (window != null) {
+      window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+      window.setGravity(Gravity.BOTTOM);
+      window.setDimAmount(0.48f);
+      int desiredHeight = dp(156 + actionCount * 64);
+      int maximumHeight = Math.round(getResources().getDisplayMetrics().heightPixels * 0.82f);
+      window.setLayout(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        Math.min(desiredHeight, maximumHeight)
+      );
+    }
+  }
+
+  private View messageActionRow(
+    Dialog dialog,
+    int iconResource,
+    String label,
+    String description,
+    boolean danger,
+    Runnable action
+  ) {
+    LinearLayout row = horizontal(Gravity.CENTER_VERTICAL);
+    row.setPadding(dp(8), 0, dp(8), 0);
+    row.setClickable(true);
+    row.setFocusable(true);
+    row.setContentDescription(label + "。" + description);
+    row.setBackground(messageActionBackground(danger));
+
+    ImageView icon = new ImageView(this);
+    icon.setImageResource(iconResource);
+    icon.setImageTintList(ColorStateList.valueOf(getColor(
+      danger ? R.color.danger : R.color.brand_primary_dark
+    )));
+    icon.setPadding(dp(12), dp(12), dp(12), dp(12));
+    icon.setContentDescription(null);
+    row.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+    LinearLayout labels = vertical();
+    TextView name = text(label, 15, danger ? R.color.danger : R.color.text_primary);
+    name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    labels.addView(name, new LinearLayout.LayoutParams(-1, dp(28)));
+    TextView detail = text(description, 12, R.color.text_secondary);
+    detail.setSingleLine(true);
+    detail.setEllipsize(TextUtils.TruncateAt.END);
+    labels.addView(detail, new LinearLayout.LayoutParams(-1, dp(22)));
+    LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(0, -2, 1);
+    labelParams.setMarginStart(dp(4));
+    row.addView(labels, labelParams);
+
+    row.setOnClickListener(view -> {
+      dialog.dismiss();
+      action.run();
+    });
+    return row;
+  }
+
+  private LinearLayout.LayoutParams messageActionParams() {
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(60));
+    params.topMargin = dp(4);
+    return params;
+  }
+
+  private RippleDrawable messageActionBackground(boolean danger) {
+    int color = getColor(danger ? R.color.danger : R.color.brand_primary_dark);
+    int ripple = (color & 0x00FFFFFF) | 0x24000000;
+    return new RippleDrawable(
+      ColorStateList.valueOf(ripple),
+      rounded(R.color.surface_variant, 14),
+      null
+    );
+  }
+
+  private void applyMessageSheetInsets(View view) {
+    int left = view.getPaddingLeft();
+    int top = view.getPaddingTop();
+    int right = view.getPaddingRight();
+    int bottom = view.getPaddingBottom();
+    view.setOnApplyWindowInsetsListener((target, insets) -> {
+      android.graphics.Insets bars = insets.getInsets(
+        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+      );
+      target.setPadding(
+        left + bars.left,
+        top,
+        right + bars.right,
+        bottom + bars.bottom
+      );
+      return insets;
+    });
+    view.requestApplyInsets();
+  }
+
+  private void shareMessageText(RenderedMessage rendered) {
+    String text = rendered == null ? "" : safeMessageText(rendered.message);
+    if (text.trim().isEmpty()) {
+      toast("这条消息没有可分享的文字。");
+      return;
+    }
+    try {
+      Intent shareIntent = new Intent(Intent.ACTION_SEND);
+      shareIntent.setType("text/plain");
+      shareIntent.putExtra(Intent.EXTRA_TEXT, text);
+      startActivity(Intent.createChooser(shareIntent, "分享消息文字到"));
+    } catch (Exception error) {
+      toast("无法分享消息文字：" + error.getMessage());
+    }
+  }
+
+  private HermesChatAttachmentPolicy.ResolvedType resolveAttachment(JSONObject descriptor) {
+    if (descriptor == null) return null;
+    try {
+      return HermesChatAttachmentPolicy.resolve(
+        descriptor.optString("contentType"),
+        descriptor.optString("name")
+      );
+    } catch (IllegalArgumentException ignored) {
+      return null;
+    }
+  }
+
+  private boolean allAttachmentsShareable(JSONArray attachments) {
+    if (attachments == null || attachments.length() == 0) return false;
+    for (int index = 0; index < attachments.length(); index++) {
+      if (resolveAttachment(attachments.optJSONObject(index)) == null) return false;
+    }
+    return true;
+  }
+
+  private void shareMessageAttachments(RenderedMessage rendered) {
+    if (rendered == null || selectedProfile == null || crypto == null || imageCache == null) {
+      return;
+    }
+    JSONArray attachments;
+    try {
+      attachments = new JSONArray(rendered.message.attachments.toString());
+    } catch (Exception error) {
+      toast("无法读取待分享附件。");
+      return;
+    }
+    if (!allAttachmentsShareable(attachments)) {
+      toast("这条消息包含无法分享的附件格式。");
+      return;
+    }
+    String messageText = safeMessageText(rendered.message);
+    String spaceId = selectedProfile.id;
+    HermesChatCrypto targetCrypto = crypto;
+    HermesChatImageCache targetCache = imageCache;
+    long generation = profileGeneration;
+    showConnectionAwareStatus("正在解密分享附件…");
+    executor.submit(() -> {
+      List<File> shareFiles = new ArrayList<>();
+      ArrayList<Uri> shareUris = new ArrayList<>();
+      List<String> contentTypes = new ArrayList<>();
+      try {
+        for (int index = 0; index < attachments.length(); index++) {
+          JSONObject item = attachments.getJSONObject(index);
+          HermesChatAttachmentPolicy.ResolvedType type = resolveAttachment(item);
+          if (type == null) throw new IllegalArgumentException("不支持此附件格式。");
+          byte[] plaintext = loadDecryptedAttachment(
+            item,
+            spaceId,
+            targetCrypto,
+            targetCache
+          );
+          File file = HermesShareFileProvider.createAttachmentFile(this, type.extension);
+          shareFiles.add(file);
+          try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(plaintext);
+            output.getFD().sync();
+          }
+          shareUris.add(HermesShareFileProvider.uriFor(
+            this,
+            file,
+            HermesChatAttachmentPolicy.safeDisplayName(
+              item.optString("name", "Hermes-附件"),
+              type
+            )
+          ));
+          contentTypes.add(type.contentType);
+        }
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration || selectedProfile == null
+              || !spaceId.equals(selectedProfile.id)) {
+            deleteShareFiles(shareFiles);
+            return;
+          }
+          try {
+            boolean multiple = shareUris.size() > 1;
+            Intent shareIntent = new Intent(
+              multiple ? Intent.ACTION_SEND_MULTIPLE : Intent.ACTION_SEND
+            );
+            String shareType = contentTypes.get(0);
+            for (String type : contentTypes) {
+              if (!shareType.equals(type)) {
+                shareType = "*/*";
+                break;
+              }
+            }
+            shareIntent.setType(shareType);
+            if (multiple) {
+              shareIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, shareUris);
+            } else {
+              shareIntent.putExtra(Intent.EXTRA_STREAM, shareUris.get(0));
+            }
+            if (!messageText.trim().isEmpty()) {
+              shareIntent.putExtra(Intent.EXTRA_TEXT, messageText);
+            }
+            ClipData clip = ClipData.newUri(
+              getContentResolver(),
+              "Hermes chat attachments",
+              shareUris.get(0)
+            );
+            for (int index = 1; index < shareUris.size(); index++) {
+              clip.addItem(new ClipData.Item(shareUris.get(index)));
+            }
+            shareIntent.setClipData(clip);
+            shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(shareIntent, "分享附件到");
+            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(chooser);
+            restoreConversationStatus();
+            for (File file : shareFiles) {
+              SHARE_CLEANUP_HANDLER.postDelayed(file::delete, SHARE_FILE_LIFETIME_MS);
+            }
+          } catch (Exception error) {
+            deleteShareFiles(shareFiles);
+            showConnectionAwareStatus("附件分享失败");
+            toast("无法分享附件：" + error.getMessage());
+          }
+        });
+      } catch (Exception error) {
+        deleteShareFiles(shareFiles);
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration) return;
+          showConnectionAwareStatus("附件分享失败");
+          toast("无法分享附件：" + error.getMessage());
+        });
+      }
+    });
+  }
+
+  private static void deleteShareFiles(List<File> files) {
+    if (files == null) return;
+    for (File file : files) {
+      if (file != null) file.delete();
+    }
+  }
+
+  private void saveImageAttachment(JSONObject descriptor) {
+    if (descriptor == null || selectedProfile == null || crypto == null || imageCache == null) {
+      return;
+    }
+    String spaceId = selectedProfile.id;
+    HermesChatCrypto targetCrypto = crypto;
+    HermesChatImageCache targetCache = imageCache;
+    long generation = profileGeneration;
+    showConnectionAwareStatus("正在解密并保存图片…");
+    executor.submit(() -> {
+      try {
+        byte[] plaintext = loadDecryptedAttachment(
+          descriptor,
+          spaceId,
+          targetCrypto,
+          targetCache
+        );
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration || selectedProfile == null
+              || !spaceId.equals(selectedProfile.id)) return;
+          restoreConversationStatus();
+          saveImageToGallery(plaintext, descriptor);
+        });
+      } catch (Exception error) {
+        runOnUiThread(() -> {
+          if (destroyed || generation != profileGeneration) return;
+          showConnectionAwareStatus("图片保存失败");
+          toast("保存图片失败：" + error.getMessage());
+        });
+      }
+    });
   }
 
   private void setMessageBody(TextView body, String value, boolean outgoing) {

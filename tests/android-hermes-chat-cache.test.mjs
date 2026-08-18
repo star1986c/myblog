@@ -127,7 +127,8 @@ test("Android supports single and multi-select deletion after cloud confirmation
     source("HermesChatHistoryStore.java"),
   ]);
 
-  assert.match(activity, /setOnLongClickListener[\s\S]*toggleMessageSelection/);
+  assert.match(activity, /setOnLongClickListener[\s\S]*showMessageActions/);
+  assert.match(activity, /"选择消息"[\s\S]*toggleMessageSelection/);
   assert.match(activity, /for \(TextView selectable : rendered\.selectableTextViews\)[\s\S]*setTextIsSelectable\(!selecting\)/);
   assert.match(activity, /bindMessageTextView[\s\S]*setOnClickListener[\s\S]*toggleMessageSelection/);
   assert.match(activity, /已选择 " \+ selectedMessageIds\.size\(\) \+ " 条/);

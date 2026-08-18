@@ -255,6 +255,27 @@ public final class CryptoTestRunner extends Instrumentation {
     } finally {
       file.delete();
     }
+
+    byte[] document = "Hermes PDF fixture".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    File documentFile = HermesShareFileProvider.createAttachmentFile(context, "pdf");
+    try {
+      try (FileOutputStream output = new FileOutputStream(documentFile)) {
+        output.write(document);
+      }
+      Uri uri = HermesShareFileProvider.uriFor(context, documentFile, "Hermes 测试文档.pdf");
+      require(
+        "application/pdf".equals(context.getContentResolver().getType(uri)),
+        "Hermes attachment share provider returned the wrong MIME type"
+      );
+      byte[] opened = new byte[document.length];
+      try (InputStream input = context.getContentResolver().openInputStream(uri)) {
+        require(input != null, "Hermes shared attachment did not open");
+        require(input.read(opened) == document.length, "Hermes shared attachment was truncated");
+      }
+      require(Arrays.equals(document, opened), "Hermes shared attachment bytes changed");
+    } finally {
+      documentFile.delete();
+    }
   }
 
   private void verifyHermesChatHistoryCache() throws Exception {

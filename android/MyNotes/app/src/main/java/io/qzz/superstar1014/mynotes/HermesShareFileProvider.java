@@ -14,18 +14,41 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Locale;
 
-/** Exposes short-lived decrypted chat images through explicitly granted read-only URIs. */
+/** Exposes short-lived decrypted chat attachments through explicitly granted read-only URIs. */
 public final class HermesShareFileProvider extends ContentProvider {
   static final String AUTHORITY = "io.qzz.superstar1014.mynotes.hermes-share";
   private static final String DIRECTORY = "hermes-chat-share";
 
   static File createImageFile(Context context, String extension) throws IOException {
-    String safeExtension = extension == null ? "png" : extension.toLowerCase(Locale.ROOT);
-    if (!safeExtension.matches("png|jpe?g|gif|webp|bmp")) {
+    File file = createAttachmentFile(context, extension == null ? "png" : extension);
+    HermesChatAttachmentPolicy.ResolvedType resolved;
+    try {
+      resolved = HermesChatAttachmentPolicy.resolve(null, file.getName());
+    } catch (IllegalArgumentException error) {
+      file.delete();
+      throw new IOException("Unsupported shared image extension", error);
+    }
+    if (resolved.category != HermesChatAttachmentPolicy.Category.IMAGE
+        || !resolved.previewableImage) {
+      file.delete();
       throw new IOException("Unsupported shared image extension");
     }
-    File directory = shareDirectory(context);
-    return File.createTempFile("hermes-image-", "." + safeExtension, directory);
+    return file;
+  }
+
+  static File createAttachmentFile(Context context, String extension) throws IOException {
+    String value = extension == null ? "" : extension.toLowerCase(Locale.ROOT).trim();
+    HermesChatAttachmentPolicy.ResolvedType resolved;
+    try {
+      resolved = HermesChatAttachmentPolicy.resolve(null, "Hermes-share." + value);
+    } catch (IllegalArgumentException error) {
+      throw new IOException("Unsupported shared attachment extension", error);
+    }
+    return File.createTempFile(
+      "hermes-share-",
+      "." + resolved.extension,
+      shareDirectory(context)
+    );
   }
 
   static Uri uriFor(Context context, File file, String displayName) throws IOException {
@@ -35,7 +58,7 @@ public final class HermesShareFileProvider extends ContentProvider {
     return new Uri.Builder()
       .scheme("content")
       .authority(AUTHORITY)
-      .appendPath("image")
+      .appendPath("file")
       .appendPath(file.getName())
       .appendQueryParameter("name", name)
       .build();
@@ -92,12 +115,7 @@ public final class HermesShareFileProvider extends ContentProvider {
   @Override
   public String getType(Uri uri) {
     try {
-      String name = resolve(uri).getName().toLowerCase(Locale.ROOT);
-      if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
-      if (name.endsWith(".gif")) return "image/gif";
-      if (name.endsWith(".webp")) return "image/webp";
-      if (name.endsWith(".bmp")) return "image/bmp";
-      return "image/png";
+      return HermesChatAttachmentPolicy.resolve(null, resolve(uri).getName()).contentType;
     } catch (Exception ignored) {
       return "application/octet-stream";
     }
@@ -108,8 +126,9 @@ public final class HermesShareFileProvider extends ContentProvider {
   @Override public int delete(Uri uri, String selection, String[] selectionArgs) { return 0; }
 
   private File resolve(Uri uri) throws IOException {
+    String kind = uri.getPathSegments().isEmpty() ? "" : uri.getPathSegments().get(0);
     if (!AUTHORITY.equals(uri.getAuthority()) || uri.getPathSegments().size() != 2
-        || !"image".equals(uri.getPathSegments().get(0))) {
+        || !("file".equals(kind) || "image".equals(kind))) {
       throw new IOException("Invalid Hermes share URI");
     }
     Context context = getContext();
