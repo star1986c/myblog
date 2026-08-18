@@ -247,6 +247,21 @@ Android Keystore 按 profile id 独立保护密钥。Android 2.14 起，全部�
   使用 /commands 可查询当前 NAS 版本实际注册的指令、已安装 skills 和 quick_commands，
   因此无需修改 Cloudflare 协议或保存指令目录。官方参考：
   <https://hermes-agent.nousresearch.com/docs/reference/slash-commands/>。
+- Android 2.15 与插件 0.2.0 起，`/model` 会显示“提供商 → 模型”的原位分页按钮，
+  `/reasoning`、`/fast` 等有限选项指令会显示单层按钮。危险命令授权使用“仅本次 / 本会话 /
+  始终允许 / 拒绝”，Slash Command 二次确认使用“仅本次批准 / 始终批准 / 取消”，
+  `clarify` 的候选回答也可直接点选或改为文字回答。选中项带 `✓`，危险及持久授权使用
+  独立颜色和整行按钮，按钮触控区不小于 48dp。
+- 交互提示的正文、按钮和处理结果都在原有 AES-GCM 密文中；Cloudflare 只路由密文。
+  点击回调走同一条多 profile WebSocket，并按 `spaceId` 投递给对应 Gateway，不作为聊天
+  消息写入 Durable Object。NAS 端使用 Hermes 官方 resolver/callback 在同一 Gateway
+  进程内完成操作，再用 durable final edit 原位替换提示，因此重连后能看到最终状态。
+  升级顺序为 Worker → 每个 profile 的插件 0.2.0 并重启 Gateway → Android 2.15。
+  Gateway 重启前尚未处理的按钮会失效，重新发送原指令即可。
+  适配器能力、授权边界与指令定义以 Hermes 官方文档为准：
+  <https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters>、
+  <https://hermes-agent.nousresearch.com/docs/user-guide/security/>、
+  <https://hermes-agent.nousresearch.com/docs/reference/slash-commands>。
 
 ### Android 2.5 附件白名单
 

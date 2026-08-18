@@ -28,6 +28,7 @@ final class HermesChatConnectionManager {
     void onReady();
     void onMessage(HermesChatCrypto.ChatMessage message);
     void onAcknowledged(String messageId, long sequence);
+    void onActionAcknowledged(String actionId, boolean delivered);
     void onTyping(boolean active);
     void onDisconnected(String reason);
   }
@@ -240,6 +241,15 @@ final class HermesChatConnectionManager {
     return message;
   }
 
+  String sendInteractionAction(
+    String profileId,
+    String promptId,
+    String optionId
+  ) throws Exception {
+    if (!isReady(profileId)) throw new IllegalStateException("聊天连接尚未就绪。");
+    return client.sendInteractionAction(profileId, promptId, optionId);
+  }
+
   void sendTyping(String profileId, boolean active) {
     if (isReady(profileId)) client.sendTyping(profileId, active);
   }
@@ -348,6 +358,14 @@ final class HermesChatConnectionManager {
         handler.post(() -> handleAcknowledged(profileId, messageId, sequence));
       }
 
+      @Override public void onActionAcknowledged(
+        String profileId,
+        String actionId,
+        boolean delivered
+      ) {
+        handler.post(() -> handleActionAcknowledged(profileId, actionId, delivered));
+      }
+
       @Override public void onTyping(String profileId, boolean active) {
         handler.post(() -> handleTyping(profileId, active));
       }
@@ -404,6 +422,16 @@ final class HermesChatConnectionManager {
     } else {
       appendBounded(session.pendingAcknowledgements, new Acknowledgement(messageId, sequence));
     }
+  }
+
+  private void handleActionAcknowledged(
+    String profileId,
+    String actionId,
+    boolean delivered
+  ) {
+    ProfileSession session = sessions.get(profileId);
+    if (session == null || session.listener == null || !session.visible) return;
+    session.listener.onActionAcknowledged(actionId, delivered);
   }
 
   private void handleTyping(String profileId, boolean active) {

@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from io import BytesIO
@@ -36,9 +37,24 @@ def install_hermes_stubs():
         def __init__(self, config, platform):
             self.config = config
             self.platform = platform
+            self.resumed_typing_chats = []
 
         async def handle_message(self, event):
             return None
+
+        async def send_clarify(
+            self,
+            chat_id,
+            question,
+            choices,
+            clarify_id,
+            session_key,
+            metadata=None,
+        ):
+            return SendResult(success=False, error="text fallback")
+
+        def resume_typing_for_chat(self, chat_id):
+            self.resumed_typing_chats.append(chat_id)
 
         @staticmethod
         def validate_media_delivery_path(path):
@@ -153,7 +169,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.8")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.2.0")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -342,6 +358,235 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(payload["text"], "完整的流式回复")
         self.assertEqual(payload["replaceSeq"], 42)
         self.assertIs(payload["final"], True)
+
+    def test_model_picker_is_encrypted_and_resolves_without_chat_dispatch(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        sent_frames = []
+        selected = []
+
+        async def send_frame(frame):
+            sent_frames.append(frame)
+            envelope = frame["message"] if frame.get("type") == "edit" else frame
+            await instance._handle_frame(json.dumps({
+                "v": 1,
+                "type": "ack",
+                "id": envelope["id"],
+                "seq": 40 + len(sent_frames),
+            }))
+
+        async def on_model_selected(chat_id, model_id, provider_slug):
+            selected.append((chat_id, model_id, provider_slug))
+            return "模型已切换到 deepseek-v4-flash"
+
+        async def click(prompt_id, option_id, message_id):
+            message = instance._cipher.encrypt_message(
+                sender="client",
+                text="",
+                interaction_response={
+                    "promptId": prompt_id,
+                    "optionId": option_id,
+                },
+                message_id=message_id,
+                sent_at=1_800_000_000_000,
+            )
+            await instance._handle_frame(json.dumps({
+                "v": 1,
+                "type": "action",
+                "userId": "authenticated-notes-owner",
+                "message": message,
+            }))
+            tasks = list(instance._interaction_tasks)
+            if tasks:
+                await asyncio.gather(*tasks)
+
+        async def scenario():
+            with patch.object(instance, "_send_frame", side_effect=send_frame), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ) as handle_message:
+                result = await instance.send_model_picker(
+                    chat_id="primary",
+                    providers=[{
+                        "slug": "deepseek",
+                        "name": "DeepSeek",
+                        "models": ["deepseek-v4-flash"],
+                        "is_current": True,
+                    }],
+                    current_model="deepseek-v4-flash",
+                    current_provider="deepseek",
+                    session_key="session-primary",
+                    on_model_selected=on_model_selected,
+                )
+                self.assertTrue(result.success)
+                prompt_id = next(iter(instance._pending_interactions))
+                await click(
+                    prompt_id,
+                    "p0",
+                    "550e8400-e29b-41d4-a716-446655440030",
+                )
+                self.assertEqual(instance._pending_interactions[prompt_id]["stage"], "models")
+                await click(
+                    prompt_id,
+                    "m0",
+                    "550e8400-e29b-41d4-a716-446655440031",
+                )
+                handle_message.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+        self.assertEqual(selected, [("primary", "deepseek-v4-flash", "deepseek")])
+        self.assertEqual(instance._pending_interactions, {})
+        self.assertEqual([frame.get("type") for frame in sent_frames], ["message", "edit", "edit"])
+        self.assertNotIn("DeepSeek", json.dumps(sent_frames[0]))
+        initial = instance._cipher.decrypt_message(sent_frames[0], expected_sender="agent")
+        provider_view = instance._cipher.decrypt_message(
+            sent_frames[1]["message"],
+            expected_sender="agent",
+        )
+        resolved = instance._cipher.decrypt_message(
+            sent_frames[2]["message"],
+            expected_sender="agent",
+        )
+        self.assertEqual(initial["interaction"]["kind"], "model")
+        self.assertEqual(initial["interaction"]["stage"], "providers")
+        self.assertEqual(provider_view["interaction"]["stage"], "models")
+        self.assertEqual(resolved["interaction"]["state"], "resolved")
+        self.assertEqual(resolved["interaction"]["options"], [])
+
+    def test_exec_approval_button_resolves_gateway_primitive_once(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        sent_frames = []
+        resolved = []
+        tools_module = types.ModuleType("tools")
+        approval_module = types.ModuleType("tools.approval")
+
+        def resolve_gateway_approval(session_key, choice):
+            resolved.append((session_key, choice))
+            return 1
+
+        approval_module.resolve_gateway_approval = resolve_gateway_approval
+        tools_module.approval = approval_module
+
+        async def send_frame(frame):
+            sent_frames.append(frame)
+            envelope = frame["message"] if frame.get("type") == "edit" else frame
+            await instance._handle_frame(json.dumps({
+                "v": 1,
+                "type": "ack",
+                "id": envelope["id"],
+                "seq": 50 + len(sent_frames),
+            }))
+
+        async def scenario():
+            with patch.dict(sys.modules, {
+                "tools": tools_module,
+                "tools.approval": approval_module,
+            }), patch.object(instance, "_send_frame", side_effect=send_frame):
+                result = await instance.send_exec_approval(
+                    chat_id="primary",
+                    command="touch /tmp/approved",
+                    session_key="approval-session",
+                )
+                self.assertTrue(result.success)
+                prompt_id = next(iter(instance._pending_interactions))
+                action = instance._cipher.encrypt_message(
+                    sender="client",
+                    text="",
+                    interaction_response={
+                        "promptId": prompt_id,
+                        "optionId": "once",
+                    },
+                    message_id="550e8400-e29b-41d4-a716-446655440032",
+                    sent_at=1_800_000_000_001,
+                )
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "action",
+                    "userId": "authenticated-notes-owner",
+                    "message": action,
+                }))
+                tasks = list(instance._interaction_tasks)
+                if tasks:
+                    await asyncio.gather(*tasks)
+
+        asyncio.run(scenario())
+
+        self.assertEqual(resolved, [("approval-session", "once")])
+        self.assertEqual(instance.resumed_typing_chats, ["primary"])
+        self.assertEqual(instance._pending_interactions, {})
+        final_payload = instance._cipher.decrypt_message(
+            sent_frames[-1]["message"],
+            expected_sender="agent",
+        )
+        self.assertEqual(final_payload["interaction"]["state"], "resolved")
+        self.assertEqual(final_payload["interaction"]["status"], "已批准：仅本次")
+
+    def test_interaction_callback_does_not_block_the_websocket_receive_loop(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handle_response(_response, *, relay_user):
+            self.assertEqual(relay_user, "authenticated-notes-owner")
+            started.set()
+            await release.wait()
+
+        async def scenario():
+            action = instance._cipher.encrypt_message(
+                sender="client",
+                text="",
+                interaction_response={
+                    "promptId": "550e8400-e29b-41d4-a716-446655440040",
+                    "optionId": "once",
+                },
+                message_id="550e8400-e29b-41d4-a716-446655440041",
+                sent_at=1_800_000_000_002,
+            )
+            with patch.object(
+                instance,
+                "_handle_interaction_response",
+                side_effect=handle_response,
+            ):
+                await asyncio.wait_for(instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "action",
+                    "userId": "authenticated-notes-owner",
+                    "message": action,
+                })), timeout=0.2)
+                await asyncio.wait_for(started.wait(), timeout=0.2)
+                self.assertEqual(len(instance._interaction_tasks), 1)
+                release.set()
+                await asyncio.gather(*list(instance._interaction_tasks))
+
+        asyncio.run(scenario())
+        self.assertEqual(instance._interaction_tasks, set())
+
+    def test_multi_select_clarify_keeps_the_official_text_fallback(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        tools_module = types.ModuleType("tools")
+        clarify_module = types.ModuleType("tools.clarify_gateway")
+        clarify_module._lock = threading.Lock()
+        clarify_module._entries = {
+            "clarify-multi": types.SimpleNamespace(multi_select=True),
+        }
+        tools_module.clarify_gateway = clarify_module
+
+        with patch.dict(sys.modules, {
+            "tools": tools_module,
+            "tools.clarify_gateway": clarify_module,
+        }):
+            result = asyncio.run(instance.send_clarify(
+                chat_id="primary",
+                question="请选择多个项目",
+                choices=["A", "B", "C"],
+                clarify_id="clarify-multi",
+                session_key="session-primary",
+            ))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "text fallback")
+        self.assertEqual(instance._pending_interactions, {})
 
     def test_resume_sequence_is_scoped_and_persisted_per_profile(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

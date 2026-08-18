@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import mimetypes
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -40,7 +42,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.8"
+MAX_PENDING_INTERACTIONS = 128
+INTERACTION_TIMEOUT_SECONDS = 300
+PICKER_TIMEOUT_SECONDS = 15 * 60
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.2.0"
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
     ".png": ("image/png", "image"),
     ".jpg": ("image/jpeg", "image"),
@@ -166,6 +171,9 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         )
         self._last_sequence = self._load_last_sequence()
         self._pending_acks: dict[str, asyncio.Future] = {}
+        self._pending_interactions: dict[str, dict[str, Any]] = {}
+        self._interaction_tasks: set[asyncio.Task] = set()
+        self._interaction_lock = asyncio.Lock()
         self._lock_key: str | None = None
         self._media_directory = Path(
             os.getenv("HERMES_CF_MEDIA_DIR")
@@ -223,11 +231,19 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         if task and task is not asyncio.current_task():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        interaction_tasks = list(self._interaction_tasks)
+        self._interaction_tasks.clear()
+        for interaction_task in interaction_tasks:
+            interaction_task.cancel()
+        if interaction_tasks:
+            await asyncio.gather(*interaction_tasks, return_exceptions=True)
         self._socket = None
         for future in self._pending_acks.values():
             if not future.done():
                 future.set_exception(ConnectionError("Cloudflare Chat disconnected"))
         self._pending_acks.clear()
+        async with self._interaction_lock:
+            self._pending_interactions.clear()
         self._release_lock()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
@@ -413,6 +429,774 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             logger.warning("Cloudflare Chat attachment send failed: %s", error)
             return SendResult(success=False, error=str(error), retryable=False)
 
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: dict[str, Any] | None = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        options = [
+            _interaction_option("once", "仅本次允许", style="primary"),
+        ]
+        values: dict[str, Any] = {"once": "once"}
+        if not smart_denied and allow_session:
+            options.append(_interaction_option("session", "本会话允许"))
+            values["session"] = "session"
+            if allow_permanent:
+                options.append(_interaction_option(
+                    "always",
+                    "始终允许",
+                    style="warning",
+                    wide=True,
+                ))
+                values["always"] = "always"
+        options.append(_interaction_option(
+            "deny",
+            "拒绝",
+            style="danger",
+            wide=True,
+        ))
+        values["deny"] = "deny"
+        preview = str(command or "")
+        if len(preview) > 1500:
+            preview = preview[:1500] + "..."
+        text = (
+            "**需要授权执行命令**\n\n"
+            f"```shell\n{preview}\n```\n"
+            f"原因：{description}"
+        )
+        if smart_denied:
+            text += "\n\n此操作只允许进行一次所有者授权。"
+        return await self._send_interaction_prompt(
+            chat_id=chat_id,
+            kind="approval",
+            text=text,
+            options=options,
+            option_values=values,
+            timeout_seconds=INTERACTION_TIMEOUT_SECONDS,
+            session_key=session_key,
+        )
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        text = f"**{title}**\n\n{message}" if title else str(message or "")
+        return await self._send_interaction_prompt(
+            chat_id=chat_id,
+            kind="slash_confirm",
+            text=text,
+            options=[
+                _interaction_option("once", "仅本次批准", style="primary"),
+                _interaction_option("always", "始终批准", style="warning", wide=True),
+                _interaction_option("cancel", "取消", style="danger", wide=True),
+            ],
+            option_values={
+                "once": "once",
+                "always": "always",
+                "cancel": "cancel",
+            },
+            timeout_seconds=INTERACTION_TIMEOUT_SECONDS,
+            session_key=session_key,
+            confirm_id=confirm_id,
+        )
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: list | None,
+        clarify_id: str,
+        session_key: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        if not choices:
+            return await super().send_clarify(
+                chat_id,
+                question,
+                choices,
+                clarify_id,
+                session_key,
+                metadata=metadata,
+            )
+        # Hermes supports multi-select clarifications as typed comma/space
+        # separated answers. A single-tap button would resolve too early, so
+        # preserve the official text fallback for that prompt shape.
+        try:
+            from tools import clarify_gateway as clarify_gateway_mod
+
+            with clarify_gateway_mod._lock:
+                entry = clarify_gateway_mod._entries.get(clarify_id)
+            is_multi_select = bool(entry and getattr(entry, "multi_select", False))
+        except Exception:
+            is_multi_select = False
+        if is_multi_select:
+            return await super().send_clarify(
+                chat_id,
+                question,
+                choices,
+                clarify_id,
+                session_key,
+                metadata=metadata,
+            )
+        if len(choices) > 23:
+            # Reserve the 24th protocol slot for “Other”. The base adapter's
+            # numbered text fallback preserves every choice when a prompt is
+            # larger than the native button surface.
+            return await super().send_clarify(
+                chat_id,
+                question,
+                choices,
+                clarify_id,
+                session_key,
+                metadata=metadata,
+            )
+        safe_choices = [str(choice) for choice in choices]
+        options = [
+            _interaction_option(
+                f"c{index}",
+                choice,
+                wide=len(choice) > 18,
+            )
+            for index, choice in enumerate(safe_choices)
+        ]
+        options.append(_interaction_option("other", "其他（输入文字）", wide=True))
+        values = {f"c{index}": index for index in range(len(safe_choices))}
+        values["other"] = "other"
+        return await self._send_interaction_prompt(
+            chat_id=chat_id,
+            kind="clarify",
+            text=f"**需要你的选择**\n\n{question}",
+            options=options,
+            option_values=values,
+            timeout_seconds=INTERACTION_TIMEOUT_SECONDS,
+            session_key=session_key,
+            clarify_id=clarify_id,
+            choices=safe_choices,
+        )
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        if not choices:
+            return SendResult(success=False, error="No choices")
+        options: list[dict[str, Any]] = []
+        values: dict[str, Any] = {}
+        safe_choices: list[dict[str, Any]] = []
+        # One protocol slot is reserved for Cancel.
+        for index, raw in enumerate(choices[:23]):
+            choice = dict(raw or {})
+            label = str(choice.get("label") or choice.get("value") or "")
+            if not label:
+                continue
+            option_id = f"c{index}"
+            options.append(_interaction_option(
+                option_id,
+                label,
+                selected=bool(choice.get("is_current")),
+                wide=len(label) > 18,
+            ))
+            values[option_id] = str(choice.get("value") or "")
+            safe_choices.append(choice)
+        if not options:
+            return SendResult(success=False, error="No valid choices")
+        options.append(_interaction_option("cancel", "取消", style="danger", wide=True))
+        values["cancel"] = "cancel"
+        return await self._send_interaction_prompt(
+            chat_id=chat_id,
+            kind="choice",
+            text=str(title or "请选择"),
+            options=options,
+            option_values=values,
+            timeout_seconds=PICKER_TIMEOUT_SECONDS,
+            session_key=session_key,
+            on_choice_selected=on_choice_selected,
+            choices=safe_choices,
+        )
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        safe_providers = [dict(provider or {}) for provider in providers if provider]
+        if not safe_providers:
+            return SendResult(success=False, error="No model providers")
+        state: dict[str, Any] = {
+            "providers": safe_providers,
+            "current_model": str(current_model or ""),
+            "current_provider": str(current_provider or ""),
+            "provider_page": 0,
+            "on_model_selected": on_model_selected,
+        }
+        text, options, values, page_info = self._model_provider_view(state, 0)
+        return await self._send_interaction_prompt(
+            chat_id=chat_id,
+            kind="model",
+            text=text,
+            options=options,
+            option_values=values,
+            timeout_seconds=PICKER_TIMEOUT_SECONDS,
+            stage="providers",
+            page_info=page_info,
+            session_key=session_key,
+            **state,
+        )
+
+    async def _send_interaction_prompt(
+        self,
+        *,
+        chat_id: str,
+        kind: str,
+        text: str,
+        options: list[dict[str, Any]],
+        option_values: dict[str, Any],
+        timeout_seconds: int,
+        stage: str = "",
+        page_info: str = "",
+        **state_data,
+    ) -> SendResult:
+        prompt_id = str(uuid.uuid4())
+        expires_at = int(time.time() * 1000) + max(1, timeout_seconds) * 1000
+        interaction = _interaction_payload(
+            prompt_id,
+            kind,
+            "pending",
+            expires_at,
+            options,
+            stage=stage,
+            page_info=page_info,
+        )
+        state = {
+            "id": prompt_id,
+            "chat_id": str(chat_id),
+            "kind": kind,
+            "text": str(text or ""),
+            "options": options,
+            "option_values": dict(option_values),
+            "expires_at": expires_at,
+            "stage": stage,
+            "page_info": page_info,
+            "message_seq": 0,
+            "busy": False,
+            **state_data,
+        }
+        async with self._interaction_lock:
+            self._prune_interactions_locked()
+            while len(self._pending_interactions) >= MAX_PENDING_INTERACTIONS:
+                oldest = next(iter(self._pending_interactions))
+                self._pending_interactions.pop(oldest, None)
+            self._pending_interactions[prompt_id] = state
+        result = await self._send_payload(text, [], interaction=interaction)
+        if not result.success:
+            async with self._interaction_lock:
+                self._pending_interactions.pop(prompt_id, None)
+            return result
+        try:
+            state["message_seq"] = int(str(result.message_id))
+        except (TypeError, ValueError):
+            async with self._interaction_lock:
+                self._pending_interactions.pop(prompt_id, None)
+            return SendResult(success=False, error="Interaction relay sequence is invalid")
+        return result
+
+    async def _handle_interaction_response(
+        self,
+        response: dict[str, Any],
+        *,
+        relay_user: str,
+    ) -> None:
+        if not self._logical_user_authorized():
+            raise PermissionError("Cloudflare Chat action user is not authorized")
+        prompt_id = str(response.get("promptId") or "")
+        option_id = str(response.get("optionId") or "")
+        expired = False
+        async with self._interaction_lock:
+            state = self._pending_interactions.get(prompt_id)
+            if state is None:
+                logger.info(
+                    "Cloudflare Chat ignored unknown interaction id=%s user=%s",
+                    prompt_id,
+                    relay_user,
+                )
+                return
+            if int(state.get("expires_at") or 0) <= int(time.time() * 1000):
+                self._pending_interactions.pop(prompt_id, None)
+                expired = True
+            elif state.get("busy"):
+                logger.debug("Cloudflare Chat ignored duplicate interaction id=%s", prompt_id)
+                return
+            elif option_id not in state.get("option_values", {}):
+                raise ValueError("Cloudflare Chat interaction option is invalid")
+            else:
+                state["busy"] = True
+                selected = state["option_values"][option_id]
+        if expired:
+            await self._finish_interaction(
+                state,
+                "此操作已过期，请重新发送指令。",
+                status="已过期",
+                interaction_state="expired",
+                already_removed=True,
+            )
+            return
+        try:
+            await self._dispatch_interaction(state, selected)
+        except Exception as error:
+            logger.warning("Cloudflare Chat interaction resolution failed", exc_info=True)
+            await self._finish_interaction(
+                state,
+                f"操作失败：{error}",
+                status="操作失败",
+                interaction_state="error",
+            )
+
+    async def _dispatch_interaction(self, state: dict[str, Any], selected: Any) -> None:
+        kind = state.get("kind")
+        if kind == "approval":
+            from tools.approval import resolve_gateway_approval
+
+            choice = str(selected)
+            count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
+            labels = {
+                "once": "已批准：仅本次",
+                "session": "已批准：本会话",
+                "always": "已批准：始终允许",
+                "deny": "已拒绝",
+            }
+            if count:
+                await self._finish_interaction(state, labels.get(choice, "已处理"), status=labels.get(choice, "已处理"))
+                self.resume_typing_for_chat(str(state.get("chat_id") or self.space_id))
+            else:
+                await self._finish_interaction(
+                    state,
+                    "授权已超时或已在其他位置处理。",
+                    status="授权已过期",
+                    interaction_state="expired",
+                )
+            return
+        if kind == "slash_confirm":
+            from tools import slash_confirm as slash_confirm_mod
+
+            choice = str(selected)
+            result_text = await slash_confirm_mod.resolve(
+                str(state.get("session_key") or ""),
+                str(state.get("confirm_id") or ""),
+                choice,
+            )
+            label = {
+                "once": "已批准：仅本次",
+                "always": "已批准：始终允许",
+                "cancel": "已取消",
+            }.get(choice, "已处理")
+            await self._finish_interaction(state, label, status=label)
+            if result_text:
+                await self.send(str(state.get("chat_id") or self.space_id), str(result_text))
+            return
+        if kind == "clarify":
+            from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
+
+            clarify_id = str(state.get("clarify_id") or "")
+            if selected == "other":
+                if mark_awaiting_text(clarify_id):
+                    await self._finish_interaction(
+                        state,
+                        "请直接在输入框中输入你的回答。",
+                        status="等待文字回答",
+                    )
+                else:
+                    await self._finish_interaction(
+                        state,
+                        "问题已过期，请重试。",
+                        status="问题已过期",
+                        interaction_state="expired",
+                    )
+                return
+            choices = state.get("choices") or []
+            index = int(selected)
+            if index < 0 or index >= len(choices):
+                raise ValueError("clarify choice is unavailable")
+            choice_text = str(choices[index])
+            resolved = resolve_gateway_clarify(clarify_id, choice_text)
+            await self._finish_interaction(
+                state,
+                f"已选择：{choice_text}" if resolved else "问题已过期，请重试。",
+                status="已回答" if resolved else "问题已过期",
+                interaction_state="resolved" if resolved else "expired",
+            )
+            return
+        if kind == "choice":
+            if selected == "cancel":
+                await self._finish_interaction(state, "已取消选择。", status="已取消")
+                return
+            result = await _await_callback(
+                state.get("on_choice_selected"),
+                str(state.get("chat_id") or self.space_id),
+                str(selected),
+            )
+            await self._finish_interaction(
+                state,
+                str(result or "设置已更新。"),
+                status="设置已更新",
+            )
+            return
+        if kind == "model":
+            await self._dispatch_model_interaction(state, selected)
+            return
+        raise ValueError("unknown interaction kind")
+
+    async def _dispatch_model_interaction(
+        self,
+        state: dict[str, Any],
+        selected: Any,
+    ) -> None:
+        action = dict(selected or {})
+        action_type = action.get("type")
+        if action_type == "cancel":
+            await self._finish_interaction(state, "模型选择已取消。", status="已取消")
+            return
+        if action_type == "provider_page":
+            text, options, values, page_info = self._model_provider_view(
+                state,
+                int(action.get("page") or 0),
+            )
+            await self._refresh_interaction(
+                state,
+                text,
+                options,
+                values,
+                stage="providers",
+                page_info=page_info,
+            )
+            return
+        if action_type == "provider":
+            state["selected_provider_index"] = int(action["index"])
+            state["model_page"] = 0
+            text, options, values, page_info = self._model_models_view(state, 0)
+            await self._refresh_interaction(
+                state,
+                text,
+                options,
+                values,
+                stage="models",
+                page_info=page_info,
+            )
+            return
+        if action_type == "model_page":
+            text, options, values, page_info = self._model_models_view(
+                state,
+                int(action.get("page") or 0),
+            )
+            await self._refresh_interaction(
+                state,
+                text,
+                options,
+                values,
+                stage="models",
+                page_info=page_info,
+            )
+            return
+        if action_type == "back_providers":
+            text, options, values, page_info = self._model_provider_view(
+                state,
+                int(state.get("provider_page") or 0),
+            )
+            await self._refresh_interaction(
+                state,
+                text,
+                options,
+                values,
+                stage="providers",
+                page_info=page_info,
+            )
+            return
+        if action_type == "back_models":
+            text, options, values, page_info = self._model_models_view(
+                state,
+                int(state.get("model_page") or 0),
+            )
+            await self._refresh_interaction(
+                state,
+                text,
+                options,
+                values,
+                stage="models",
+                page_info=page_info,
+            )
+            return
+        if action_type in {"model", "confirm_model"}:
+            model_index = int(action["index"])
+            provider = self._selected_model_provider(state)
+            models = [str(value) for value in provider.get("models", [])]
+            if model_index < 0 or model_index >= len(models):
+                raise ValueError("model is unavailable")
+            model_id = models[model_index]
+            provider_slug = str(provider.get("slug") or "")
+            if action_type == "model":
+                try:
+                    from hermes_cli.model_cost_guard import expensive_model_warning
+
+                    warning = await asyncio.to_thread(
+                        expensive_model_warning,
+                        model_id,
+                        provider=provider_slug,
+                    )
+                except Exception:
+                    warning = None
+                if warning is not None:
+                    state["selected_model_index"] = model_index
+                    text = f"**高费用模型提醒**\n\n{getattr(warning, 'message', warning)}"
+                    options = [
+                        _interaction_option("confirm", "仍然切换", style="warning", wide=True),
+                        _interaction_option("back", "返回模型列表"),
+                        _interaction_option("cancel", "取消", style="danger"),
+                    ]
+                    values = {
+                        "confirm": {"type": "confirm_model", "index": model_index},
+                        "back": {"type": "back_models"},
+                        "cancel": {"type": "cancel"},
+                    }
+                    await self._refresh_interaction(
+                        state,
+                        text,
+                        options,
+                        values,
+                        stage="confirm",
+                    )
+                    return
+            result = await _await_callback(
+                state.get("on_model_selected"),
+                str(state.get("chat_id") or self.space_id),
+                model_id,
+                provider_slug,
+            )
+            await self._finish_interaction(
+                state,
+                str(result or "模型已切换。"),
+                status="模型已切换",
+            )
+            return
+        raise ValueError("model action is invalid")
+
+    async def _refresh_interaction(
+        self,
+        state: dict[str, Any],
+        text: str,
+        options: list[dict[str, Any]],
+        option_values: dict[str, Any],
+        *,
+        stage: str,
+        page_info: str = "",
+    ) -> None:
+        interaction = _interaction_payload(
+            str(state["id"]),
+            str(state["kind"]),
+            "pending",
+            int(state["expires_at"]),
+            options,
+            stage=stage,
+            page_info=page_info,
+        )
+        sent = await self._edit_interaction_prompt(state, text, interaction)
+        async with self._interaction_lock:
+            current = self._pending_interactions.get(str(state["id"]))
+            if current is not state:
+                return
+            if sent:
+                state.update({
+                    "text": text,
+                    "options": options,
+                    "option_values": dict(option_values),
+                    "stage": stage,
+                    "page_info": page_info,
+                })
+            state["busy"] = False
+        if not sent:
+            raise ConnectionError("无法更新交互消息")
+
+    async def _finish_interaction(
+        self,
+        state: dict[str, Any],
+        text: str,
+        *,
+        status: str,
+        interaction_state: str = "resolved",
+        already_removed: bool = False,
+    ) -> None:
+        if not already_removed:
+            async with self._interaction_lock:
+                self._pending_interactions.pop(str(state.get("id") or ""), None)
+        interaction = _interaction_payload(
+            str(state["id"]),
+            str(state["kind"]),
+            interaction_state,
+            int(state["expires_at"]),
+            [],
+            stage=str(state.get("stage") or ""),
+            status=status,
+        )
+        sent = await self._edit_interaction_prompt(state, text, interaction)
+        if not sent:
+            await self.send(str(state.get("chat_id") or self.space_id), text)
+
+    async def _edit_interaction_prompt(
+        self,
+        state: dict[str, Any],
+        text: str,
+        interaction: dict[str, Any],
+    ) -> bool:
+        target_seq = int(state.get("message_seq") or 0)
+        if target_seq < 1:
+            return False
+        envelope = self._cipher.encrypt_message(
+            sender="agent",
+            text=str(text or ""),
+            attachments=[],
+            replace_seq=target_seq,
+            final=True,
+            interaction=interaction,
+        )
+        frame = {
+            "v": 1,
+            "type": "edit",
+            "targetSeq": target_seq,
+            "final": True,
+            "message": envelope,
+        }
+        try:
+            await self._send_and_wait_for_ack(frame, envelope["id"])
+            return True
+        except Exception:
+            logger.warning("Cloudflare Chat interaction edit failed", exc_info=True)
+            return False
+
+    def _model_provider_view(
+        self,
+        state: dict[str, Any],
+        page: int,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any], str]:
+        providers = state.get("providers") or []
+        page_values, page, total_pages, start = _paginate(providers, page, 10)
+        state["provider_page"] = page
+        options: list[dict[str, Any]] = []
+        values: dict[str, Any] = {}
+        for offset, provider in enumerate(page_values):
+            absolute = start + offset
+            slug = str(provider.get("slug") or "")
+            name = str(provider.get("name") or slug or "Provider")
+            count = int(provider.get("total_models") or len(provider.get("models", [])))
+            option_id = f"p{absolute}"
+            options.append(_interaction_option(
+                option_id,
+                f"{name} ({count})",
+                selected=bool(provider.get("is_current")) or slug == state.get("current_provider"),
+            ))
+            values[option_id] = {"type": "provider", "index": absolute}
+        _append_page_actions(options, values, page, total_pages, "provider_page")
+        options.append(_interaction_option("cancel", "取消", style="danger", wide=True))
+        values["cancel"] = {"type": "cancel"}
+        current_provider = str(state.get("current_provider") or "unknown")
+        for provider in providers:
+            if str(provider.get("slug") or "") == current_provider:
+                current_provider = str(provider.get("name") or current_provider)
+                break
+        page_info = f"{page + 1}/{total_pages}" if total_pages > 1 else ""
+        text = (
+            "**模型配置**\n\n"
+            f"当前模型：`{state.get('current_model') or 'unknown'}`\n"
+            f"提供商：{current_provider}\n\n"
+            "请选择提供商："
+        )
+        return text, options, values, page_info
+
+    def _model_models_view(
+        self,
+        state: dict[str, Any],
+        page: int,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any], str]:
+        provider = self._selected_model_provider(state)
+        models = [str(value) for value in provider.get("models", [])]
+        page_values, page, total_pages, start = _paginate(models, page, 8)
+        state["model_page"] = page
+        options: list[dict[str, Any]] = []
+        values: dict[str, Any] = {}
+        for offset, model_id in enumerate(page_values):
+            absolute = start + offset
+            label = model_id.split("/")[-1]
+            option_id = f"m{absolute}"
+            options.append(_interaction_option(
+                option_id,
+                label,
+                selected=(
+                    model_id == state.get("current_model")
+                    and str(provider.get("slug") or "") == state.get("current_provider")
+                ),
+                wide=len(label) > 24,
+            ))
+            values[option_id] = {"type": "model", "index": absolute}
+        _append_page_actions(options, values, page, total_pages, "model_page")
+        options.append(_interaction_option("back", "返回提供商"))
+        values["back"] = {"type": "back_providers"}
+        options.append(_interaction_option("cancel", "取消", style="danger"))
+        values["cancel"] = {"type": "cancel"}
+        name = str(provider.get("name") or provider.get("slug") or "Provider")
+        total = int(provider.get("total_models") or len(models))
+        extra = f"\n另有 {total - len(models)} 个模型，可直接输入 `/model <名称>`。" if total > len(models) else ""
+        page_info = f"{page + 1}/{total_pages}" if total_pages > 1 else ""
+        text = f"**模型配置**\n\n提供商：**{name}**\n请选择模型：{extra}"
+        return text, options, values, page_info
+
+    @staticmethod
+    def _selected_model_provider(state: dict[str, Any]) -> dict[str, Any]:
+        providers = state.get("providers") or []
+        index = int(state.get("selected_provider_index", -1))
+        if index < 0 or index >= len(providers):
+            raise ValueError("model provider is unavailable")
+        return providers[index]
+
+    def _logical_user_authorized(self) -> bool:
+        if str(os.getenv("HERMES_CF_ALLOW_ALL_USERS") or "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }:
+            return True
+        allowed = {
+            value.strip()
+            for value in str(os.getenv("HERMES_CF_ALLOWED_USERS") or "").split(",")
+            if value.strip()
+        }
+        return "android-owner" in allowed
+
+    def _prune_interactions_locked(self) -> None:
+        now = int(time.time() * 1000)
+        expired = [
+            prompt_id
+            for prompt_id, state in self._pending_interactions.items()
+            if int(state.get("expires_at") or 0) <= now
+        ]
+        for prompt_id in expired:
+            self._pending_interactions.pop(prompt_id, None)
+
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": "Android Notes", "type": "dm", "chat_id": chat_id}
 
@@ -523,6 +1307,33 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                 len(event.media_urls or []),
             )
             return
+        if frame_type == "action":
+            try:
+                relay_user = str(frame.get("userId") or "").strip()
+                if not relay_user or len(relay_user) > 256:
+                    raise ValueError("Cloudflare Chat action user is invalid")
+                payload = self._cipher.decrypt_message(
+                    frame.get("message") or {},
+                    expected_sender="client",
+                )
+                if payload.get("text") or payload.get("attachments"):
+                    raise ValueError("Cloudflare Chat action payload is invalid")
+                response = payload.get("interactionResponse")
+                if not isinstance(response, dict):
+                    raise ValueError("Cloudflare Chat action response is missing")
+            except Exception as error:
+                logger.warning("Cloudflare Chat rejected an interaction action: %s", error)
+                return
+            # Do not await the callback from the WebSocket receive loop. The
+            # callback sends an edit and waits for its ACK, which must be read
+            # by this same loop. Running it as a tracked task avoids a
+            # self-deadlock while retaining single-use prompt state.
+            task = asyncio.create_task(
+                self._run_interaction_response(response, relay_user=relay_user)
+            )
+            self._interaction_tasks.add(task)
+            task.add_done_callback(self._interaction_tasks.discard)
+            return
         if frame_type == "resume_complete":
             if frame.get("hasMore") is True:
                 await self._send_frame({
@@ -535,6 +1346,19 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             return
         if frame_type == "error":
             logger.warning("Cloudflare Chat relay rejected a frame: %s", frame.get("message"))
+
+    async def _run_interaction_response(
+        self,
+        response: dict[str, Any],
+        *,
+        relay_user: str,
+    ) -> None:
+        try:
+            await self._handle_interaction_response(response, relay_user=relay_user)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("Cloudflare Chat rejected an interaction action: %s", error)
 
     async def _prepare_inbound_message(self, envelope: dict[str, Any]) -> MessageEvent:
         payload = self._cipher.decrypt_message(envelope, expected_sender="client")
@@ -570,11 +1394,18 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         )
         return event
 
-    async def _send_payload(self, text: str, attachments: list[dict[str, Any]]):
+    async def _send_payload(
+        self,
+        text: str,
+        attachments: list[dict[str, Any]],
+        *,
+        interaction: dict[str, Any] | None = None,
+    ):
         envelope = self._cipher.encrypt_message(
             sender="agent",
             text=text,
             attachments=attachments,
+            interaction=interaction,
         )
         try:
             ack = await self._send_and_wait_for_ack(envelope, envelope["id"])
@@ -941,6 +1772,90 @@ async def _standalone_send(
     except Exception as error:
         logger.debug("Cloudflare Chat standalone send failed", exc_info=True)
         return {"error": f"Cloudflare Chat standalone send failed: {error}"}
+
+
+def _interaction_option(
+    option_id: str,
+    label: str,
+    *,
+    style: str = "default",
+    selected: bool = False,
+    disabled: bool = False,
+    wide: bool = False,
+) -> dict[str, Any]:
+    safe_label = str(label or "").strip() or "选项"
+    if len(safe_label) > 120:
+        safe_label = safe_label[:117] + "..."
+    result: dict[str, Any] = {
+        "id": str(option_id),
+        "label": safe_label,
+        "style": style,
+    }
+    if selected:
+        result["selected"] = True
+    if disabled:
+        result["disabled"] = True
+    if wide:
+        result["wide"] = True
+    return result
+
+
+def _interaction_payload(
+    prompt_id: str,
+    kind: str,
+    state: str,
+    expires_at: int,
+    options: list[dict[str, Any]],
+    *,
+    stage: str = "",
+    status: str = "",
+    page_info: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "id": prompt_id,
+        "kind": kind,
+        "state": state,
+        "expiresAt": expires_at,
+        "options": options,
+    }
+    if stage:
+        payload["stage"] = stage
+    if status:
+        payload["status"] = str(status)[:500]
+    if page_info:
+        payload["pageInfo"] = str(page_info)[:100]
+    return payload
+
+
+def _paginate(values: list, page: int, per_page: int) -> tuple[list, int, int, int]:
+    total_pages = max(1, (len(values) + per_page - 1) // per_page)
+    safe_page = max(0, min(int(page), total_pages - 1))
+    start = safe_page * per_page
+    return values[start:start + per_page], safe_page, total_pages, start
+
+
+def _append_page_actions(
+    options: list[dict[str, Any]],
+    values: dict[str, Any],
+    page: int,
+    total_pages: int,
+    action_type: str,
+) -> None:
+    if page > 0:
+        options.append(_interaction_option("prev", "上一页"))
+        values["prev"] = {"type": action_type, "page": page - 1}
+    if page < total_pages - 1:
+        options.append(_interaction_option("next", "下一页"))
+        values["next"] = {"type": action_type, "page": page + 1}
+
+
+async def _await_callback(callback, *args):
+    if callback is None:
+        raise RuntimeError("Hermes interaction callback expired")
+    result = callback(*args)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 def _standalone_media_path(value: Any) -> str:

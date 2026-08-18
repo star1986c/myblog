@@ -27,6 +27,19 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.2.0 adds Hermes-native interactive prompts to the encrypted Android
+chat. The adapter implements `send_model_picker`, `send_choice_picker`,
+`send_exec_approval`, `send_slash_confirm`, and `send_clarify` using the same
+resolver/callback contracts as the official Telegram adapter. Prompt text,
+button labels, selections, and results stay inside the existing AES-GCM message
+payload. Button taps use a short-lived encrypted WebSocket action that is routed
+to the matching profile but is not stored as chat history; the resolved result
+replaces the original prompt as a durable encrypted edit. Deploy the matching
+Worker first, then replace the complete plugin directory and restart each
+profile Gateway. Finally install Android 2.15. Environment variables and chat
+keys do not change. Pending prompts do not survive a Gateway restart; send the
+command again after upgrading.
+
 Version 0.1.8 adds Hermes out-of-process cron delivery. The plugin registers a
 `standalone_sender_fn` and publishes each encrypted cron result through a
 short-lived authenticated HTTPS request, so `hermes cron run` does not need to

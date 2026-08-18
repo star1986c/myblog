@@ -39,6 +39,10 @@ test("profile rooms retain old client sockets and forward durable events to regi
   assert.match(room, /Replaced by a newer Hermes agent connection/);
   assert.match(room, /replacedByConnectionId: connectionId/);
   assert.match(room, /isReplacedHermesChatAgentAttachment\(attachment\)/);
+  assert.match(room, /frame\.type === "action"/);
+  assert.match(room, /validateHermesChatAction\(frame, "client"\)/);
+  assert.match(room, /durable: false/);
+  assert.doesNotMatch(room, /storeMessage\(action/);
 });
 
 test("gateway chooses multiplex mode without removing the legacy single-space route", () => {

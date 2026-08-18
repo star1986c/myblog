@@ -74,7 +74,10 @@ final class HermesChatHistoryStore {
             target.sentAt,
             target.sequence,
             incoming.text,
-            attachments
+            attachments,
+            cloneObject(incoming.interaction),
+            0,
+            false
           ));
         } else {
           messages.add(asStandalone(incoming));
@@ -108,7 +111,10 @@ final class HermesChatHistoryStore {
           message.sentAt,
           sequence,
           message.text,
-          cloneArray(message.attachments)
+          cloneArray(message.attachments),
+          cloneObject(message.interaction),
+          message.replaceSequence,
+          message.finalUpdate
         ));
       }
       Snapshot updated = new Snapshot(Math.max(current.lastSequence, sequence), messages);
@@ -221,7 +227,8 @@ final class HermesChatHistoryStore {
       .put("sentAt", message.sentAt)
       .put("sequence", message.sequence)
       .put("text", message.text)
-      .put("attachments", cloneArray(message.attachments));
+      .put("attachments", cloneArray(message.attachments))
+      .put("interaction", cloneObject(message.interaction));
   }
 
   private static HermesChatCrypto.ChatMessage messageFromJson(JSONObject value) throws Exception {
@@ -231,6 +238,7 @@ final class HermesChatHistoryStore {
     long sequence = value.getLong("sequence");
     String text = value.getString("text");
     JSONArray attachments = value.optJSONArray("attachments");
+    JSONObject interaction = value.optJSONObject("interaction");
     if (id.isEmpty() || (!"client".equals(sender) && !"agent".equals(sender))
         || sentAt < 0 || sequence < 0 || text.length() > 50_000
         || (attachments != null && attachments.length() > 8)) {
@@ -242,7 +250,10 @@ final class HermesChatHistoryStore {
       sentAt,
       sequence,
       text,
-      attachments == null ? new JSONArray() : cloneArray(attachments)
+      attachments == null ? new JSONArray() : cloneArray(attachments),
+      interaction == null ? new JSONObject() : cloneObject(interaction),
+      0,
+      false
     );
   }
 
@@ -255,7 +266,10 @@ final class HermesChatHistoryStore {
       message.sentAt,
       message.sequence,
       message.text,
-      cloneArray(message.attachments)
+      cloneArray(message.attachments),
+      cloneObject(message.interaction),
+      0,
+      false
     );
   }
 
@@ -267,6 +281,7 @@ final class HermesChatHistoryStore {
       message.sequence,
       message.text,
       cloneArray(message.attachments),
+      cloneObject(message.interaction),
       message.replaceSequence,
       message.finalUpdate
     );
@@ -285,6 +300,14 @@ final class HermesChatHistoryStore {
       return new JSONArray(value == null ? "[]" : value.toString());
     } catch (Exception error) {
       return new JSONArray();
+    }
+  }
+
+  private static JSONObject cloneObject(JSONObject value) {
+    try {
+      return new JSONObject(value == null ? "{}" : value.toString());
+    } catch (Exception error) {
+      return new JSONObject();
     }
   }
 

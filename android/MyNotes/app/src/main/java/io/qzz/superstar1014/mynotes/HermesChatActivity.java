@@ -80,6 +80,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private static final int REQUEST_ATTACHMENT = 2201;
   private static final int REQUEST_SAVE_ATTACHMENT = 2202;
   private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
+  private static final long INTERACTION_RESULT_TIMEOUT_MS = 20_000L;
   private static final long SHARE_FILE_LIFETIME_MS = 60 * 60 * 1_000L;
   private static final long STALE_SHARE_FILE_AGE_MS = 24 * 60 * 60 * 1_000L;
   private static final DateTimeFormatter MESSAGE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
@@ -95,6 +96,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private final Map<String, RenderedMessage> renderedMessagesById = new HashMap<>();
   private final List<RenderedMessage> renderedMessageOrder = new ArrayList<>();
   private final Set<String> selectedMessageIds = new HashSet<>();
+  private final Set<String> pendingInteractionPromptIds = new HashSet<>();
+  private final Map<String, PendingInteractionAction> pendingInteractionActions = new HashMap<>();
   private final Set<File> playbackFiles = new HashSet<>();
   private final Set<Dialog> playbackDialogs = new HashSet<>();
   private final OnBackInvokedCallback backCallback = this::handleSystemBack;
@@ -314,9 +317,24 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         current.sentAt,
         sequence,
         current.text,
-        current.attachments
+        current.attachments,
+        current.interaction,
+        current.replaceSequence,
+        current.finalUpdate
       );
       renderedMessagesBySequence.put(sequence, rendered);
+    });
+  }
+
+  @Override
+  public void onActionAcknowledged(String actionId, boolean delivered) {
+    runOnUiThread(() -> {
+      PendingInteractionAction pending = pendingInteractionActions.get(actionId);
+      if (pending == null || delivered) return;
+      clearPendingInteraction(pending.promptId);
+      RenderedMessage rendered = renderedMessagesById.get(pending.messageId);
+      if (rendered != null) renderMessageContent(rendered);
+      toast("Hermes Agent 当前未连接，未执行此操作。");
     });
   }
 
@@ -759,6 +777,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     renderedMessagesBySequence.clear();
     renderedMessagesById.clear();
     renderedMessageOrder.clear();
+    clearAllPendingInteractions();
     selectedMessageIds.clear();
     closeMessageSearch(false);
     updateMessageSelectionUi();
@@ -848,6 +867,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
       @Override public void onAcknowledged(String messageId, long sequence) {
         if (active()) HermesChatActivity.this.onAcknowledged(messageId, sequence);
+      }
+
+      @Override public void onActionAcknowledged(String actionId, boolean delivered) {
+        if (active()) HermesChatActivity.this.onActionAcknowledged(actionId, delivered);
       }
 
       @Override public void onTyping(boolean active) {
@@ -1486,6 +1509,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     for (String messageId : messageIds) {
       RenderedMessage rendered = renderedMessagesById.remove(messageId);
       if (rendered == null) continue;
+      clearPendingInteraction(interactionId(rendered.message.interaction));
       messages.removeView(rendered.row);
       renderedMessageOrder.remove(rendered);
       renderedMessageIds.remove(messageId);
@@ -1595,7 +1619,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           message.sentAt,
           message.sequence,
           message.text,
-          message.attachments
+          message.attachments,
+          message.interaction,
+          0,
+          false
         ));
       }
       return;
@@ -1610,8 +1637,13 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       original.sentAt,
       original.sequence,
       message.text,
-      attachments
+      attachments,
+      message.interaction,
+      0,
+      false
     );
+    clearPendingInteraction(interactionId(original.interaction));
+    clearPendingInteraction(interactionId(message.interaction));
     renderMessageContent(rendered);
     String sentTime = formatMessageTime(original.sentAt);
     rendered.meta.setText(message.finalUpdate ? sentTime : sentTime + " · 正在回复");
@@ -1655,12 +1687,27 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     }
   }
 
+  private static final class PendingInteractionAction {
+    final String promptId;
+    final String messageId;
+    Runnable timeout;
+
+    PendingInteractionAction(String promptId, String messageId) {
+      this.promptId = promptId;
+      this.messageId = messageId;
+    }
+  }
+
   private void renderMessageContent(RenderedMessage rendered) {
     rendered.content.removeAllViews();
     rendered.selectableTextViews.clear();
     rendered.codeCopyButtons.clear();
     String value = safeMessageText(rendered.message);
-    rendered.content.setVisibility(value.trim().isEmpty() ? View.GONE : View.VISIBLE);
+    boolean hasInteraction = rendered.message.interaction != null
+      && rendered.message.interaction.length() > 0;
+    rendered.content.setVisibility(
+      value.trim().isEmpty() && !hasInteraction ? View.GONE : View.VISIBLE
+    );
     boolean first = true;
     for (HermesChatMarkdown.Block block : HermesChatMarkdown.parseBlocks(value)) {
       View blockView;
@@ -1682,7 +1729,222 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       rendered.content.addView(blockView, blockParams);
       first = false;
     }
+    addInteractionCard(rendered);
     applyBubbleAppearance(rendered);
+  }
+
+  private void addInteractionCard(RenderedMessage rendered) {
+    JSONObject interaction = rendered.message.interaction;
+    if (rendered.outgoing || interaction == null || interaction.length() == 0) return;
+    String promptId = interaction.optString("id");
+    String state = interaction.optString("state");
+    long expiresAt = interaction.optLong("expiresAt");
+    boolean expired = "pending".equals(state)
+      && expiresAt > 0
+      && expiresAt <= System.currentTimeMillis();
+    boolean submitting = pendingInteractionPromptIds.contains(promptId);
+
+    LinearLayout card = vertical();
+    card.setPadding(dp(8), dp(8), dp(8), dp(8));
+    card.setBackground(roundedStroke(
+      R.color.background,
+      expired || "error".equals(state) ? R.color.warning : R.color.divider,
+      14,
+      1
+    ));
+    String pageInfo = interaction.optString("pageInfo");
+    String statusText = interaction.optString("status");
+    if (submitting) statusText = "正在提交选择，请稍候…";
+    else if (expired) statusText = "此操作已过期，请重新发送指令。";
+    else if (statusText.isEmpty() && !pageInfo.isEmpty()) statusText = "第 " + pageInfo + " 页";
+    if (!statusText.isEmpty()) {
+      TextView statusView = text(statusText, 12, R.color.text_secondary);
+      statusView.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+      statusView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, dp(36));
+      statusParams.bottomMargin = "pending".equals(state) && !expired ? dp(4) : 0;
+      card.addView(statusView, statusParams);
+    }
+
+    JSONArray options = interaction.optJSONArray("options");
+    if ("pending".equals(state) && !expired && options != null) {
+      LinearLayout row = null;
+      int rowItems = 0;
+      for (int index = 0; index < options.length(); index++) {
+        JSONObject option = options.optJSONObject(index);
+        if (option == null) continue;
+        boolean wide = option.optBoolean("wide") || option.optString("label").length() > 22;
+        Button button = interactionButton(rendered, interaction, option, submitting);
+        if (wide) {
+          if (row != null) {
+            card.addView(row, interactionRowParams(card.getChildCount() > 0));
+            row = null;
+            rowItems = 0;
+          }
+          LinearLayout.LayoutParams wideParams = new LinearLayout.LayoutParams(-1, -2);
+          wideParams.topMargin = card.getChildCount() > 0 ? dp(8) : 0;
+          card.addView(button, wideParams);
+          continue;
+        }
+        if (row == null) row = horizontal(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(0, -2, 1);
+        if (rowItems > 0) buttonParams.leftMargin = dp(8);
+        row.addView(button, buttonParams);
+        rowItems += 1;
+        if (rowItems == 2) {
+          card.addView(row, interactionRowParams(card.getChildCount() > 0));
+          row = null;
+          rowItems = 0;
+        }
+      }
+      if (row != null) card.addView(row, interactionRowParams(card.getChildCount() > 0));
+    }
+
+    LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+      messageContentMaximumWidth(),
+      -2
+    );
+    cardParams.topMargin = dp(10);
+    rendered.content.addView(card, cardParams);
+  }
+
+  private LinearLayout.LayoutParams interactionRowParams(boolean hasContentAbove) {
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+    params.topMargin = hasContentAbove ? dp(8) : 0;
+    return params;
+  }
+
+  private Button interactionButton(
+    RenderedMessage rendered,
+    JSONObject interaction,
+    JSONObject option,
+    boolean submitting
+  ) {
+    String label = option.optString("label", "选项");
+    boolean selected = option.optBoolean("selected");
+    boolean disabled = option.optBoolean("disabled") || submitting;
+    String style = option.optString("style", "default");
+    Button button = new Button(this);
+    button.setAllCaps(false);
+    button.setText((selected ? "✓ " : "") + label);
+    button.setTextSize(14);
+    button.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+    button.setGravity(Gravity.CENTER);
+    button.setMinWidth(0);
+    button.setMinHeight(dp(48));
+    button.setMaxLines(3);
+    button.setEllipsize(TextUtils.TruncateAt.END);
+    button.setPadding(dp(10), dp(8), dp(10), dp(8));
+
+    int fill = getColor(R.color.background);
+    int stroke = getColor(selected ? R.color.brand_primary_dark : R.color.divider);
+    int foreground = getColor(R.color.brand_primary_dark);
+    int strokeWidth = selected ? 2 : 1;
+    if ("primary".equals(style)) {
+      fill = getColor(R.color.brand_primary);
+      stroke = getColor(R.color.brand_primary_dark);
+      foreground = getColor(R.color.on_brand);
+    } else if ("danger".equals(style)) {
+      stroke = getColor(R.color.danger);
+      foreground = getColor(R.color.danger);
+    } else if ("warning".equals(style)) {
+      stroke = getColor(R.color.warning);
+      foreground = getColor(R.color.warning);
+    }
+    GradientDrawable shape = roundedColor(fill, 12);
+    shape.setStroke(dp(strokeWidth), stroke);
+    button.setTextColor(foreground);
+    button.setBackground(new RippleDrawable(
+      ColorStateList.valueOf(0x2208675F),
+      shape,
+      null
+    ));
+    button.setEnabled(!disabled);
+    button.setAlpha(disabled ? 0.58f : 1f);
+    button.setContentDescription(
+      label + (selected ? "，当前选中" : "") + (disabled ? "，不可操作" : "，点按选择")
+    );
+    button.setOnClickListener(view -> {
+      if (!selectedMessageIds.isEmpty()) {
+        toggleMessageSelection(rendered);
+        return;
+      }
+      sendInteractionOption(
+        rendered,
+        interaction.optString("id"),
+        option.optString("id")
+      );
+    });
+    button.setOnLongClickListener(view -> rendered.bubble.performLongClick());
+    return button;
+  }
+
+  private void sendInteractionOption(
+    RenderedMessage rendered,
+    String promptId,
+    String optionId
+  ) {
+    if (selectedProfile == null || promptId.isEmpty() || optionId.isEmpty()) return;
+    JSONObject interaction = rendered.message.interaction;
+    if (!"pending".equals(interaction.optString("state"))) return;
+    long expiresAt = interaction.optLong("expiresAt");
+    if (expiresAt > 0 && expiresAt <= System.currentTimeMillis()) {
+      renderMessageContent(rendered);
+      toast("此操作已过期，请重新发送指令。");
+      return;
+    }
+    if (pendingInteractionPromptIds.contains(promptId)) return;
+    pendingInteractionPromptIds.add(promptId);
+    renderMessageContent(rendered);
+    try {
+      String actionId = connection.sendInteractionAction(
+        selectedProfile.id,
+        promptId,
+        optionId
+      );
+      PendingInteractionAction pending = new PendingInteractionAction(
+        promptId,
+        rendered.message.id
+      );
+      pending.timeout = () -> {
+        PendingInteractionAction current = pendingInteractionActions.remove(actionId);
+        if (current != pending) return;
+        pendingInteractionPromptIds.remove(promptId);
+        RenderedMessage currentMessage = renderedMessagesById.get(pending.messageId);
+        if (currentMessage != null) renderMessageContent(currentMessage);
+        toast("Hermes 未在规定时间内确认操作，请检查 Agent 连接后重试。");
+      };
+      pendingInteractionActions.put(actionId, pending);
+      handler.postDelayed(pending.timeout, INTERACTION_RESULT_TIMEOUT_MS);
+    } catch (Exception error) {
+      pendingInteractionPromptIds.remove(promptId);
+      renderMessageContent(rendered);
+      toast(error.getMessage());
+    }
+  }
+
+  private void clearPendingInteraction(String promptId) {
+    if (promptId == null || promptId.isEmpty()) return;
+    pendingInteractionPromptIds.remove(promptId);
+    for (Map.Entry<String, PendingInteractionAction> entry
+        : new ArrayList<>(pendingInteractionActions.entrySet())) {
+      PendingInteractionAction pending = entry.getValue();
+      if (!promptId.equals(pending.promptId)) continue;
+      if (pending.timeout != null) handler.removeCallbacks(pending.timeout);
+      pendingInteractionActions.remove(entry.getKey());
+    }
+  }
+
+  private void clearAllPendingInteractions() {
+    for (PendingInteractionAction pending : pendingInteractionActions.values()) {
+      if (pending.timeout != null) handler.removeCallbacks(pending.timeout);
+    }
+    pendingInteractionActions.clear();
+    pendingInteractionPromptIds.clear();
+  }
+
+  private static String interactionId(JSONObject interaction) {
+    return interaction == null ? "" : interaction.optString("id");
   }
 
   private View codeBlockView(RenderedMessage rendered, HermesChatMarkdown.Block block) {

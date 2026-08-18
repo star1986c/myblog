@@ -65,24 +65,26 @@ final class HermesChatCrypto {
     } else if (replaceSequence < 0) {
       throw new IllegalArgumentException("消息替换序号无效。");
     }
-    byte[] nonce = new byte[12];
-    RANDOM.nextBytes(nonce);
-    byte[] ciphertext = crypt(
-      Cipher.ENCRYPT_MODE,
-      plaintext.toString().getBytes(StandardCharsets.UTF_8),
-      nonce,
-      messageAad(messageId, sender, sentAt)
-    );
-    return new JSONObject()
-      .put("v", 1)
-      .put("type", "message")
-      .put("id", messageId)
-      .put("sender", sender)
-      .put("sentAt", sentAt)
-      .put("encrypted", new JSONObject()
-        .put("alg", "A256GCM")
-        .put("nonce", encode(nonce))
-        .put("ciphertext", encode(ciphertext)));
+    return encryptPayload(sender, messageId, sentAt, plaintext);
+  }
+
+  JSONObject encryptInteractionResponse(
+    String promptId,
+    String optionId,
+    String messageId,
+    long sentAt
+  ) throws Exception {
+    requireUuid(promptId, "交互请求 id 无效。");
+    if (!isInteractionToken(optionId, 64)) {
+      throw new IllegalArgumentException("交互选项 id 无效。");
+    }
+    JSONObject plaintext = new JSONObject()
+      .put("text", "")
+      .put("attachments", new JSONArray())
+      .put("interactionResponse", new JSONObject()
+        .put("promptId", promptId)
+        .put("optionId", optionId));
+    return encryptPayload("client", messageId, sentAt, plaintext);
   }
 
   ChatMessage decryptMessage(JSONObject envelope, long sequence) throws Exception {
@@ -106,6 +108,13 @@ final class HermesChatCrypto {
       messageAad(messageId, sender, sentAt)
     );
     JSONObject payload = new JSONObject(new String(plaintext, StandardCharsets.UTF_8));
+    JSONObject interaction = payload.optJSONObject("interaction");
+    if (interaction != null) {
+      if (!"agent".equals(sender)) {
+        throw new IllegalArgumentException("仅 Hermes 可以发送交互操作。");
+      }
+      interaction = validateInteraction(interaction);
+    }
     long replaceSequence = payload.has("replaceSeq") ? payload.getLong("replaceSeq") : 0;
     boolean finalUpdate = payload.has("final") && payload.getBoolean("final");
     if ((payload.has("replaceSeq") || payload.has("final"))
@@ -121,9 +130,37 @@ final class HermesChatCrypto {
       payload.optJSONArray("attachments") == null
         ? new JSONArray()
         : payload.getJSONArray("attachments"),
+      interaction == null ? new JSONObject() : interaction,
       replaceSequence,
       finalUpdate
     );
+  }
+
+  private JSONObject encryptPayload(
+    String sender,
+    String messageId,
+    long sentAt,
+    JSONObject plaintext
+  ) throws Exception {
+    requireUuid(messageId, "消息 id 无效。");
+    byte[] nonce = new byte[12];
+    RANDOM.nextBytes(nonce);
+    byte[] ciphertext = crypt(
+      Cipher.ENCRYPT_MODE,
+      plaintext.toString().getBytes(StandardCharsets.UTF_8),
+      nonce,
+      messageAad(messageId, sender, sentAt)
+    );
+    return new JSONObject()
+      .put("v", 1)
+      .put("type", "message")
+      .put("id", messageId)
+      .put("sender", sender)
+      .put("sentAt", sentAt)
+      .put("encrypted", new JSONObject()
+        .put("alg", "A256GCM")
+        .put("nonce", encode(nonce))
+        .put("ciphertext", encode(ciphertext)));
   }
 
   EncryptedAttachment encryptAttachment(
@@ -246,6 +283,75 @@ final class HermesChatCrypto {
     return contentType;
   }
 
+  private static JSONObject validateInteraction(JSONObject value) throws Exception {
+    requireUuid(value.getString("id"), "交互请求 id 无效。");
+    String kind = value.getString("kind");
+    if (!kind.matches("approval|slash_confirm|clarify|model|choice")) {
+      throw new IllegalArgumentException("交互类型无效。");
+    }
+    String state = value.getString("state");
+    if (!state.matches("pending|resolved|expired|error")) {
+      throw new IllegalArgumentException("交互状态无效。");
+    }
+    Object expires = value.get("expiresAt");
+    if (!(expires instanceof Number) || ((Number) expires).longValue() < 0) {
+      throw new IllegalArgumentException("交互过期时间无效。");
+    }
+    JSONArray options = value.getJSONArray("options");
+    if (options.length() > 24 || ("pending".equals(state) && options.length() == 0)) {
+      throw new IllegalArgumentException("交互选项数量无效。");
+    }
+    for (int index = 0; index < options.length(); index++) {
+      JSONObject option = options.getJSONObject(index);
+      if (!isInteractionToken(option.getString("id"), 64)) {
+        throw new IllegalArgumentException("交互选项 id 无效。");
+      }
+      String label = option.getString("label");
+      if (label.isEmpty() || label.length() > 120) {
+        throw new IllegalArgumentException("交互选项文字无效。");
+      }
+      if (!option.optString("style", "default").matches("default|primary|danger|warning")) {
+        throw new IllegalArgumentException("交互选项样式无效。");
+      }
+      for (String flag : new String[] {"selected", "disabled", "wide"}) {
+        if (option.has(flag) && !(option.get(flag) instanceof Boolean)) {
+          throw new IllegalArgumentException("交互选项状态无效。");
+        }
+      }
+    }
+    if (value.optString("stage").length() > 32
+        || value.optString("status").length() > 500
+        || value.optString("pageInfo").length() > 100) {
+      throw new IllegalArgumentException("交互说明文字过长。");
+    }
+    return new JSONObject(value.toString());
+  }
+
+  private static void requireUuid(String value, String message) {
+    try {
+      if (!UUID.fromString(value).toString().equals(value.toLowerCase(java.util.Locale.ROOT))) {
+        throw new IllegalArgumentException(message);
+      }
+    } catch (Exception error) {
+      throw new IllegalArgumentException(message, error);
+    }
+  }
+
+  private static boolean isInteractionToken(String value, int maximum) {
+    return value != null
+      && value.length() >= 1
+      && value.length() <= maximum
+      && value.matches("[A-Za-z0-9_-]+");
+  }
+
+  private static JSONObject copyObject(JSONObject value) {
+    try {
+      return new JSONObject(value == null ? "{}" : value.toString());
+    } catch (Exception ignored) {
+      return new JSONObject();
+    }
+  }
+
   private static String encode(byte[] value) {
     return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
   }
@@ -261,6 +367,7 @@ final class HermesChatCrypto {
     long sequence;
     final String text;
     final JSONArray attachments;
+    final JSONObject interaction;
     final long replaceSequence;
     final boolean finalUpdate;
 
@@ -272,7 +379,7 @@ final class HermesChatCrypto {
       String text,
       JSONArray attachments
     ) {
-      this(id, sender, sentAt, sequence, text, attachments, 0, false);
+      this(id, sender, sentAt, sequence, text, attachments, new JSONObject(), 0, false);
     }
 
     ChatMessage(
@@ -285,12 +392,27 @@ final class HermesChatCrypto {
       long replaceSequence,
       boolean finalUpdate
     ) {
+      this(id, sender, sentAt, sequence, text, attachments, new JSONObject(), replaceSequence, finalUpdate);
+    }
+
+    ChatMessage(
+      String id,
+      String sender,
+      long sentAt,
+      long sequence,
+      String text,
+      JSONArray attachments,
+      JSONObject interaction,
+      long replaceSequence,
+      boolean finalUpdate
+    ) {
       this.id = id;
       this.sender = sender;
       this.sentAt = sentAt;
       this.sequence = sequence;
       this.text = text;
       this.attachments = attachments;
+      this.interaction = copyObject(interaction);
       this.replaceSequence = replaceSequence;
       this.finalUpdate = finalUpdate;
     }

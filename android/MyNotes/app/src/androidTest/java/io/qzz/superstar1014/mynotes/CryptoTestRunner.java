@@ -15,6 +15,7 @@ import android.view.WindowInsetsController;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -60,6 +61,16 @@ public final class CryptoTestRunner extends Instrumentation {
         result.putString(
           REPORT_KEY_STREAMRESULT,
           "Hermes short-message time and attachment icon QA: PASS\n"
+        );
+        Thread.sleep(15_000L);
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
+      if ("interaction-buttons".equals(arguments.getString("uiQa"))) {
+        showHermesInteractionButtonsForQa();
+        result.putString(
+          REPORT_KEY_STREAMRESULT,
+          "Hermes encrypted interaction buttons QA: PASS\n"
         );
         Thread.sleep(15_000L);
         finish(Activity.RESULT_OK, result);
@@ -230,6 +241,76 @@ public final class CryptoTestRunner extends Instrumentation {
       )) {
         require(descriptions.contains(expected), "Missing Hermes QA icon: " + expected);
       }
+    });
+  }
+
+  private void showHermesInteractionButtonsForQa() throws Exception {
+    Intent intent = new Intent(getTargetContext(), HermesChatActivity.class)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      .putExtra("demo", true)
+      .putExtra(HermesChatActivity.EXTRA_PROFILE_LABEL, "Hermes 交互按钮验证");
+    HermesChatActivity activity = (HermesChatActivity) startActivitySync(intent);
+    long now = System.currentTimeMillis();
+    org.json.JSONObject interaction = new org.json.JSONObject()
+      .put("id", "550e8400-e29b-41d4-a716-446655440021")
+      .put("kind", "model")
+      .put("state", "pending")
+      .put("expiresAt", now + 300_000L)
+      .put("stage", "providers")
+      .put("options", new org.json.JSONArray()
+        .put(new org.json.JSONObject()
+          .put("id", "p0")
+          .put("label", "Mixture of Agents (1)")
+          .put("style", "default"))
+        .put(new org.json.JSONObject()
+          .put("id", "p1")
+          .put("label", "DeepSeek (2)")
+          .put("style", "default")
+          .put("selected", true))
+        .put(new org.json.JSONObject()
+          .put("id", "p2")
+          .put("label", "Kimi / Moonshot (11)")
+          .put("style", "default")
+          .put("wide", true))
+        .put(new org.json.JSONObject()
+          .put("id", "cancel")
+          .put("label", "取消")
+          .put("style", "danger")
+          .put("wide", true)));
+    runOnMainSync(() -> activity.onMessage(new HermesChatCrypto.ChatMessage(
+      "550e8400-e29b-41d4-a716-446655440025",
+      "agent",
+      now,
+      2_100,
+      "## 模型配置\n\n当前模型：`deepseek-v4-flash`\n提供商：DeepSeek\n\n请选择提供商：",
+      new org.json.JSONArray(),
+      interaction,
+      0,
+      false
+    )));
+    waitForIdleSync();
+    Thread.sleep(500L);
+    waitForIdleSync();
+
+    runOnMainSync(() -> {
+      List<Button> buttons = new java.util.ArrayList<>();
+      collectViews(activity.getWindow().getDecorView(), Button.class, buttons);
+      Set<String> labels = new java.util.HashSet<>();
+      float density = activity.getResources().getDisplayMetrics().density;
+      for (Button button : buttons) {
+        String label = button.getText().toString();
+        if (label.contains("DeepSeek") || label.contains("Kimi")
+            || label.contains("Mixture") || label.contains("取消")) {
+          labels.add(label);
+          require(
+            button.getMinimumHeight() >= Math.round(48f * density),
+            "Hermes interaction target is smaller than 48dp"
+          );
+        }
+      }
+      require(labels.contains("✓ DeepSeek (2)"), "Selected Hermes model provider lacks a check mark");
+      require(labels.contains("Kimi / Moonshot (11)"), "Wide Hermes provider action is missing");
+      require(labels.contains("取消"), "Hermes interaction cancel action is missing");
     });
   }
 
@@ -447,6 +528,32 @@ public final class CryptoTestRunner extends Instrumentation {
     require(edit.replaceSequence == 7, "Hermes edit target was not authenticated");
     require(edit.finalUpdate, "Hermes final edit flag was not authenticated");
 
+    org.json.JSONObject interactionFixture = new org.json.JSONObject(
+      "{\"v\":1,\"type\":\"message\","
+        + "\"id\":\"550e8400-e29b-41d4-a716-446655440024\","
+        + "\"sender\":\"agent\",\"sentAt\":1800000000000,"
+        + "\"encrypted\":{\"alg\":\"A256GCM\","
+        + "\"nonce\":\"AAECAwQFBgcICQoL\","
+        + "\"ciphertext\":\"PCCifr2R4CGvqTg8WGnxiwh_YZxRnsH33uh1YaPy5SeHMoLezrVm-RfMEojm81sa1AI9oXi_za5a5Ut6bIqagNIGvVi6tQRbPmGfXoq3OtgIp6xQTwF-XMyZquEZx4i75sxt0JJ0_S6qLA6AeVcNXdEODM_B_wf3IpsyoaDKTH3PM3Sjlu3pI22PLMhTvW7uFJGbRVxj9jnNK8pNy-rZ3qOnribZz_xOl0__la_079TzvegY0NBR1QH9-uUB9ZXfMSDrmGix9PMVEraDyhK84Ype0EQUIpbTAuXjqyRqtdgnRrLOk0x3B35ly23ZdB8lzfebT-lC_MBqRxxR4vhguzayk_7-vyQcW_0eZtVIVijgli9CFm03J1MDTyJ-jdYuIzn8LNurqXLgHhZ4ffzEtrrwLyw88bJKtBNuYvZaIMvztw9Y5BYRjcaSCAIgrm3DvQM1pcQQd2LA8ntSyvA\"}}"
+    );
+    HermesChatCrypto.ChatMessage interactive = crypto.decryptMessage(interactionFixture, 9);
+    require("model".equals(interactive.interaction.getString("kind")), "Hermes interaction kind was lost");
+    require(
+      interactive.interaction.getJSONArray("options").length() == 2,
+      "Hermes interaction options were not decrypted"
+    );
+    org.json.JSONObject actionEnvelope = crypto.encryptInteractionResponse(
+      "550e8400-e29b-41d4-a716-446655440021",
+      "p0",
+      "550e8400-e29b-41d4-a716-446655440026",
+      1_800_000_000_200L
+    );
+    require(
+      !actionEnvelope.toString().contains("550e8400-e29b-41d4-a716-446655440021"),
+      "Hermes interaction response leaked its prompt id"
+    );
+    require(!actionEnvelope.toString().contains("p0"), "Hermes interaction response leaked its choice");
+
     org.json.JSONObject fixture = new org.json.JSONObject()
       .put("v", 1)
       .put("type", "message")
@@ -626,7 +733,18 @@ public final class CryptoTestRunner extends Instrumentation {
       now - 1_000,
       8,
       "本地加密正文",
-      new org.json.JSONArray().put(descriptor)
+      new org.json.JSONArray().put(descriptor),
+      new org.json.JSONObject()
+        .put("id", "550e8400-e29b-41d4-a716-446655440021")
+        .put("kind", "model")
+        .put("state", "pending")
+        .put("expiresAt", now + 300_000L)
+        .put("options", new org.json.JSONArray().put(new org.json.JSONObject()
+          .put("id", "p0")
+          .put("label", "DeepSeek")
+          .put("style", "default"))),
+      0,
+      false
     );
     history.record(old);
     history.record(recent);
@@ -643,6 +761,13 @@ public final class CryptoTestRunner extends Instrumentation {
       9,
       "流式完整正文",
       new org.json.JSONArray(),
+      new org.json.JSONObject()
+        .put("id", "550e8400-e29b-41d4-a716-446655440021")
+        .put("kind", "model")
+        .put("state", "resolved")
+        .put("expiresAt", now + 300_000L)
+        .put("status", "模型已切换")
+        .put("options", new org.json.JSONArray()),
       8,
       true
     );
@@ -657,6 +782,10 @@ public final class CryptoTestRunner extends Instrumentation {
     require(
       snapshot.messages.get(0).attachments.length() == 1,
       "Final stream update discarded cached image descriptors"
+    );
+    require(
+      "resolved".equals(snapshot.messages.get(0).interaction.getString("state")),
+      "Final interaction state did not replace the cached prompt"
     );
 
     HermesChatImageCache images = new HermesChatImageCache(

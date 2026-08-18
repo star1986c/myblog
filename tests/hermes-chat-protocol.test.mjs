@@ -6,6 +6,7 @@ import {
   createHermesChatTicket,
   parseHermesChatFrame,
   planHermesChatAgentAdmission,
+  validateHermesChatAction,
   validateHermesChatEdit,
   validateHermesChatMessage,
   validateHermesChatReceipt,
@@ -179,6 +180,29 @@ test("accepts only bounded encrypted Hermes chat messages", () => {
   assert.throws(
     () => parseHermesChatFrame("x".repeat(65 * 1024)),
     /too large/i,
+  );
+});
+
+test("routes encrypted client actions without changing the message envelope", () => {
+  const message = {
+    v: 1,
+    type: "message",
+    id: "550e8400-e29b-41d4-a716-446655440020",
+    sender: "client",
+    sentAt: 1_800_000_000_020,
+    encrypted: {
+      alg: "A256GCM",
+      nonce: "AAECAwQFBgcICQoL",
+      ciphertext: "AQIDBAUGBwgJCgsMDQ4PEA",
+    },
+  };
+  const frame = { v: 1, type: "action", message };
+
+  assert.deepEqual(validateHermesChatAction(frame, "client"), frame);
+  assert.throws(() => validateHermesChatAction(frame, "agent"), /only Hermes chat clients/i);
+  assert.throws(
+    () => validateHermesChatAction({ ...frame, message: { ...message, sender: "agent" } }, "client"),
+    /sender/i,
   );
 });
 

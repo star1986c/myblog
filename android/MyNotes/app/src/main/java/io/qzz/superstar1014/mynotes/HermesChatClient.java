@@ -24,6 +24,7 @@ final class HermesChatClient {
     void onReady();
     void onMessage(String spaceId, HermesChatCrypto.ChatMessage message);
     void onAcknowledged(String spaceId, String messageId, long sequence);
+    void onActionAcknowledged(String spaceId, String actionId, boolean delivered);
     void onTyping(String spaceId, boolean active);
     void onProfileError(String spaceId, String reason);
     void onDisconnected(String reason);
@@ -90,6 +91,27 @@ final class HermesChatClient {
       text == null ? "" : text,
       attachments == null ? new JSONArray() : attachments
     );
+  }
+
+  String sendInteractionAction(
+    String spaceId,
+    String promptId,
+    String optionId
+  ) throws Exception {
+    ProfileState profile = requireProfile(spaceId);
+    String actionId = UUID.randomUUID().toString();
+    JSONObject message = profile.crypto.encryptInteractionResponse(
+      promptId,
+      optionId,
+      actionId,
+      System.currentTimeMillis()
+    );
+    JSONObject frame = new JSONObject()
+      .put("v", 1)
+      .put("type", "action")
+      .put("message", message);
+    if (!send(spaceId, frame)) throw new IllegalStateException("聊天连接尚未就绪。");
+    return actionId;
   }
 
   void sendTyping(String spaceId, boolean active) {
@@ -201,6 +223,14 @@ final class HermesChatClient {
           return;
         }
         if ("ack".equals(type)) {
+          if (!frame.optBoolean("durable", true)) {
+            listener.onActionAcknowledged(
+              spaceId,
+              frame.optString("id"),
+              frame.optBoolean("delivered")
+            );
+            return;
+          }
           long sequence = frame.optLong("seq");
           if (sequence > 0) profile.lastSequence = Math.max(profile.lastSequence, sequence);
           listener.onAcknowledged(spaceId, frame.optString("id"), sequence);

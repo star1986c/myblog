@@ -33,7 +33,6 @@ class ChatCipherTests(unittest.TestCase):
             message_id="550e8400-e29b-41d4-a716-446655440010",
             sent_at=1_800_000_000_100,
         )
-
         self.assertNotIn("replaceSeq", envelope)
         self.assertNotIn("正在流式输出", str(envelope))
         self.assertEqual(
@@ -45,6 +44,59 @@ class ChatCipherTests(unittest.TestCase):
                 "final": True,
             },
         )
+
+    def test_interaction_and_response_are_encrypted_and_validated(self):
+        interaction = {
+            "id": "550e8400-e29b-41d4-a716-446655440021",
+            "kind": "approval",
+            "state": "pending",
+            "expiresAt": 1_800_000_300_000,
+            "options": [
+                {"id": "once", "label": "仅本次允许", "style": "primary"},
+                {"id": "deny", "label": "拒绝", "style": "danger", "wide": True},
+            ],
+        }
+        envelope = self.cipher.encrypt_message(
+            sender="agent",
+            text="需要授权",
+            interaction=interaction,
+            message_id="550e8400-e29b-41d4-a716-446655440022",
+            sent_at=1_800_000_000_000,
+        )
+
+        self.assertNotIn("仅本次允许", str(envelope))
+        self.assertEqual(
+            self.cipher.decrypt_message(envelope, expected_sender="agent")["interaction"],
+            interaction,
+        )
+
+        response = {"promptId": interaction["id"], "optionId": "once"}
+        action = self.cipher.encrypt_message(
+            sender="client",
+            text="",
+            interaction_response=response,
+            message_id="550e8400-e29b-41d4-a716-446655440023",
+            sent_at=1_800_000_000_100,
+        )
+        self.assertEqual(
+            self.cipher.decrypt_message(action, expected_sender="client")["interactionResponse"],
+            response,
+        )
+        with self.assertRaises(ValueError):
+            self.cipher.encrypt_message(
+                sender="client",
+                text="",
+                interaction=interaction,
+            )
+        with self.assertRaises(ValueError):
+            self.cipher.encrypt_message(
+                sender="client",
+                text="",
+                interaction_response={
+                    "promptId": interaction["id"],
+                    "optionId": "批准一次",
+                },
+            )
 
     def test_android_wire_fixture(self):
         envelope = {

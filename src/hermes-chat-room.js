@@ -5,6 +5,7 @@ import {
   isReplacedHermesChatAgentAttachment,
   parseHermesChatFrame,
   planHermesChatAgentAdmission,
+  validateHermesChatAction,
   validateHermesChatMessage,
   validateHermesChatEdit,
   validateHermesChatReceipt,
@@ -222,6 +223,22 @@ class HermesChatRoom extends DurableObject {
         }
         return;
       }
+      if (frame.type === "action") {
+        const action = validateHermesChatAction(frame, attachment.role);
+        const delivered = this.broadcastToOtherRole(attachment.role, {
+          ...action,
+          userId: attachment.userId,
+        }, attachment.spaceId);
+        socket.send(JSON.stringify({
+          v: CHAT_PROTOCOL_VERSION,
+          type: "ack",
+          id: action.message.id,
+          seq: 0,
+          durable: false,
+          delivered: delivered > 0,
+        }));
+        return;
+      }
       if (frame.type !== "message") {
         throw new Error("Unsupported Hermes chat frame.");
       }
@@ -355,6 +372,21 @@ class HermesChatRoom extends DurableObject {
         active: frame.active === true,
       }, spaceId);
       return [];
+    }
+    if (frame.type === "action") {
+      const action = validateHermesChatAction(frame, "client");
+      const delivered = this.broadcastToOtherRole("client", {
+        ...action,
+        userId,
+      }, spaceId);
+      return [{
+        v: CHAT_PROTOCOL_VERSION,
+        type: "ack",
+        id: action.message.id,
+        seq: 0,
+        durable: false,
+        delivered: delivered > 0,
+      }];
     }
     if (frame.type !== "message") {
       throw new Error("Unsupported Hermes chat frame.");
@@ -573,6 +605,7 @@ class HermesChatRoom extends DurableObject {
   broadcastToOtherRole(senderRole, frame, spaceId = "") {
     const receiverRole = senderRole === "client" ? "agent" : "client";
     const encoded = JSON.stringify(frame);
+    let delivered = 0;
     for (const socket of this.ctx.getWebSockets(`role:${receiverRole}`)) {
       try {
         if (
@@ -580,6 +613,7 @@ class HermesChatRoom extends DurableObject {
           && isReplacedHermesChatAgentAttachment(readSocketAttachment(socket))
         ) continue;
         socket.send(encoded);
+        delivered += 1;
       } catch (error) {
         console.warn(JSON.stringify({
           level: "warn",
@@ -591,6 +625,7 @@ class HermesChatRoom extends DurableObject {
     if (receiverRole === "client") {
       this.ctx.waitUntil(this.broadcastToClientHubs(spaceId, frame));
     }
+    return delivered;
   }
 
   async broadcastToClientHubs(spaceId, frame) {

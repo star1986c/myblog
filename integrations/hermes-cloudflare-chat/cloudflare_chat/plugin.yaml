@@ -1,7 +1,7 @@
 name: cloudflare_chat
 label: Cloudflare Chat
 kind: platform
-version: 0.1.8
+version: 0.2.0
 description: End-to-end encrypted Cloudflare chat with rich files and media for a private Hermes NAS.
 author: superstar1014
 requires_env:

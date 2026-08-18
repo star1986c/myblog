@@ -16,6 +16,16 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 PROTOCOL_VERSION = 1
 MAX_TEXT_CHARS = 50_000
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_INTERACTION_OPTIONS = 24
+INTERACTION_KINDS = frozenset({
+    "approval",
+    "slash_confirm",
+    "clarify",
+    "model",
+    "choice",
+})
+INTERACTION_STATES = frozenset({"pending", "resolved", "expired", "error"})
+INTERACTION_STYLES = frozenset({"default", "primary", "danger", "warning"})
 
 
 def _b64url_encode(value: bytes) -> str:
@@ -72,6 +82,8 @@ class ChatCipher:
         sent_at: int | None = None,
         replace_seq: int | None = None,
         final: bool = False,
+        interaction: dict[str, Any] | None = None,
+        interaction_response: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if sender not in {"client", "agent"}:
             raise ValueError("invalid sender")
@@ -80,6 +92,18 @@ class ChatCipher:
         message_id = message_id or str(uuid.uuid4())
         sent_at = int(sent_at if sent_at is not None else time.time() * 1000)
         payload: dict[str, Any] = {"text": text, "attachments": attachments or []}
+        if interaction is not None and interaction_response is not None:
+            raise ValueError("message cannot contain both an interaction and a response")
+        if interaction is not None:
+            if sender != "agent":
+                raise ValueError("only the agent may send interactions")
+            payload["interaction"] = _normalize_interaction(interaction)
+        if interaction_response is not None:
+            if sender != "client":
+                raise ValueError("only the client may send interaction responses")
+            payload["interactionResponse"] = _normalize_interaction_response(
+                interaction_response
+            )
         if replace_seq is not None:
             if not isinstance(replace_seq, int) or isinstance(replace_seq, bool) or replace_seq < 1:
                 raise ValueError("replacement sequence must be a positive integer")
@@ -140,6 +164,16 @@ class ChatCipher:
         if not isinstance(attachments, list) or len(attachments) > 8:
             raise ValueError("decrypted attachment list is invalid")
         result = {"text": text, "attachments": attachments}
+        if "interaction" in payload:
+            if expected_sender != "agent":
+                raise ValueError("unexpected interaction sender")
+            result["interaction"] = _normalize_interaction(payload["interaction"])
+        if "interactionResponse" in payload:
+            if expected_sender != "client":
+                raise ValueError("unexpected interaction response sender")
+            result["interactionResponse"] = _normalize_interaction_response(
+                payload["interactionResponse"]
+            )
         if "replaceSeq" in payload or "final" in payload:
             replace_seq = payload.get("replaceSeq")
             final = payload.get("final")
@@ -213,3 +247,99 @@ def _safe_content_type(value: str) -> str:
     ):
         raise ValueError("invalid attachment content type")
     return content_type
+
+
+def _normalize_interaction(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("interaction must be an object")
+    prompt_id = _safe_uuid(value.get("id"), "interaction id")
+    kind = str(value.get("kind") or "")
+    state = str(value.get("state") or "")
+    if kind not in INTERACTION_KINDS or state not in INTERACTION_STATES:
+        raise ValueError("interaction kind or state is invalid")
+    expires_at = value.get("expiresAt")
+    if (
+        not isinstance(expires_at, int)
+        or isinstance(expires_at, bool)
+        or expires_at < 0
+    ):
+        raise ValueError("interaction expiry is invalid")
+    raw_options = value.get("options", [])
+    if not isinstance(raw_options, list) or len(raw_options) > MAX_INTERACTION_OPTIONS:
+        raise ValueError("interaction options are invalid")
+    options: list[dict[str, Any]] = []
+    for raw in raw_options:
+        if not isinstance(raw, dict):
+            raise ValueError("interaction option must be an object")
+        option_id = str(raw.get("id") or "")
+        label = str(raw.get("label") or "")
+        style = str(raw.get("style") or "default")
+        if not re_fullmatch_token(option_id) or not 1 <= len(label) <= 120:
+            raise ValueError("interaction option id or label is invalid")
+        if style not in INTERACTION_STYLES:
+            raise ValueError("interaction option style is invalid")
+        option = {"id": option_id, "label": label, "style": style}
+        for boolean_key in ("selected", "disabled", "wide"):
+            if boolean_key in raw:
+                if not isinstance(raw[boolean_key], bool):
+                    raise ValueError("interaction option flag is invalid")
+                option[boolean_key] = raw[boolean_key]
+        options.append(option)
+    if state == "pending" and not options:
+        raise ValueError("pending interaction requires options")
+    result: dict[str, Any] = {
+        "id": prompt_id,
+        "kind": kind,
+        "state": state,
+        "expiresAt": expires_at,
+        "options": options,
+    }
+    stage = str(value.get("stage") or "")
+    status = str(value.get("status") or "")
+    page_info = str(value.get("pageInfo") or "")
+    if stage:
+        if not re_fullmatch_token(stage, maximum=32):
+            raise ValueError("interaction stage is invalid")
+        result["stage"] = stage
+    if status:
+        if len(status) > 500:
+            raise ValueError("interaction status is too long")
+        result["status"] = status
+    if page_info:
+        if len(page_info) > 100:
+            raise ValueError("interaction page info is too long")
+        result["pageInfo"] = page_info
+    return result
+
+
+def _normalize_interaction_response(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("interaction response must be an object")
+    prompt_id = _safe_uuid(value.get("promptId"), "interaction response id")
+    option_id = str(value.get("optionId") or "")
+    if not re_fullmatch_token(option_id):
+        raise ValueError("interaction response option is invalid")
+    return {"promptId": prompt_id, "optionId": option_id}
+
+
+def _safe_uuid(value: Any, label: str) -> str:
+    text = str(value or "")
+    try:
+        parsed = uuid.UUID(text)
+    except (ValueError, AttributeError, TypeError) as error:
+        raise ValueError(f"{label} is invalid") from error
+    if str(parsed) != text.lower():
+        raise ValueError(f"{label} is invalid")
+    return text.lower()
+
+
+def re_fullmatch_token(value: str, maximum: int = 64) -> bool:
+    if not 1 <= len(value) <= maximum:
+        return False
+    return all(
+        "a" <= character <= "z"
+        or "A" <= character <= "Z"
+        or "0" <= character <= "9"
+        or character in "_-"
+        for character in value
+    )

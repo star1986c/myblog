@@ -264,6 +264,20 @@ function validateHermesChatMessage(frame, expectedSender) {
   };
 }
 
+function validateHermesChatAction(frame, expectedSender) {
+  if (expectedSender !== "client") {
+    throw new ServiceError("Only Hermes chat clients may send actions.", 403);
+  }
+  if (frame?.v !== CHAT_PROTOCOL_VERSION || frame?.type !== "action") {
+    throw new ServiceError("Invalid Hermes chat action.", 400);
+  }
+  return {
+    v: CHAT_PROTOCOL_VERSION,
+    type: "action",
+    message: validateHermesChatMessage(frame.message, expectedSender),
+  };
+}
+
 function validateHermesChatEdit(frame, senderRole) {
   if (senderRole !== "agent") {
     throw new ServiceError("Only Hermes agents may edit messages.", 403);
@@ -362,6 +376,7 @@ export {
   planHermesChatAgentAdmission,
   readBearerToken,
   validateHermesChatMessage,
+  validateHermesChatAction,
   validateHermesChatEdit,
   validateHermesChatReceipt,
   verifyHermesChatMultiplexTicket,

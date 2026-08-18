@@ -191,3 +191,16 @@ test("Android refreshes the cookie-bound CSRF token before Hermes chat mutations
     /void uploadHermesChatAttachment\([\s\S]*?\) throws Exception \{\s*requireFreshAuthenticatedSession\(\);/,
   );
 });
+
+test("interactive prompt state is retained in the encrypted per-profile cache", async () => {
+  const [history, crypto] = await Promise.all([
+    source("HermesChatHistoryStore.java"),
+    source("HermesChatCrypto.java"),
+  ]);
+
+  assert.match(history, /\.put\("interaction", cloneObject\(message\.interaction\)\)/);
+  assert.match(history, /value\.optJSONObject\("interaction"\)/);
+  assert.match(history, /cloneObject\(incoming\.interaction\)/);
+  assert.match(crypto, /final JSONObject interaction/);
+  assert.match(crypto, /validateInteraction\(interaction\)/);
+});

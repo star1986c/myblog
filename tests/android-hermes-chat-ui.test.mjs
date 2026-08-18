@@ -22,6 +22,14 @@ const clientPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatClient.java",
   import.meta.url,
 );
+const cryptoPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatCrypto.java",
+  import.meta.url,
+);
+const connectionManagerPath = new URL(
+  "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatConnectionManager.java",
+  import.meta.url,
+);
 const attachmentPolicyPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatAttachmentPolicy.java",
   import.meta.url,
@@ -483,4 +491,29 @@ test("decrypted chat images share through a temporary read-only content URI", as
     manifest,
     /android:name="\.HermesShareFileProvider"[\s\S]*android:exported="false"[\s\S]*android:grantUriPermissions="true"/,
   );
+});
+
+test("Hermes official interactive prompts render encrypted accessible action buttons", async () => {
+  const [activity, client, crypto, manager] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(clientPath, "utf8"),
+    readFile(cryptoPath, "utf8"),
+    readFile(connectionManagerPath, "utf8"),
+  ]);
+
+  assert.match(crypto, /payload\.optJSONObject\("interaction"\)/);
+  assert.match(crypto, /encryptInteractionResponse/);
+  assert.match(crypto, /only the agent|仅 Hermes 可以发送交互操作/);
+  assert.match(client, /\.put\("type", "action"\)/);
+  assert.match(client, /\.put\("message", message\)/);
+  assert.match(client, /!frame\.optBoolean\("durable", true\)/);
+  assert.match(manager, /sendInteractionAction\(profileId, promptId, optionId\)/);
+  assert.match(activity, /private void addInteractionCard/);
+  assert.match(activity, /button\.setMinHeight\(dp\(48\)\)/);
+  assert.match(activity, /button\.setText\(\(selected \? "✓ " : ""\) \+ label\)/);
+  assert.match(activity, /"danger"\.equals\(style\)/);
+  assert.match(activity, /"warning"\.equals\(style\)/);
+  assert.match(activity, /pendingInteractionPromptIds\.contains\(promptId\)/);
+  assert.match(activity, /INTERACTION_RESULT_TIMEOUT_MS/);
+  assert.doesNotMatch(activity, /sendMessage\([^\n]*optionId/);
 });
