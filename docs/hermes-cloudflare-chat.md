@@ -21,8 +21,9 @@ flowchart LR
 
 profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，安卓端从 API
 动态读取配置。当前实现最多接受 32 个 profile，目的是防止错误配置无限创建
-Durable Object。会话列表不会连接所有 profile，也不会从 Cloudflare 拉取全部历史；
-只读取各 profile 的本机加密缓存作为摘要，进入具体会话后才连接对应 space。
+Durable Object。会话列表不会从 Cloudflare 拉取全部历史，只读取各 profile 的本机
+加密缓存作为摘要；已配置 profile 通过一条进程级复用 WebSocket 按 space id 路由，
+不会为每个聊天对象分别创建连接。
 
 ## 隔离与安全模型
 
@@ -195,11 +196,12 @@ hermes -p personal cron run <个人任务ID>
 4. 把界面显示的 `HERMES_CF_SPACE_ID` 和密钥写入对应 NAS profile 的 `.env`。
 5. 重启对应 Gateway 后发送文字或附件验证。
 
-Android Keystore 按 profile id 独立保护密钥。Android 2.4 起，最近使用的一个 profile
-WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不会主动关闭，进程仍存活时
-会自动重连；重新进入会话后补写后台收到的消息。进入另一个对象会先关闭旧 profile，
-再加载对应缓存和 checkpoint，仍只维持一个 Durable Object 连接，不会混用历史或密钥。
-退出登录会立即关闭连接；Android 系统杀死后台进程后，WebSocket 会随进程结束。
+Android Keystore 按 profile id 独立保护密钥。Android 2.14 起，全部已配置 profile
+共享一条进程级路由 WebSocket：返回会话列表、切换 App 内页面或把 App 切到后台都不会
+主动关闭。后台期间由 `remoteMessaging` 前台服务复用同一连接，并显示低优先级常驻
+通知；进程存活时断线会自动重连，重新进入会话后补写后台收到的消息。退出登录会立即
+停止服务并关闭连接；Android 系统杀死后台进程后 WebSocket 随进程结束，服务不会自行
+拉起 App。
 
 ### Android 本地聊天缓存
 
@@ -223,7 +225,7 @@ WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不�
   “Hermes”或“你”；流式生成期间只在时间后追加“正在回复”。
 - Android 2.2 起，底部文件夹入口改为 Hermes 会话；文件夹快捷按钮和横向筛选栏
   继续保留。会话列表从本机加密快照显示任意数量 profile 的末条消息与时间，不会
-  提供搜索，也不会为列表中的其他 profile 建立 WebSocket。
+  提供服务器搜索或拉取全量历史；多个 profile 统一走同一条路由 WebSocket。
 - Android 2.4 起，聊天页在长 profile 名称和大字体下也会保留独立状态行，始终明确显示
   `WS 已连接/未连接/连接中/已断开`。
   文字或附件成功发送后会立即显示 `正在思考…`，首条 Agent 回复到达后恢复

@@ -12,9 +12,13 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -48,6 +52,26 @@ public final class CryptoTestRunner extends Instrumentation {
           REPORT_KEY_STREAMRESULT,
           "Hermes chat focus and latest-message scrolling QA: PASS\n"
         );
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
+      if ("message-layout".equals(arguments.getString("uiQa"))) {
+        showHermesMessageLayoutForQa();
+        result.putString(
+          REPORT_KEY_STREAMRESULT,
+          "Hermes short-message time and attachment icon QA: PASS\n"
+        );
+        Thread.sleep(15_000L);
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
+      if ("background-service".equals(arguments.getString("uiQa"))) {
+        startHermesBackgroundConnectionForQa();
+        result.putString(
+          REPORT_KEY_STREAMRESULT,
+          "Hermes background connection service QA setup: PASS\n"
+        );
+        Thread.sleep(15_000L);
         finish(Activity.RESULT_OK, result);
         return;
       }
@@ -120,6 +144,160 @@ public final class CryptoTestRunner extends Instrumentation {
       }
     });
     waitForIdleSync();
+  }
+
+  private void showHermesMessageLayoutForQa() throws Exception {
+    Intent intent = new Intent(getTargetContext(), HermesChatActivity.class)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      .putExtra("demo", true)
+      .putExtra(HermesChatActivity.EXTRA_PROFILE_LABEL, "Hermes 消息布局验证");
+    HermesChatActivity activity = (HermesChatActivity) startActivitySync(intent);
+    long now = System.currentTimeMillis();
+    org.json.JSONArray attachments = new org.json.JSONArray()
+      .put(qaAttachment("qa-report.pdf", "application/pdf", 245_760))
+      .put(qaAttachment(
+        "qa-data.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        1_048_576
+      ))
+      .put(qaAttachment("qa-backup.zip", "application/zip", 2_621_440))
+      .put(qaAttachment("qa-audio.mp3", "audio/mpeg", 786_432));
+    runOnMainSync(() -> {
+      activity.onMessage(new HermesChatCrypto.ChatMessage(
+        "qa-short-reset",
+        "client",
+        now,
+        2_001,
+        "/reset",
+        new org.json.JSONArray()
+      ));
+      activity.onMessage(new HermesChatCrypto.ChatMessage(
+        "qa-attachment-icons",
+        "agent",
+        now + 1,
+        2_002,
+        "附件类型图标与文件信息",
+        attachments
+      ));
+    });
+    waitForIdleSync();
+    Thread.sleep(500L);
+    waitForIdleSync();
+
+    runOnMainSync(() -> {
+      List<TextView> texts = new java.util.ArrayList<>();
+      collectViews(activity.getWindow().getDecorView(), TextView.class, texts);
+      TextView reset = null;
+      for (TextView view : texts) {
+        if ("/reset".contentEquals(view.getText())) {
+          reset = view;
+          break;
+        }
+      }
+      require(reset != null, "Hermes QA short command was not rendered");
+      ViewParentPath path = messageBubblePath(reset);
+      List<TextView> bubbleTexts = new java.util.ArrayList<>();
+      collectViews(path.bubble, TextView.class, bubbleTexts);
+      TextView timestamp = null;
+      for (TextView view : bubbleTexts) {
+        if (view.getText().toString().matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}")) {
+          timestamp = view;
+          break;
+        }
+      }
+      require(timestamp != null, "Hermes QA short command has no timestamp");
+      require(timestamp.getLayout() != null, "Hermes QA timestamp was not laid out");
+      require(timestamp.getLayout().getLineCount() == 1, "Hermes QA timestamp wrapped");
+      require(
+        timestamp.getLayout().getLineEnd(0) == timestamp.length(),
+        "Hermes QA timestamp was truncated"
+      );
+
+      List<ImageView> icons = new java.util.ArrayList<>();
+      collectViews(activity.getWindow().getDecorView(), ImageView.class, icons);
+      Set<String> descriptions = new java.util.HashSet<>();
+      for (ImageView icon : icons) {
+        CharSequence description = icon.getContentDescription();
+        if (description != null && description.toString().endsWith("附件图标")) {
+          descriptions.add(description.toString());
+        }
+      }
+      for (String expected : Arrays.asList(
+        "文档附件图标",
+        "Office附件图标",
+        "压缩包附件图标",
+        "音频附件图标"
+      )) {
+        require(descriptions.contains(expected), "Missing Hermes QA icon: " + expected);
+      }
+    });
+  }
+
+  private void startHermesBackgroundConnectionForQa() throws Exception {
+    Context context = getTargetContext();
+    Models.HermesChatProfile profile = new Models.HermesChatProfile(
+      "qa-background",
+      "Hermes 后台连接验证"
+    );
+    new HermesChatProfileStore(context).save(List.of(profile));
+    new SecureSessionStore(context).saveHermesChatKey(
+      profile.id,
+      HermesChatCrypto.generateKey()
+    );
+
+    Intent intent = new Intent(context, HermesChatActivity.class)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      .putExtra("demo", true)
+      .putExtra(HermesChatActivity.EXTRA_PROFILE_ID, profile.id)
+      .putExtra(HermesChatActivity.EXTRA_PROFILE_LABEL, profile.label);
+    HermesChatActivity activity = (HermesChatActivity) startActivitySync(intent);
+    HermesChatConnectionService.startIfConfigured(activity);
+    waitForIdleSync();
+    Thread.sleep(1_000L);
+    runOnMainSync(() -> activity.moveTaskToBack(true));
+    waitForIdleSync();
+    Thread.sleep(2_000L);
+  }
+
+  private static org.json.JSONObject qaAttachment(
+    String name,
+    String contentType,
+    long bytes
+  ) throws org.json.JSONException {
+    return new org.json.JSONObject()
+      .put("id", java.util.UUID.randomUUID().toString())
+      .put("name", name)
+      .put("contentType", contentType)
+      .put("plaintextBytes", bytes)
+      .put("nonce", "AAECAwQFBgcICQoL");
+  }
+
+  private static ViewParentPath messageBubblePath(TextView messageText) {
+    require(messageText.getParent() instanceof ViewGroup, "Hermes QA message has no content parent");
+    ViewGroup content = (ViewGroup) messageText.getParent();
+    require(content.getParent() instanceof ViewGroup, "Hermes QA message has no bubble parent");
+    return new ViewParentPath((ViewGroup) content.getParent());
+  }
+
+  private static <T extends View> void collectViews(
+    View root,
+    Class<T> type,
+    List<T> result
+  ) {
+    if (type.isInstance(root)) result.add(type.cast(root));
+    if (!(root instanceof ViewGroup)) return;
+    ViewGroup group = (ViewGroup) root;
+    for (int index = 0; index < group.getChildCount(); index++) {
+      collectViews(group.getChildAt(index), type, result);
+    }
+  }
+
+  private static final class ViewParentPath {
+    final ViewGroup bubble;
+
+    ViewParentPath(ViewGroup bubble) {
+      this.bubble = bubble;
+    }
   }
 
   private void verifyHermesChatBehaviorForQa() throws Exception {
@@ -318,6 +496,15 @@ public final class CryptoTestRunner extends Instrumentation {
       HermesChatAttachmentPolicy.resolve("video/mp4", "demo.mp4").category
         == HermesChatAttachmentPolicy.Category.VIDEO,
       "Hermes video category mismatch"
+    );
+    Set<Integer> attachmentIcons = new java.util.HashSet<>();
+    for (HermesChatAttachmentPolicy.Category category : HermesChatAttachmentPolicy.Category.values()) {
+      require(category.iconResource != 0, "Hermes attachment category has no icon");
+      attachmentIcons.add(category.iconResource);
+    }
+    require(
+      attachmentIcons.size() == HermesChatAttachmentPolicy.Category.values().length,
+      "Hermes attachment categories do not have distinct icons"
     );
     boolean rejected = false;
     try {

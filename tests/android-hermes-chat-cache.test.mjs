@@ -59,6 +59,34 @@ test("Hermes keeps one routed socket for all cached profiles for the Android pro
   );
 });
 
+test("Hermes keeps the routed socket in a non-sticky remote-messaging foreground service", async () => {
+  const [service, manifest, main, activity, conversations] = await Promise.all([
+    source("HermesChatConnectionService.java"),
+    readFile(new URL("../android/MyNotes/app/src/main/AndroidManifest.xml", import.meta.url), "utf8"),
+    source("MainActivity.java"),
+    source("HermesChatActivity.java"),
+    source("HermesConversationsActivity.java"),
+  ]);
+
+  assert.match(service, /class HermesChatConnectionService extends Service/);
+  assert.match(service, /FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING/);
+  assert.match(service, /HermesChatConnectionManager\.get\(this\)\.syncProfiles/);
+  assert.match(service, /return START_NOT_STICKY/);
+  assert.match(service, /NotificationChannel/);
+  assert.match(manifest, /android\.permission\.FOREGROUND_SERVICE_REMOTE_MESSAGING/);
+  assert.match(
+    manifest,
+    /android:name="\.HermesChatConnectionService"[\s\S]*android:foregroundServiceType="remoteMessaging"[\s\S]*android:stopWithTask="false"/,
+  );
+  assert.equal(
+    (main.match(/HermesChatConnectionService\.startIfConfigured\(this\)/g) || []).length,
+    2,
+  );
+  assert.match(main, /private void logout\(\)[\s\S]*HermesChatConnectionService\.stop\(this\)/);
+  assert.match(activity, /connection\.attach\([\s\S]*HermesChatConnectionService\.startIfConfigured\(this\)/);
+  assert.match(conversations, /connection\.syncProfiles\(profiles\)[\s\S]*HermesChatConnectionService\.startIfConfigured\(this\)/);
+});
+
 test("inactive routed profiles persist messages and unread counts locally", async () => {
   const [manager, profiles, unread] = await Promise.all([
     source("HermesChatConnectionManager.java"),

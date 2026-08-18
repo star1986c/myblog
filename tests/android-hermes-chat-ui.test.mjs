@@ -139,6 +139,10 @@ test("Hermes message footers show the local send time instead of a sender label"
   assert.match(source, /DateTimeFormatter\.ofPattern\(\s*"yyyy-MM-dd HH:mm"/);
   assert.match(source, /formatMessageTime\(message\.sentAt\)/);
   assert.match(source, /formatMessageTime\(original\.sentAt\)/);
+  assert.match(source, /meta\.setSingleLine\(true\)/);
+  assert.match(source, /meta\.setMinWidth\(dp\(112\)\)/);
+  assert.match(source, /footerParams = new LinearLayout\.LayoutParams\(-2, dp\(24\)\)/);
+  assert.match(source, /footerParams\.gravity = Gravity\.END/);
   assert.doesNotMatch(source, /text\(outgoing \? "你" : "Hermes"/);
   assert.doesNotMatch(source, /message\.finalUpdate \? "Hermes"/);
 });
@@ -432,6 +436,21 @@ test("encrypted attachments cover requested formats, SAF saving, and media playb
   ]) {
     assert.match(policy, new RegExp(`add\\(extensions, "${extension}"`));
   }
+  for (const icon of [
+    "ic_file_image", "ic_file_audio", "ic_file_video", "ic_file_document",
+    "ic_file_office", "ic_file_archive", "ic_file_book", "ic_file_package",
+  ]) {
+    assert.match(policy, new RegExp(`R\\.drawable\\.${icon}`));
+    const vector = await readFile(
+      new URL(`../android/MyNotes/app/src/main/res/drawable/${icon}.xml`, import.meta.url),
+      "utf8",
+    );
+    assert.match(vector, /android:width="24dp"/);
+    assert.match(vector, /android:pathData=/);
+  }
+  assert.match(activity, /typeIcon\.setContentDescription\(category \+ "附件图标"\)/);
+  assert.match(activity, /summary\.addView\(iconHolder/);
+  assert.match(activity, /labelsParams\.setMarginStart\(dp\(12\)\)/);
   assert.match(activity, /Intent\.ACTION_CREATE_DOCUMENT/);
   assert.match(activity, /saveAttachmentToUri/);
   assert.match(activity, /new MediaPlayer\(\)/);

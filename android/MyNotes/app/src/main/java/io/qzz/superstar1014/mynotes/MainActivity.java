@@ -343,6 +343,7 @@ public final class MainActivity extends Activity {
       }
       user = session.user;
       HermesChatConnectionManager.get(this).markAuthenticated();
+      HermesChatConnectionService.startIfConfigured(this);
       loadAllData();
     });
   }
@@ -470,6 +471,7 @@ public final class MainActivity extends Activity {
       runAsync(() -> api.login(username, password), loggedInUser -> {
         user = loggedInUser;
         HermesChatConnectionManager.get(this).markAuthenticated();
+        HermesChatConnectionService.startIfConfigured(this);
         loadAllData();
       }, error -> {
         loginButton.setEnabled(true);
@@ -2619,6 +2621,7 @@ public final class MainActivity extends Activity {
   }
 
   private void logout() {
+    HermesChatConnectionService.stop(this);
     HermesChatConnectionManager.get(this).shutdown();
     new HermesChatProfileStore(this).clear();
     new HermesChatUnreadStore(this).clearAll();

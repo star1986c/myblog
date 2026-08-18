@@ -8,19 +8,21 @@ import java.util.Map;
 /** Shared allowlist and display metadata for encrypted Hermes chat attachments. */
 final class HermesChatAttachmentPolicy {
   enum Category {
-    IMAGE("图片"),
-    AUDIO("音频"),
-    VIDEO("视频"),
-    DOCUMENT("文档"),
-    OFFICE("Office"),
-    ARCHIVE("压缩包"),
-    BOOK("电子书"),
-    PACKAGE("安装包");
+    IMAGE("图片", R.drawable.ic_file_image),
+    AUDIO("音频", R.drawable.ic_file_audio),
+    VIDEO("视频", R.drawable.ic_file_video),
+    DOCUMENT("文档", R.drawable.ic_file_document),
+    OFFICE("Office", R.drawable.ic_file_office),
+    ARCHIVE("压缩包", R.drawable.ic_file_archive),
+    BOOK("电子书", R.drawable.ic_file_book),
+    PACKAGE("安装包", R.drawable.ic_file_package);
 
     final String label;
+    final int iconResource;
 
-    Category(String label) {
+    Category(String label, int iconResource) {
       this.label = label;
+      this.iconResource = iconResource;
     }
   }
 

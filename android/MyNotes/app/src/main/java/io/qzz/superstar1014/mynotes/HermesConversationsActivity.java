@@ -189,6 +189,7 @@ public final class HermesConversationsActivity extends Activity
           summaries.putAll(loadedSummaries);
           profileCount.setText(profiles.size() + " 个聊天对象 · 端到端加密");
           connection.syncProfiles(profiles);
+          HermesChatConnectionService.startIfConfigured(this);
           renderProfiles();
         });
       } catch (Exception error) {
@@ -214,6 +215,7 @@ public final class HermesConversationsActivity extends Activity
       profiles.size() + " 个聊天对象 · " + (cached ? "本地缓存" : "端到端加密")
     );
     connection.syncProfiles(profiles);
+    HermesChatConnectionService.startIfConfigured(this);
     renderProfiles();
     executor.submit(() -> {
       Map<String, ConversationSummary> loadedSummaries = loadSummaries(loadedProfiles);

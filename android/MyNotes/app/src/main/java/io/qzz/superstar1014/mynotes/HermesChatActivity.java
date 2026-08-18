@@ -813,6 +813,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
               connectionListener,
               resumed
             );
+            HermesChatConnectionService.startIfConfigured(this);
           } catch (Exception error) {
             toast(error.getMessage());
             showConnectionAwareStatus("无法启动聊天连接");
@@ -821,6 +822,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       });
     } catch (Exception error) {
       secureStore.clearHermesChatKey(selectedProfile.id);
+      HermesChatConnectionService.startIfConfigured(this);
       toast(error.getMessage());
       showKeySetup(false);
     }
@@ -1541,8 +1543,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     );
     meta.setAlpha(0.78f);
     meta.setGravity(Gravity.CENTER_VERTICAL);
+    meta.setSingleLine(true);
+    meta.setMinWidth(dp(112));
     footer.addView(meta, new LinearLayout.LayoutParams(-2, dp(24)));
-    LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(24));
+    LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-2, dp(24));
+    footerParams.gravity = Gravity.END;
     footerParams.topMargin = dp(4);
     bubble.addView(footer, footerParams);
     row.addView(bubble, new LinearLayout.LayoutParams(-2, -2));
@@ -2300,6 +2305,30 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       }
     });
     String name = descriptor.optString("name", "Hermes-附件");
+    String category = resolved == null ? "附件" : resolved.category.label;
+    String format = resolved == null ? "FILE" : resolved.extension.toUpperCase(Locale.ROOT);
+    long bytes = descriptor.optLong("plaintextBytes", -1);
+
+    LinearLayout summary = horizontal(Gravity.CENTER_VERTICAL);
+    FrameLayout iconHolder = new FrameLayout(this);
+    iconHolder.setBackground(rounded(
+      outgoing ? R.color.brand_primary : R.color.surface_tonal,
+      14
+    ));
+    ImageView typeIcon = new ImageView(this);
+    typeIcon.setImageResource(
+      resolved == null ? R.drawable.ic_file_generic : resolved.category.iconResource
+    );
+    typeIcon.setImageTintList(ColorStateList.valueOf(getColor(
+      outgoing ? R.color.on_brand : R.color.brand_primary_dark
+    )));
+    typeIcon.setScaleType(ImageView.ScaleType.CENTER);
+    typeIcon.setPadding(dp(11), dp(11), dp(11), dp(11));
+    typeIcon.setContentDescription(category + "附件图标");
+    iconHolder.addView(typeIcon, new FrameLayout.LayoutParams(-1, -1));
+    summary.addView(iconHolder, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+    LinearLayout labels = vertical();
     TextView title = text(
       name,
       14,
@@ -2308,11 +2337,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
     title.setMaxLines(2);
     title.setEllipsize(TextUtils.TruncateAt.MIDDLE);
-    card.addView(title, new LinearLayout.LayoutParams(-1, -2));
+    labels.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
-    String category = resolved == null ? "附件" : resolved.category.label;
-    String format = resolved == null ? "FILE" : resolved.extension.toUpperCase(Locale.ROOT);
-    long bytes = descriptor.optLong("plaintextBytes", -1);
     TextView detail = text(
       category + " · " + format + " · " + HermesChatAttachmentPolicy.formatBytes(bytes),
       12,
@@ -2321,7 +2347,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     detail.setAlpha(0.82f);
     LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(-1, -2);
     detailParams.topMargin = dp(4);
-    card.addView(detail, detailParams);
+    labels.addView(detail, detailParams);
+    LinearLayout.LayoutParams labelsParams = new LinearLayout.LayoutParams(0, -2, 1);
+    labelsParams.setMarginStart(dp(12));
+    summary.addView(labels, labelsParams);
+    card.addView(summary, new LinearLayout.LayoutParams(-1, -2));
 
     LinearLayout actions = horizontal(Gravity.END);
     if (resolved != null && (resolved.category == HermesChatAttachmentPolicy.Category.AUDIO
