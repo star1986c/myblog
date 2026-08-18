@@ -1482,6 +1482,101 @@ test("authenticated Android client lists dynamic Hermes profiles and requests a 
   assert.equal(ticket.username, env.ADMIN_USERNAME);
 });
 
+test("authenticated NAS cron delivery routes each Hermes profile to its own chat room", async () => {
+  const routed = [];
+  const env = makeEnv({
+    HERMES_CHAT_AGENT_SECRET: "test-hermes-agent-secret-that-is-long-enough",
+    HERMES_CHAT_PROFILES: "primary:主助手,personal:个人助手",
+    HERMES_CHAT_ROOMS: {
+      getByName(name) {
+        return {
+          async publishAgentMessage(spaceId, rawFrame) {
+            const frame = JSON.parse(rawFrame);
+            routed.push({ name, spaceId, frame });
+            return {
+              v: 1,
+              type: "ack",
+              id: frame.id,
+              seq: spaceId === "primary" ? 31 : 47,
+              duplicate: false,
+            };
+          },
+        };
+      },
+    },
+  });
+
+  for (const [spaceId, sequence] of [["primary", 31], ["personal", 47]]) {
+    const frame = {
+      v: 1,
+      type: "message",
+      id: spaceId === "primary"
+        ? "00000000-0000-4000-8000-000000000031"
+        : "00000000-0000-4000-8000-000000000047",
+      sender: "agent",
+      sentAt: 1_800_000_000_000,
+      encrypted: {
+        alg: "A256GCM",
+        nonce: "AAAAAAAAAAAAAAAA",
+        ciphertext: "encryptedCronPayload",
+      },
+    };
+    const response = await worker.fetch(
+      new Request("https://h.superstar1014.qzz.io/api/hermes-chat/messages", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.HERMES_CHAT_AGENT_SECRET}`,
+          "Content-Type": "application/json",
+          "X-Hermes-Agent-Id": `nas-${spaceId}`,
+          "X-Hermes-Role": "agent",
+          "X-Hermes-Space": spaceId,
+        },
+        body: JSON.stringify(frame),
+      }),
+      env,
+    );
+
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).ack.seq, sequence);
+  }
+
+  assert.deepEqual(routed.map(({ name, spaceId }) => ({ name, spaceId })), [
+    { name: "space:primary", spaceId: "primary" },
+    { name: "space:personal", spaceId: "personal" },
+  ]);
+});
+
+test("standalone Hermes cron delivery rejects an invalid agent secret", async () => {
+  let roomRequested = false;
+  const env = makeEnv({
+    HERMES_CHAT_AGENT_SECRET: "test-hermes-agent-secret-that-is-long-enough",
+    HERMES_CHAT_PROFILES: "primary:主助手",
+    HERMES_CHAT_ROOMS: {
+      getByName() {
+        roomRequested = true;
+        throw new Error("must not route an unauthorized request");
+      },
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://h.superstar1014.qzz.io/api/hermes-chat/messages", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer wrong-secret",
+        "Content-Type": "application/json",
+        "X-Hermes-Agent-Id": "nas-primary",
+        "X-Hermes-Role": "agent",
+        "X-Hermes-Space": "primary",
+      },
+      body: "{}",
+    }),
+    env,
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(roomRequested, false);
+});
+
 test("authenticated Android client requests one ticket for multiple configured Hermes profiles", async () => {
   const env = makeEnv({
     HERMES_CHAT_PROFILES: "primary:主助手,personal:个人助手,third:代码助手",

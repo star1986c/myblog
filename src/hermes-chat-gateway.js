@@ -8,6 +8,8 @@ import {
   verifyHermesChatTicket,
 } from "./hermes-chat-protocol.js";
 
+const HERMES_CHAT_FRAME_MAX_BYTES = 64 * 1024;
+
 async function handleHermesChatWebSocket(request, env) {
   if ((request.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
     throw new ServiceError("WebSocket upgrade required.", 426);
@@ -91,6 +93,32 @@ async function handleHermesChatMultiplexWebSocket(request, env) {
   return await hermesChatHub(env, hubKey).fetch(internalRequest);
 }
 
+async function handleHermesChatAgentMessage(request, env) {
+  if (request.method !== "POST") {
+    return Response.json({ error: "Method not allowed." }, {
+      status: 405,
+      headers: { Allow: "POST", "Cache-Control": "no-store" },
+    });
+  }
+
+  const agent = await authorizeHermesChatAgent(request, env);
+  if (!agent) throw new ServiceError("Unauthorized.", 401);
+  if (!(request.headers.get("Content-Type") || "").toLowerCase().startsWith("application/json")) {
+    throw new ServiceError("Hermes chat message must be JSON.", 415);
+  }
+
+  const spaceId = requireConfiguredHermesChatSpace(
+    env,
+    request.headers.get("X-Hermes-Space"),
+  ).id;
+  const rawFrame = await readBoundedText(request, HERMES_CHAT_FRAME_MAX_BYTES);
+  const ack = await hermesChatRoom(env, spaceId).publishAgentMessage(spaceId, rawFrame);
+  return Response.json({ ok: true, ack }, {
+    status: ack.duplicate ? 200 : 201,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
 function hermesChatRoom(env, spaceId) {
   if (!env.HERMES_CHAT_ROOMS || typeof env.HERMES_CHAT_ROOMS.getByName !== "function") {
     throw new ServiceError("Hermes chat is unavailable.", 503);
@@ -165,9 +193,52 @@ function normalizeAgentId(value) {
   return agentId;
 }
 
+async function readBoundedText(request, maximumBytes) {
+  const declaredLength = request.headers.get("Content-Length");
+  if (declaredLength !== null) {
+    const length = Number(declaredLength);
+    if (!Number.isSafeInteger(length) || length < 1 || length > maximumBytes) {
+      throw new ServiceError("Hermes chat frame is too large.", 413);
+    }
+  }
+  if (!request.body) throw new ServiceError("Hermes chat frame is required.", 400);
+
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel("Hermes chat frame is too large.");
+        throw new ServiceError("Hermes chat frame is too large.", 413);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (total < 1) throw new ServiceError("Hermes chat frame is required.", 400);
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new ServiceError("Hermes chat frame must be UTF-8.", 400);
+  }
+}
+
 export {
   authorizeHermesChatAgent,
   configuredHermesChatProfiles,
+  handleHermesChatAgentMessage,
   handleHermesChatMultiplexWebSocket,
   handleHermesChatWebSocket,
   hermesChatHub,

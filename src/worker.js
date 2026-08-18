@@ -61,6 +61,7 @@ import {
 import {
   authorizeHermesChatAgent,
   configuredHermesChatProfiles,
+  handleHermesChatAgentMessage,
   handleHermesChatWebSocket,
   hermesChatRoom,
   requireConfiguredHermesChatSpace,
@@ -120,6 +121,10 @@ async function handleRequest(request, env, ctx) {
 
   if (url.pathname === "/api/hermes-chat/ws") {
     return await handleHermesChatWebSocket(request, env);
+  }
+
+  if (url.pathname === "/api/hermes-chat/messages") {
+    return withSiteHeaders(request, await handleHermesChatAgentMessage(request, env));
   }
 
   if (url.pathname.startsWith("/api/hermes-chat/attachments/")) {

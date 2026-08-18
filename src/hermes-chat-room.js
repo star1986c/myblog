@@ -331,6 +331,33 @@ class HermesChatRoom extends DurableObject {
     }];
   }
 
+  async publishAgentMessage(spaceId, rawFrame) {
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(spaceId || ""))) {
+      throw new Error("Invalid Hermes chat space.");
+    }
+    const frame = parseHermesChatFrame(rawFrame);
+    if (frame.type !== "message") {
+      throw new Error("Standalone Hermes delivery only supports new messages.");
+    }
+    const envelope = validateHermesChatMessage(frame, "agent");
+    const stored = this.storeMessage(envelope);
+    if (!stored.duplicate) {
+      await this.ensureCleanupAlarm();
+      this.broadcastToOtherRole(
+        "agent",
+        buildHermesChatDeliveryFrame(envelope, stored.seq),
+        spaceId,
+      );
+    }
+    return {
+      v: CHAT_PROTOCOL_VERSION,
+      type: "ack",
+      id: envelope.id,
+      seq: stored.seq,
+      duplicate: stored.duplicate,
+    };
+  }
+
   latestSequence() {
     return this.ctx.storage.sql
       .exec(`SELECT MAX(seq) AS seq FROM (

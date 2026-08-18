@@ -40,7 +40,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_ATTACHMENTS = 8
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.7"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.1.8"
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
     ".png": ("image/png", "image"),
     ".jpg": ("image/jpeg", "image"),
@@ -665,6 +665,56 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         scheme = "https" if parsed.scheme == "wss" else "http"
         return urlunsplit((scheme, parsed.netloc, f"/api/hermes-chat/attachments/{attachment_id}", "", ""))
 
+    def _message_url(self) -> str:
+        parsed = urlsplit(self.relay_url)
+        scheme = "https" if parsed.scheme == "wss" else "http"
+        return urlunsplit((scheme, parsed.netloc, "/api/hermes-chat/messages", "", ""))
+
+    def _publish_message(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(
+            envelope,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        if len(encoded) > MAX_FRAME_BYTES:
+            raise ValueError("Cloudflare Chat frame exceeds 64 KiB")
+        headers = self._http_headers()
+        headers.update({
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Length": str(len(encoded)),
+        })
+        request = Request(
+            self._message_url(),
+            data=encoded,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                if response.status not in {200, 201}:
+                    raise ConnectionError(
+                        f"message publish returned HTTP {response.status}"
+                    )
+                response_body = response.read(MAX_FRAME_BYTES + 1)
+        except HTTPError as error:
+            raise _relay_http_error("message publish", error) from error
+        if len(response_body) > MAX_FRAME_BYTES:
+            raise ConnectionError("message publish response exceeds 64 KiB")
+        try:
+            payload = json.loads(response_body.decode("utf-8"))
+            ack = payload["ack"]
+            sequence = int(ack["seq"])
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ConnectionError("message publish returned an invalid acknowledgement") from error
+        if (
+            payload.get("ok") is not True
+            or ack.get("type") != "ack"
+            or ack.get("id") != envelope.get("id")
+            or sequence < 1
+        ):
+            raise ConnectionError("message publish acknowledgement does not match the request")
+        return ack
+
     def _http_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.agent_secret}",
@@ -814,6 +864,91 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         self._lock_key = None
 
 
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document: bool = False,
+) -> dict[str, Any]:
+    """Deliver cron output without opening a second long-lived agent socket."""
+    del thread_id, force_document
+    try:
+        adapter = CloudflareChatAdapter(pconfig)
+        if not _valid_configuration(
+            adapter.relay_url,
+            adapter.agent_secret,
+            adapter.agent_id,
+            adapter.space_id,
+        ):
+            return {"error": "Cloudflare Chat standalone send is not configured"}
+
+        target_space = str(chat_id or adapter.space_id).strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", target_space):
+            return {"error": "Cloudflare Chat standalone send has an invalid chat id"}
+        if target_space != adapter.space_id:
+            return {
+                "error": (
+                    "Cloudflare Chat standalone send cannot cross profiles; "
+                    f"target {target_space!r} does not match HERMES_CF_SPACE_ID"
+                )
+            }
+
+        text = str(message or "")
+        attachments: list[dict[str, Any]] = []
+        delivered_spans: list[tuple[int, int]] = []
+        standalone_media = list(media_files or [])
+        if len(standalone_media) > MAX_MESSAGE_ATTACHMENTS:
+            return {"error": "Cloudflare Chat supports at most 8 attachments per message"}
+        safe_media_paths: list[str] = []
+        for media_file in standalone_media:
+            media_path = _standalone_media_path(media_file)
+            safe_path = adapter.validate_media_delivery_path(media_path)
+            if not safe_path:
+                return {"error": "Cloudflare Chat standalone media path is unsafe or unreadable"}
+            safe_media_paths.append(safe_path)
+        inline_capacity = MAX_MESSAGE_ATTACHMENTS - len(standalone_media)
+        for start, end, source in _inline_image_candidates(text):
+            if len(attachments) >= inline_capacity:
+                break
+            try:
+                attachments.append(await adapter._encrypt_and_upload_image(source))
+                delivered_spans.append((start, end))
+            except Exception as error:
+                logger.warning(
+                    "Cloudflare Chat standalone inline image upload failed: %s",
+                    error,
+                )
+
+        for safe_path in safe_media_paths:
+            attachments.append(await adapter._encrypt_and_upload_local_file(
+                safe_path,
+                file_name=None,
+                allowed_categories=set(_supported_categories()),
+            ))
+
+        envelope = adapter._cipher.encrypt_message(
+            sender="agent",
+            text=_remove_delivered_spans(text, delivered_spans),
+            attachments=attachments,
+        )
+        ack = await asyncio.to_thread(adapter._publish_message, envelope)
+        return {"success": True, "message_id": str(ack["seq"])}
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        logger.debug("Cloudflare Chat standalone send failed", exc_info=True)
+        return {"error": f"Cloudflare Chat standalone send failed: {error}"}
+
+
+def _standalone_media_path(value: Any) -> str:
+    if isinstance(value, (tuple, list)):
+        value = value[0] if value else ""
+    return str(value or "")
+
+
 def _supported_categories() -> frozenset[str]:
     return frozenset(category for _, category in _SUPPORTED_FILE_TYPES.values())
 
@@ -880,6 +1015,10 @@ def _remove_delivered_spans(text: str, spans: list[tuple[int, int]]) -> str:
 
 
 def _attachment_http_error(action: str, error: HTTPError) -> ConnectionError:
+    return _relay_http_error(f"attachment {action}", error)
+
+
+def _relay_http_error(action: str, error: HTTPError) -> ConnectionError:
     try:
         detail = error.read(1024).decode("utf-8", errors="replace")
     except Exception:
@@ -887,7 +1026,7 @@ def _attachment_http_error(action: str, error: HTTPError) -> ConnectionError:
     detail = re.sub(r"\s+", " ", detail).strip()[:300]
     headers = getattr(error, "headers", None)
     ray_id = headers.get("CF-Ray", "") if headers is not None else ""
-    message = f"attachment {action} returned HTTP {error.code}"
+    message = f"{action} returned HTTP {error.code}"
     if detail:
         message += f": {detail}"
     if ray_id:
@@ -973,6 +1112,7 @@ def register(ctx) -> None:
         install_hint="Install requirements.txt into the same Python environment as Hermes",
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="HERMES_CF_SPACE_ID",
+        standalone_sender_fn=_standalone_send,
         allowed_users_env="HERMES_CF_ALLOWED_USERS",
         allow_all_env="HERMES_CF_ALLOW_ALL_USERS",
         max_message_length=50_000,

@@ -164,6 +164,29 @@ hermes status
 hermes -p personal status
 ```
 
+### 多 profile 定时任务投递
+
+插件 0.1.8 注册了 Hermes 的 `standalone_sender_fn`。`hermes cron run` 即使运行在
+Gateway 之外的 CLI 进程中，也会通过一次经过 agent secret 鉴权的 HTTPS 请求投递
+密文消息；它不会新建第二条 Agent WebSocket，也不会挤掉正在运行的 Gateway 连接。
+
+定时任务属于各自的 Hermes profile，必须在对应 profile 下管理。每个 profile 的
+`deliver=cloudflare_chat` 会解析到该 profile 的 `HERMES_CF_SPACE_ID`：
+
+```bash
+# 默认 profile -> HERMES_CF_SPACE_ID=primary -> 主助手会话
+hermes cron edit <默认任务ID> --deliver cloudflare_chat
+hermes cron run <默认任务ID>
+
+# personal profile -> HERMES_CF_SPACE_ID=personal -> 个人助手会话
+hermes -p personal cron edit <个人任务ID> --deliver cloudflare_chat
+hermes -p personal cron run <个人任务ID>
+```
+
+不要用默认 profile 的聊天密钥向 `personal` 交叉投递；插件会拒绝 `chat_id` 与当前
+`HERMES_CF_SPACE_ID` 不一致的请求。以后新增 profile 时，只需为其使用唯一的 space id、
+聊天密钥和 agent id，并在 Worker 的 `HERMES_CHAT_PROFILES` 中加入对应 space。
+
 ## Android 使用流程
 
 1. 登录 My Notes，点击底部 `Hermes`。
@@ -235,7 +258,7 @@ WebSocket 由应用进程持有：返回会话列表或把 App 切到后台不�
 | 压缩包 | `zip rar 7z tar gz bz2` |
 | 电子书/安装包 | `epub apk ipa`（仅传输和保存，不自动执行） |
 
-插件 0.1.7 对应实现 Hermes 的 `send_document`、`send_file`、`send_voice` 和
+插件 0.1.8 对应实现 Hermes 的 `send_document`、`send_file`、`send_voice` 和
 `send_video`，入站音频/视频分别映射为 `VOICE`/`VIDEO`，其他非图片附件映射为
 `DOCUMENT`。附件传输沿用现有通用密文 R2 端点，不需要更换环境变量或聊天密钥；
 Android 2.5 的单条/多条消息删除需要同时部署本版本 Worker，新增的登录态 API 会

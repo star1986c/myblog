@@ -27,6 +27,15 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.1.8 adds Hermes out-of-process cron delivery. The plugin registers a
+`standalone_sender_fn` and publishes each encrypted cron result through a
+short-lived authenticated HTTPS request, so `hermes cron run` does not need to
+open a second agent WebSocket or replace the running Gateway connection. Cron
+output is routed by each profile's `HERMES_CF_SPACE_ID`; the default profile can
+deliver to `primary` while `hermes -p personal` delivers to `personal`. Deploy
+the matching Worker before upgrading the plugin. Existing environment variables
+and chat keys do not change.
+
 Version 0.1.7 adds bidirectional encrypted attachments. Android can send the
 supported images, audio, video, documents, Office files, archives, EPUB/APK/IPA
 files to Hermes, and the adapter now implements `send_document`, `send_file`,

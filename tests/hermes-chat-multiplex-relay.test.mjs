@@ -32,6 +32,9 @@ test("profile rooms retain old client sockets and forward durable events to regi
   assert.match(room, /await stub\.deliver\(routedSpace, frame\)/);
   assert.match(room, /CLIENT_HUB_REGISTRATION_GRACE_MS/);
   assert.match(room, /this\.ctx\.getWebSockets\(`role:\$\{receiverRole\}`\)/);
+  assert.match(room, /async publishAgentMessage\(spaceId, rawFrame\)/);
+  assert.match(room, /validateHermesChatMessage\(frame, "agent"\)/);
+  assert.match(room, /buildHermesChatDeliveryFrame\(envelope, stored\.seq\)/);
 });
 
 test("gateway chooses multiplex mode without removing the legacy single-space route", () => {

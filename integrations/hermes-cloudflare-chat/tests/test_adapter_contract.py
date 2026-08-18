@@ -138,6 +138,7 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(context.kwargs["name"], "cloudflare_chat")
         self.assertEqual(context.kwargs["allowed_users_env"], "HERMES_CF_ALLOWED_USERS")
         self.assertEqual(context.kwargs["allow_all_env"], "HERMES_CF_ALLOW_ALL_USERS")
+        self.assertIs(context.kwargs["standalone_sender_fn"], self.adapter._standalone_send)
         self.assertIn("HERMES_CF_CHAT_KEY", context.kwargs["required_env"])
         self.assertIn("HERMES_CF_SPACE_ID", context.kwargs["required_env"])
         platform_hint = context.kwargs["platform_hint"]
@@ -152,7 +153,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.7")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.1.8")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -172,6 +173,137 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("HTTP 403", str(result))
         self.assertIn("error code: 1010", str(result))
         self.assertIn("test-ray-TPE", str(result))
+
+    def test_message_publish_uses_agent_authenticated_https_endpoint(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        envelope = instance._cipher.encrypt_message(
+            sender="agent",
+            text="cron result",
+        )
+        captured = {}
+
+        class Response:
+            status = 201
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({
+                    "ok": True,
+                    "ack": {
+                        "v": 1,
+                        "type": "ack",
+                        "id": envelope["id"],
+                        "seq": 70,
+                        "duplicate": False,
+                    },
+                }).encode("utf-8")
+
+        def open_request(request, timeout):
+            captured.update({"request": request, "timeout": timeout})
+            return Response()
+
+        with patch.object(self.adapter, "urlopen", side_effect=open_request):
+            ack = instance._publish_message(envelope)
+
+        request = captured["request"]
+        self.assertEqual(request.full_url, "https://h.superstar1014.qzz.io/api/hermes-chat/messages")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + "a" * 48)
+        self.assertEqual(request.get_header("X-hermes-space"), "primary")
+        self.assertEqual(captured["timeout"], 30)
+        self.assertEqual(ack["seq"], 70)
+
+    def test_standalone_cron_send_publishes_to_the_matching_profile_without_websocket(self):
+        published = []
+
+        def publish(instance, envelope):
+            published.append((instance.space_id, envelope))
+            return {
+                "v": 1,
+                "type": "ack",
+                "id": envelope["id"],
+                "seq": 71,
+                "duplicate": False,
+            }
+
+        with patch.object(
+            self.adapter.CloudflareChatAdapter,
+            "_publish_message",
+            autospec=True,
+            side_effect=publish,
+        ):
+            result = asyncio.run(self.adapter._standalone_send(
+                types.SimpleNamespace(extra={}),
+                "primary",
+                "定时任务完成",
+            ))
+
+        self.assertEqual(result, {"success": True, "message_id": "71"})
+        self.assertEqual(published[0][0], "primary")
+        payload = self.adapter.CloudflareChatAdapter(
+            types.SimpleNamespace(extra={})
+        )._cipher.decrypt_message(published[0][1], expected_sender="agent")
+        self.assertEqual(payload["text"], "定时任务完成")
+        self.assertEqual(payload["attachments"], [])
+
+    def test_standalone_cron_send_refuses_cross_profile_delivery(self):
+        with patch.object(
+            self.adapter.CloudflareChatAdapter,
+            "_publish_message",
+        ) as publish:
+            result = asyncio.run(self.adapter._standalone_send(
+                types.SimpleNamespace(extra={}),
+                "personal",
+                "不应跨 profile",
+            ))
+
+        self.assertIn("cannot cross profiles", result["error"])
+        publish.assert_not_called()
+
+    def test_standalone_cron_send_encrypts_explicit_media_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = Path(directory) / "daily-report.pdf"
+            document.write_bytes(b"%PDF-1.7\ncron report\n")
+            published = []
+
+            def publish(instance, envelope):
+                published.append((instance, envelope))
+                return {
+                    "v": 1,
+                    "type": "ack",
+                    "id": envelope["id"],
+                    "seq": 72,
+                    "duplicate": False,
+                }
+
+            with patch.object(
+                self.adapter.CloudflareChatAdapter,
+                "_upload_attachment",
+            ) as upload, patch.object(
+                self.adapter.CloudflareChatAdapter,
+                "_publish_message",
+                autospec=True,
+                side_effect=publish,
+            ):
+                result = asyncio.run(self.adapter._standalone_send(
+                    types.SimpleNamespace(extra={}),
+                    "primary",
+                    "日报附件",
+                    media_files=[(str(document), False)],
+                ))
+
+        self.assertEqual(result, {"success": True, "message_id": "72"})
+        upload.assert_called_once()
+        instance, envelope = published[0]
+        payload = instance._cipher.decrypt_message(envelope, expected_sender="agent")
+        self.assertEqual(payload["text"], "日报附件")
+        self.assertEqual(payload["attachments"][0]["name"], "daily-report.pdf")
+        self.assertEqual(payload["attachments"][0]["contentType"], "application/pdf")
 
     def test_edit_message_sends_encrypted_update_and_keeps_original_message_id(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
