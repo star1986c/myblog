@@ -128,6 +128,7 @@ final class NotesApiClient {
   }
 
   JSONObject purgeHermesChatCloudData(String spaceId) throws Exception {
+    requireFreshAuthenticatedSession();
     return request(
       "POST",
       "api/admin/hermes-chat/cleanup",
@@ -141,6 +142,7 @@ final class NotesApiClient {
     Set<String> messageIds,
     Set<String> attachmentIds
   ) throws Exception {
+    requireFreshAuthenticatedSession();
     JSONArray messages = new JSONArray();
     for (String messageId : messageIds) messages.put(messageId);
     JSONArray attachments = new JSONArray();
@@ -161,6 +163,7 @@ final class NotesApiClient {
     String attachmentId,
     byte[] encryptedBody
   ) throws Exception {
+    requireFreshAuthenticatedSession();
     HttpURLConnection connection = open(
       "POST",
       "api/hermes-chat/attachments/" + attachmentId
@@ -195,6 +198,13 @@ final class NotesApiClient {
     byte[] data = readBytes(connection.getInputStream(), Models.MAX_ATTACHMENT_BYTES + 16);
     connection.disconnect();
     return data;
+  }
+
+  private void requireFreshAuthenticatedSession() throws Exception {
+    SessionResult session = restoreSession();
+    if (!session.authenticated || csrfToken.isEmpty()) {
+      throw new ApiException(401, "登录状态已失效，请重新登录。");
+    }
   }
 
   private JSONObject refreshDeviceToken() throws Exception {

@@ -137,3 +137,28 @@ test("Android supports single and multi-select deletion after cloud confirmation
   assert.match(api, /api\/admin\/hermes-chat\/messages\/delete/);
   assert.match(history, /Snapshot deleteMessages\(Set<String> messageIds\)/);
 });
+
+test("Android refreshes the cookie-bound CSRF token before Hermes chat mutations", async () => {
+  const api = await source("NotesApiClient.java");
+
+  assert.match(
+    api,
+    /private void requireFreshAuthenticatedSession\(\) throws Exception \{[\s\S]*SessionResult session = restoreSession\(\);[\s\S]*!session\.authenticated \|\| csrfToken\.isEmpty\(\)/,
+  );
+  assert.equal(
+    (api.match(/requireFreshAuthenticatedSession\(\);/g) || []).length,
+    3,
+  );
+  assert.match(
+    api,
+    /JSONObject purgeHermesChatCloudData\(String spaceId\) throws Exception \{\s*requireFreshAuthenticatedSession\(\);/,
+  );
+  assert.match(
+    api,
+    /JSONObject deleteHermesChatMessages\([\s\S]*?\) throws Exception \{\s*requireFreshAuthenticatedSession\(\);/,
+  );
+  assert.match(
+    api,
+    /void uploadHermesChatAttachment\([\s\S]*?\) throws Exception \{\s*requireFreshAuthenticatedSession\(\);/,
+  );
+});
