@@ -4,8 +4,8 @@ import {
   buildHermesChatDeliveryFrame,
   createHermesChatMultiplexTicket,
   createHermesChatTicket,
-  hasConnectedHermesChatAgent,
   parseHermesChatFrame,
+  planHermesChatAgentAdmission,
   validateHermesChatEdit,
   validateHermesChatMessage,
   validateHermesChatReceipt,
@@ -17,11 +17,63 @@ import {
   requireConfiguredHermesChatSpace,
 } from "../src/hermes-chat-gateway.js";
 
-test("allows only one connected agent in each chat space", () => {
-  assert.equal(hasConnectedHermesChatAgent([]), false);
-  assert.equal(hasConnectedHermesChatAgent(["nas-primary"]), true);
-  assert.equal(hasConnectedHermesChatAgent(["nas-secondary"]), true);
-  assert.equal(hasConnectedHermesChatAgent([null]), true);
+test("lets the same Hermes agent replace its active connection", () => {
+  const active = fakeAgentSocket({
+    role: "agent",
+    spaceId: "primary",
+    userId: "nas-primary",
+    connectionId: "old-primary",
+  });
+  const closing = fakeAgentSocket({
+    readyState: 2,
+    role: "agent",
+    spaceId: "primary",
+    userId: "nas-secondary",
+  });
+  const superseded = fakeAgentSocket({
+    role: "agent",
+    spaceId: "primary",
+    userId: "nas-secondary",
+    replacedByConnectionId: "new-primary",
+  });
+  const closed = fakeAgentSocket({ readyState: 3, attachmentError: true });
+
+  const admission = planHermesChatAgentAdmission(
+    [active, superseded, closing, closed],
+    { spaceId: "primary", agentId: "nas-primary" },
+  );
+
+  assert.equal(admission.conflict, false);
+  assert.deepEqual(admission.replacementConnections, [active]);
+});
+
+test("keeps a different or unidentified active Hermes agent connected", () => {
+  const matching = fakeAgentSocket({
+    role: "agent",
+    spaceId: "primary",
+    userId: "nas-primary",
+  });
+  const different = fakeAgentSocket({
+    role: "agent",
+    spaceId: "primary",
+    userId: "nas-secondary",
+  });
+  const unreadable = fakeAgentSocket({ attachmentError: true });
+
+  assert.deepEqual(
+    planHermesChatAgentAdmission(
+      [matching, different],
+      { spaceId: "primary", agentId: "nas-primary" },
+    ),
+    { conflict: true, replacementConnections: [] },
+  );
+  assert.deepEqual(
+    planHermesChatAgentAdmission(
+      [unreadable],
+      { spaceId: "primary", agentId: "nas-primary" },
+    ),
+    { conflict: true, replacementConnections: [] },
+  );
 });
 
 test("maps configured Hermes profiles to separate chat spaces", () => {
@@ -201,3 +253,13 @@ test("replays durable stream finals as edits while preserving their sequence", (
     replayed: true,
   });
 });
+
+function fakeAgentSocket({ readyState = 1, attachmentError = false, ...attachment }) {
+  return {
+    readyState,
+    deserializeAttachment() {
+      if (attachmentError) throw new Error("attachment unavailable");
+      return attachment;
+    },
+  };
+}

@@ -7,6 +7,8 @@ const CHAT_PROTOCOL_VERSION = 1;
 const CHAT_TICKET_MAX_AGE_SECONDS = 90;
 const CHAT_MESSAGE_MAX_BYTES = 64 * 1024;
 const CHAT_CIPHERTEXT_MAX_LENGTH = 56 * 1024;
+const WEBSOCKET_CLOSING_STATE = 2;
+const WEBSOCKET_CLOSED_STATE = 3;
 const SPACE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const MESSAGE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE64_URL_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -150,8 +152,39 @@ function isHermesChatSpaceId(value) {
   return typeof value === "string" && SPACE_ID_PATTERN.test(value);
 }
 
-function hasConnectedHermesChatAgent(existingConnections) {
-  return Array.from(existingConnections || []).length > 0;
+function planHermesChatAgentAdmission(existingConnections, { spaceId, agentId }) {
+  const replacementConnections = [];
+  for (const connection of Array.from(existingConnections || [])) {
+    if (
+      connection?.readyState === WEBSOCKET_CLOSING_STATE
+      || connection?.readyState === WEBSOCKET_CLOSED_STATE
+    ) continue;
+
+    let attachment;
+    try {
+      attachment = connection?.deserializeAttachment?.();
+    } catch {
+      return { conflict: true, replacementConnections: [] };
+    }
+    if (isReplacedHermesChatAgentAttachment(attachment)) continue;
+    if (
+      !attachment
+      || typeof attachment !== "object"
+      || attachment.role !== "agent"
+      || attachment.spaceId !== spaceId
+      || attachment.userId !== agentId
+    ) {
+      return { conflict: true, replacementConnections: [] };
+    }
+    replacementConnections.push(connection);
+  }
+  return { conflict: false, replacementConnections };
+}
+
+function isReplacedHermesChatAgentAttachment(attachment) {
+  return attachment?.role === "agent"
+    && typeof attachment.replacedByConnectionId === "string"
+    && attachment.replacedByConnectionId.length > 0;
 }
 
 function readBearerToken(request) {
@@ -321,11 +354,12 @@ export {
   constantTimeSecretEqual,
   createHermesChatMultiplexTicket,
   createHermesChatTicket,
-  hasConnectedHermesChatAgent,
   hermesChatHubKey,
+  isReplacedHermesChatAgentAttachment,
   normalizeHermesChatSpaceId,
   normalizeHermesChatSpaceIds,
   parseHermesChatFrame,
+  planHermesChatAgentAdmission,
   readBearerToken,
   validateHermesChatMessage,
   validateHermesChatEdit,

@@ -2,8 +2,9 @@ import { DurableObject } from "cloudflare:workers";
 import {
   CHAT_PROTOCOL_VERSION,
   buildHermesChatDeliveryFrame,
-  hasConnectedHermesChatAgent,
+  isReplacedHermesChatAgentAttachment,
   parseHermesChatFrame,
+  planHermesChatAgentAdmission,
   validateHermesChatMessage,
   validateHermesChatEdit,
   validateHermesChatReceipt,
@@ -82,6 +83,7 @@ class HermesChatRoom extends DurableObject {
       return jsonError("Unauthorized.", 401);
     }
 
+    let agentReplacements = [];
     if (role === "client") {
       const ticketId = request.headers.get("X-Hermes-Ticket-Id") || "";
       const ticketExpiresAt = Number(request.headers.get("X-Hermes-Ticket-Expires") || 0);
@@ -100,9 +102,26 @@ class HermesChatRoom extends DurableObject {
       }
     } else {
       const existingAgents = this.ctx.getWebSockets("role:agent");
-      if (hasConnectedHermesChatAgent(existingAgents)) {
+      const admission = planHermesChatAgentAdmission(existingAgents, {
+        spaceId,
+        agentId: userId,
+      });
+      if (existingAgents.length > 0) {
+        console.log(JSON.stringify({
+          level: "info",
+          event: "hermes_chat_agent_admission",
+          spaceId,
+          agentId: userId,
+          existingConnections: existingAgents.length,
+          replacementConnections: admission.replacementConnections.length,
+          conflict: admission.conflict,
+          readyStates: existingAgents.map((connection) => connection.readyState),
+        }));
+      }
+      if (admission.conflict) {
         return jsonError("Another Hermes agent is already connected for this space.", 409);
       }
+      agentReplacements = admission.replacementConnections;
     }
 
     const pair = new WebSocketPair();
@@ -116,11 +135,39 @@ class HermesChatRoom extends DurableObject {
       connectionId,
       latestSeq: this.latestSequence(),
     }));
+    for (const existing of agentReplacements) {
+      try {
+        existing.serializeAttachment({
+          ...readSocketAttachment(existing),
+          replacedByConnectionId: connectionId,
+        });
+      } catch (error) {
+        console.warn(JSON.stringify({
+          level: "warn",
+          event: "hermes_chat_agent_replacement_mark_failed",
+          spaceId,
+          agentId: userId,
+          message: error instanceof Error ? error.message : "Unknown attachment error",
+        }));
+      }
+      try {
+        existing.close(1000, "Replaced by a newer Hermes agent connection");
+      } catch (error) {
+        console.warn(JSON.stringify({
+          level: "warn",
+          event: "hermes_chat_agent_replacement_close_failed",
+          spaceId,
+          agentId: userId,
+          message: error instanceof Error ? error.message : "Unknown close error",
+        }));
+      }
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(socket, message) {
     const attachment = readSocketAttachment(socket);
+    if (isReplacedHermesChatAgentAttachment(attachment)) return;
     try {
       const frame = parseHermesChatFrame(message);
       if (frame.type === "ping") {
@@ -528,6 +575,10 @@ class HermesChatRoom extends DurableObject {
     const encoded = JSON.stringify(frame);
     for (const socket of this.ctx.getWebSockets(`role:${receiverRole}`)) {
       try {
+        if (
+          receiverRole === "agent"
+          && isReplacedHermesChatAgentAttachment(readSocketAttachment(socket))
+        ) continue;
         socket.send(encoded);
       } catch (error) {
         console.warn(JSON.stringify({
