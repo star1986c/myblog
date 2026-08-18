@@ -26,6 +26,7 @@ import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -518,21 +519,19 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     composePanel.addView(pendingAttachmentBar, pendingParams);
 
     LinearLayout compose = horizontal(Gravity.BOTTOM);
+    LinearLayout inputTools = horizontal(Gravity.CENTER_VERTICAL);
+    inputTools.setBaselineAligned(false);
     ImageButton attachment = iconButton(R.drawable.ic_attach_file, "添加图片或文件");
     attachment.setBackground(rounded(R.color.surface_tonal, 16));
     attachment.setOnClickListener(view -> chooseAttachment());
-    compose.addView(attachment, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    TextView commandButton = text("/", 23, R.color.brand_primary_dark);
-    commandButton.setGravity(Gravity.CENTER);
-    commandButton.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-    commandButton.setContentDescription("打开 Hermes 快捷指令");
-    commandButton.setClickable(true);
-    commandButton.setFocusable(true);
+    inputTools.addView(attachment, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    ImageButton commandButton = iconButton(R.drawable.ic_command, "打开 Hermes 快捷指令");
     commandButton.setBackground(rounded(R.color.surface_tonal, 16));
     commandButton.setOnClickListener(view -> showCommandPalette());
     LinearLayout.LayoutParams commandButtonParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-    commandButtonParams.setMarginStart(dp(6));
-    compose.addView(commandButton, commandButtonParams);
+    commandButtonParams.setMarginStart(dp(8));
+    inputTools.addView(commandButton, commandButtonParams);
+    compose.addView(inputTools, new LinearLayout.LayoutParams(-2, dp(48)));
     composer = new EditText(this);
     composer.setHint("给 Hermes 发消息");
     composer.setTextColor(getColor(R.color.text_primary));
@@ -1770,19 +1769,34 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
               || !spaceId.equals(selectedProfile.id)) return;
           int index = bubble.indexOfChild(loading);
           bubble.removeView(loading);
+          FrameLayout preview = new FrameLayout(this);
+          preview.setBackground(rounded(R.color.surface, 12));
+          preview.setClipToOutline(true);
           ImageView image = new ImageView(this);
           image.setImageBitmap(bitmap);
           image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-          image.setContentDescription("点击查看加密聊天图片");
-          image.setBackground(rounded(R.color.surface, 12));
-          image.setOnClickListener(view -> handleAttachmentTap(
-            bubble,
-            () -> showImagePreview(descriptor)
-          ));
+          image.setContentDescription("聊天图片，点击查看大图");
+          Runnable openPreview = () -> showImagePreview(descriptor);
+          image.setOnClickListener(view -> handleAttachmentTap(bubble, openPreview));
           image.setOnLongClickListener(view -> bubble.performLongClick());
+          preview.addView(image, new FrameLayout.LayoutParams(-1, -1));
+
+          ImageButton expand = iconButton(R.drawable.ic_fullscreen, "放大聊天图片");
+          expand.setImageTintList(ColorStateList.valueOf(Color.WHITE));
+          expand.setBackground(roundedColor(0xB3000000, 14));
+          expand.setOnClickListener(view -> handleAttachmentTap(bubble, openPreview));
+          expand.setOnLongClickListener(view -> bubble.performLongClick());
+          FrameLayout.LayoutParams expandParams = new FrameLayout.LayoutParams(
+            dp(48),
+            dp(48),
+            Gravity.END | Gravity.BOTTOM
+          );
+          expandParams.setMargins(0, 0, dp(8), dp(8));
+          preview.addView(expand, expandParams);
+
           LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(240), dp(180));
           params.topMargin = dp(6);
-          bubble.addView(image, Math.max(0, index), params);
+          bubble.addView(preview, Math.max(0, index), params);
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
@@ -2273,31 +2287,32 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     image.setAdjustViewBounds(true);
     image.setContentDescription("聊天图片大图预览");
     FrameLayout.LayoutParams imageParams = new FrameLayout.LayoutParams(-1, -1);
-    imageParams.setMargins(0, dp(56), 0, 0);
+    imageParams.setMargins(0, dp(64), 0, 0);
     root.addView(image, imageParams);
 
     LinearLayout actions = horizontal(Gravity.CENTER_VERTICAL);
-    actions.setPadding(dp(8), dp(6), dp(8), dp(6));
+    actions.setPadding(dp(8), dp(8), dp(8), dp(8));
     actions.setBackgroundColor(0xCC000000);
-    Button close = new Button(this);
-    close.setText("关闭");
-    close.setTextColor(Color.WHITE);
+    TextView close = imagePreviewActionButton("关闭", "关闭图片预览");
     close.setOnClickListener(view -> dialog.dismiss());
-    actions.addView(close, new LinearLayout.LayoutParams(dp(76), dp(48)));
-    TextView title = text("加密聊天图片", 16, android.R.color.white);
+    actions.addView(close, new LinearLayout.LayoutParams(dp(56), dp(48)));
+    TextView title = text("加密聊天图片", 15, android.R.color.white);
     title.setGravity(Gravity.CENTER);
-    actions.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
-    Button share = new Button(this);
-    share.setText("分享");
-    share.setTextColor(Color.WHITE);
+    title.setSingleLine(true);
+    title.setEllipsize(TextUtils.TruncateAt.END);
+    title.setContentDescription("加密聊天图片预览");
+    LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+    titleParams.setMargins(dp(8), 0, dp(8), 0);
+    actions.addView(title, titleParams);
+    TextView share = imagePreviewActionButton("分享", "分享图片");
     share.setOnClickListener(view -> shareImage(plaintext, descriptor));
-    actions.addView(share, new LinearLayout.LayoutParams(dp(76), dp(48)));
-    Button save = new Button(this);
-    save.setText("保存相册");
-    save.setTextColor(Color.WHITE);
+    actions.addView(share, new LinearLayout.LayoutParams(dp(56), dp(48)));
+    TextView save = imagePreviewActionButton("保存相册", "保存图片到相册");
     save.setOnClickListener(view -> saveImageToGallery(plaintext, descriptor));
-    actions.addView(save, new LinearLayout.LayoutParams(dp(104), dp(48)));
-    root.addView(actions, new FrameLayout.LayoutParams(-1, dp(60), Gravity.TOP));
+    LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(dp(80), dp(48));
+    saveParams.setMarginStart(dp(8));
+    actions.addView(save, saveParams);
+    root.addView(actions, new FrameLayout.LayoutParams(-1, dp(64), Gravity.TOP));
 
     dialog.setContentView(root);
     dialog.setOnShowListener(ignored -> {
@@ -2755,10 +2770,24 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private ImageButton iconButton(int drawable, String description) {
     ImageButton button = new ImageButton(this);
     button.setImageResource(drawable);
+    button.setScaleType(ImageView.ScaleType.CENTER);
     button.setImageTintList(ColorStateList.valueOf(getColor(R.color.brand_primary_dark)));
     button.setContentDescription(description);
     button.setPadding(dp(12), dp(12), dp(12), dp(12));
     button.setBackground(rounded(R.color.background, 16));
+    return button;
+  }
+
+  private TextView imagePreviewActionButton(String label, String description) {
+    TextView button = text(label, 13, android.R.color.white);
+    button.setGravity(Gravity.CENTER);
+    button.setSingleLine(true);
+    button.setEllipsize(TextUtils.TruncateAt.END);
+    button.setAutoSizeTextTypeUniformWithConfiguration(11, 13, 1, TypedValue.COMPLEX_UNIT_SP);
+    button.setContentDescription(description);
+    button.setClickable(true);
+    button.setFocusable(true);
+    button.setBackground(roundedColor(0x33FFFFFF, 14));
     return button;
   }
 
@@ -2778,8 +2807,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private GradientDrawable rounded(int color, int radius) {
+    return roundedColor(getColor(color), radius);
+  }
+
+  private GradientDrawable roundedColor(int color, int radius) {
     GradientDrawable drawable = new GradientDrawable();
-    drawable.setColor(getColor(color));
+    drawable.setColor(color);
     drawable.setCornerRadius(dp(radius));
     return drawable;
   }

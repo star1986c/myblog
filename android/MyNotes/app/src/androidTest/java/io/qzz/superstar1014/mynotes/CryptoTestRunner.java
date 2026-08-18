@@ -3,12 +3,19 @@ package io.qzz.superstar1014.mynotes;
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.Context;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.net.Uri;
 import android.os.Bundle;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -16,8 +23,11 @@ import java.util.Set;
 import javax.crypto.SecretKey;
 
 public final class CryptoTestRunner extends Instrumentation {
+  private Bundle arguments = Bundle.EMPTY;
+
   @Override
   public void onCreate(Bundle arguments) {
+    this.arguments = arguments == null ? Bundle.EMPTY : new Bundle(arguments);
     super.onCreate(arguments);
     start();
   }
@@ -26,6 +36,13 @@ public final class CryptoTestRunner extends Instrumentation {
   public void onStart() {
     Bundle result = new Bundle();
     try {
+      if ("image-preview".equals(arguments.getString("layoutPreview"))) {
+        showHermesImagePreviewForQa();
+        result.putString(REPORT_KEY_STREAMRESULT, "Hermes image preview QA: PASS\n");
+        Thread.sleep(15_000L);
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       verifyWebCryptoFixture();
       verifyRoundTripsAndBinding();
       verifySharedProtectionPassword();
@@ -47,6 +64,47 @@ public final class CryptoTestRunner extends Instrumentation {
       );
       finish(Activity.RESULT_CANCELED, result);
     }
+  }
+
+  private void showHermesImagePreviewForQa() throws Exception {
+    Intent intent = new Intent(getTargetContext(), HermesChatActivity.class)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      .putExtra("demo", true)
+      .putExtra("profileLabel", "Hermes Magic8 图片预览");
+    HermesChatActivity activity = (HermesChatActivity) startActivitySync(intent);
+
+    Bitmap bitmap = Bitmap.createBitmap(1080, 720, Bitmap.Config.ARGB_8888);
+    Canvas canvas = new Canvas(bitmap);
+    canvas.drawColor(Color.rgb(29, 93, 87));
+    Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    paint.setColor(Color.rgb(216, 241, 237));
+    paint.setTextAlign(Paint.Align.CENTER);
+    paint.setTextSize(64f);
+    canvas.drawText("Hermes encrypted image", 540f, 335f, paint);
+    paint.setTextSize(42f);
+    canvas.drawText("1256 x 2808 layout QA", 540f, 410f, paint);
+
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+    byte[] plaintext = output.toByteArray();
+    org.json.JSONObject descriptor = new org.json.JSONObject()
+      .put("name", "hermes-layout-preview.png")
+      .put("contentType", "image/png");
+    Method preview = HermesChatActivity.class.getDeclaredMethod(
+      "showImagePreview",
+      Bitmap.class,
+      byte[].class,
+      org.json.JSONObject.class
+    );
+    preview.setAccessible(true);
+    runOnMainSync(() -> {
+      try {
+        preview.invoke(activity, bitmap, plaintext, descriptor);
+      } catch (ReflectiveOperationException error) {
+        throw new RuntimeException(error);
+      }
+    });
+    waitForIdleSync();
   }
 
   private static void verifyHermesChatCrypto() throws Exception {

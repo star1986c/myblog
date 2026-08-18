@@ -38,6 +38,14 @@ const copyIconPath = new URL(
   "../android/MyNotes/app/src/main/res/drawable/ic_copy.xml",
   import.meta.url,
 );
+const commandIconPath = new URL(
+  "../android/MyNotes/app/src/main/res/drawable/ic_command.xml",
+  import.meta.url,
+);
+const fullscreenIconPath = new URL(
+  "../android/MyNotes/app/src/main/res/drawable/ic_fullscreen.xml",
+  import.meta.url,
+);
 const shareProviderPath = new URL(
   "../android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesShareFileProvider.java",
   import.meta.url,
@@ -246,17 +254,54 @@ test("Hermes chat searches only ordered messages already loaded in the Android a
   assert.match(activity, /isMessageSearchActive\(\) \|\| !composer\.isAttachedToWindow\(\)/);
 });
 
-test("composer attachment and slash tools share centered 48dp controls", async () => {
-  const activity = await readFile(activityPath, "utf8");
+test("composer attachment and command tools share centered 48dp controls", async () => {
+  const [activity, commandIcon] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(commandIconPath, "utf8"),
+  ]);
   const compose = activity.slice(
     activity.indexOf("LinearLayout compose = horizontal(Gravity.BOTTOM)"),
     activity.indexOf("composer = new EditText", activity.indexOf("LinearLayout compose = horizontal(Gravity.BOTTOM)")),
   );
 
+  assert.match(commandIcon, /android:width="24dp"/);
+  assert.match(commandIcon, /android:pathData=/);
+  assert.match(compose, /LinearLayout inputTools = horizontal\(Gravity\.CENTER_VERTICAL\)/);
+  assert.match(compose, /inputTools\.setBaselineAligned\(false\)/);
   assert.match(compose, /attachment\.setBackground\(rounded\(R\.color\.surface_tonal, 16\)\)/);
-  assert.match(compose, /TextView commandButton = text\("\/", 23, R\.color\.brand_primary_dark\)/);
-  assert.match(compose, /commandButton\.setGravity\(Gravity\.CENTER\)/);
+  assert.match(compose, /ImageButton commandButton = iconButton\(R\.drawable\.ic_command/);
+  assert.match(compose, /commandButtonParams\.setMarginStart\(dp\(8\)\)/);
+  assert.match(compose, /compose\.addView\(inputTools, new LinearLayout\.LayoutParams\(-2, dp\(48\)\)\)/);
   assert.equal((compose.match(/new LinearLayout\.LayoutParams\(dp\(48\), dp\(48\)\)/g) || []).length, 2);
+  assert.doesNotMatch(compose, /TextView commandButton/);
+});
+
+test("chat images keep a visible expand action and a font-safe preview toolbar", async () => {
+  const [activity, fullscreenIcon] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(fullscreenIconPath, "utf8"),
+  ]);
+  const thumbnail = activity.slice(
+    activity.indexOf("private void addAttachmentPreview"),
+    activity.indexOf("private void addFileCard"),
+  );
+  const preview = activity.slice(
+    activity.indexOf("private void showImagePreview(Bitmap"),
+    activity.indexOf("private void shareImage"),
+  );
+
+  assert.match(fullscreenIcon, /android:width="24dp"/);
+  assert.match(thumbnail, /FrameLayout preview = new FrameLayout\(this\)/);
+  assert.match(thumbnail, /R\.drawable\.ic_fullscreen, "放大聊天图片"/);
+  assert.match(thumbnail, /dp\(48\),\s*dp\(48\),\s*Gravity\.END \| Gravity\.BOTTOM/);
+  assert.match(thumbnail, /expandParams\.setMargins\(0, 0, dp\(8\), dp\(8\)\)/);
+  assert.match(preview, /imageParams\.setMargins\(0, dp\(64\), 0, 0\)/);
+  assert.match(preview, /title\.setSingleLine\(true\)/);
+  assert.match(preview, /imagePreviewActionButton\("关闭", "关闭图片预览"\)/);
+  assert.match(preview, /imagePreviewActionButton\("分享", "分享图片"\)/);
+  assert.match(preview, /imagePreviewActionButton\("保存相册", "保存图片到相册"\)/);
+  assert.match(preview, /new FrameLayout\.LayoutParams\(-1, dp\(64\), Gravity\.TOP\)/);
+  assert.doesNotMatch(preview, /new Button\(this\)/);
 });
 
 test("Hermes chat offers official messaging command autocomplete and guided quick actions", async () => {
@@ -328,7 +373,7 @@ test("decrypted chat images share through a temporary read-only content URI", as
     readFile(manifestPath, "utf8"),
   ]);
 
-  assert.match(activity, /share\.setText\("分享"\)/);
+  assert.match(activity, /imagePreviewActionButton\("分享", "分享图片"\)/);
   assert.match(activity, /new Intent\(Intent\.ACTION_SEND\)/);
   assert.match(activity, /Intent\.EXTRA_STREAM, shareUri/);
   assert.match(activity, /Intent\.FLAG_GRANT_READ_URI_PERMISSION/);
