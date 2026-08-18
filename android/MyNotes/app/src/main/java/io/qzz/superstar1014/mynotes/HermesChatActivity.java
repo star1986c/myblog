@@ -76,6 +76,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   public static final String EXTRA_PROFILE_ID = "hermes_profile_id";
   public static final String EXTRA_PROFILE_LABEL = "hermes_profile_label";
   static final String EXTRA_DEMO_AWAITING = "hermes_demo_awaiting";
+  static final String EXTRA_DEMO_LONG_HISTORY = "hermes_demo_long_history";
   private static final int REQUEST_ATTACHMENT = 2201;
   private static final int REQUEST_SAVE_ATTACHMENT = 2202;
   private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
@@ -136,11 +137,21 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private boolean destroyed;
   private boolean resumed;
   private boolean deletingMessages;
+  private boolean renderingCachedMessages;
+  private boolean pendingBottomScrollSmooth;
   private final List<RenderedMessage> messageSearchMatches = new ArrayList<>();
   private int messageSearchIndex = -1;
   private RenderedMessage highlightedSearchMessage;
   private Models.HermesChatProfile selectedProfile;
   private volatile long profileGeneration;
+  private final Runnable applyPendingBottomScroll = () -> {
+    if (destroyed || messageScroll == null || messages == null || isMessageSearchActive()) {
+      return;
+    }
+    int bottom = Math.max(0, messages.getHeight() - messageScroll.getHeight());
+    if (pendingBottomScrollSmooth) messageScroll.smoothScrollTo(0, bottom);
+    else messageScroll.scrollTo(0, bottom);
+  };
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -179,7 +190,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     if (selectedProfile != null && connectionListener != null) {
       connection.setProfileVisible(selectedProfile.id, connectionListener, true);
     }
-    focusComposer(true);
+    keepComposerFocusedIfImeVisible();
+    scrollMessagesToBottom(false);
   }
 
   @Override
@@ -195,6 +207,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   protected void onDestroy() {
     destroyed = true;
     handler.removeCallbacksAndMessages(null);
+    if (messageScroll != null) messageScroll.removeCallbacks(applyPendingBottomScroll);
     if (connectionListener != null) connection.detach(connectionListener);
     if (commandPaletteDialog != null) commandPaletteDialog.dismiss();
     cleanupPlaybackDialogs();
@@ -277,7 +290,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     runOnUiThread(() -> {
       if ("agent".equals(message.sender)) clearAwaitingAgentResponse();
       appendMessage(message);
-      focusComposer(true);
+      keepComposerFocusedIfImeVisible();
     });
   }
 
@@ -712,6 +725,18 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       "可以。先列出最重要的三件事，我会把它们整理成清晰的执行顺序。",
       new JSONArray()
     ));
+    if (getIntent().getBooleanExtra(EXTRA_DEMO_LONG_HISTORY, false)) {
+      for (int index = 0; index < 24; index++) {
+        appendMessage(new HermesChatCrypto.ChatMessage(
+          "demo-history-" + index,
+          index % 3 == 0 ? "client" : "agent",
+          now - 55_000 + index * 1_000L,
+          4 + index,
+          "用于验证首次进入会话自动定位到最新消息。第 " + (index + 1) + " 条。",
+          new JSONArray()
+        ));
+      }
+    }
     if (getIntent().getBooleanExtra(EXTRA_DEMO_AWAITING, false)) {
       webSocketReady = true;
       markAwaitingAgentResponse();
@@ -1277,7 +1302,13 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     selectedMessageIds.clear();
     updateMessageSelectionUi();
     messages.removeAllViews();
-    for (HermesChatCrypto.ChatMessage message : snapshot.messages) appendMessage(message);
+    renderingCachedMessages = true;
+    try {
+      for (HermesChatCrypto.ChatMessage message : snapshot.messages) appendMessage(message);
+    } finally {
+      renderingCachedMessages = false;
+    }
+    scrollMessagesToBottom(false);
     if (!snapshot.messages.isEmpty()) {
       showConnectionAwareStatus(
         "已加载 " + snapshot.messages.size() + " 条本地加密消息，正在连接…"
@@ -1546,7 +1577,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       renderedMessagesBySequence.put(message.sequence, rendered);
     }
     if (isMessageSearchActive()) refreshMessageSearch();
-    else messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+    else if (!renderingCachedMessages) scrollMessagesToBottom(true);
   }
 
   private void replaceMessage(HermesChatCrypto.ChatMessage message) {
@@ -1581,7 +1612,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     rendered.meta.setText(message.finalUpdate ? sentTime : sentTime + " · 正在回复");
     rendered.streaming = !message.finalUpdate;
     if (isMessageSearchActive()) refreshMessageSearch();
-    else messageScroll.post(() -> messageScroll.fullScroll(View.FOCUS_DOWN));
+    else if (!renderingCachedMessages) scrollMessagesToBottom(true);
   }
 
   private static String formatMessageTime(long sentAt) {
@@ -3163,6 +3194,26 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         if (controller != null) controller.show(WindowInsets.Type.ime());
       }
     });
+  }
+
+  private void keepComposerFocusedIfImeVisible() {
+    if (!resumed || destroyed || composer == null || !selectedMessageIds.isEmpty()
+        || isMessageSearchActive()) return;
+    composer.post(() -> {
+      if (!resumed || destroyed || !selectedMessageIds.isEmpty()
+          || isMessageSearchActive() || !composer.isAttachedToWindow()) return;
+      WindowInsets insets = composer.getRootWindowInsets();
+      if (insets == null || !insets.isVisible(WindowInsets.Type.ime())) return;
+      composer.requestFocus();
+      composer.setSelection(composer.length());
+    });
+  }
+
+  private void scrollMessagesToBottom(boolean smooth) {
+    if (destroyed || messageScroll == null || messages == null || isMessageSearchActive()) return;
+    pendingBottomScrollSmooth = smooth;
+    messageScroll.removeCallbacks(applyPendingBottomScroll);
+    messageScroll.post(applyPendingBottomScroll);
   }
 
   private <T extends View> T applyInsets(T view) {

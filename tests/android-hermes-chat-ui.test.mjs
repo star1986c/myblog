@@ -198,7 +198,7 @@ test("debug demo can render the real awaiting status through normal navigation",
   assert.match(main, /HermesChatActivity\.EXTRA_DEMO_AWAITING/);
 });
 
-test("chat composer keeps focus on entry and after incoming Hermes messages", async () => {
+test("incoming Hermes messages never open the keyboard and only preserve visible IME focus", async () => {
   const source = await readFile(activityPath, "utf8");
   const onResume = source.slice(
     source.indexOf("protected void onResume()"),
@@ -208,11 +208,44 @@ test("chat composer keeps focus on entry and after incoming Hermes messages", as
     source.indexOf("public void onMessage"),
     source.indexOf("public void onAcknowledged"),
   );
+  const conditionalFocus = source.slice(
+    source.indexOf("private void keepComposerFocusedIfImeVisible()"),
+    source.indexOf("private void scrollMessagesToBottom"),
+  );
 
-  assert.match(onResume, /focusComposer\(true\)/);
-  assert.match(onMessage, /appendMessage\(message\)[\s\S]*focusComposer\(true\)/);
-  assert.match(source, /composer\.requestFocus\(\)/);
-  assert.match(source, /controller\.show\(WindowInsets\.Type\.ime\(\)\)/);
+  assert.match(onResume, /keepComposerFocusedIfImeVisible\(\)/);
+  assert.doesNotMatch(onResume, /focusComposer\(true\)|\.show\(WindowInsets\.Type\.ime\(\)\)/);
+  assert.match(onMessage, /appendMessage\(message\)[\s\S]*keepComposerFocusedIfImeVisible\(\)/);
+  assert.doesNotMatch(onMessage, /focusComposer\(true\)|\.show\(WindowInsets\.Type\.ime\(\)\)/);
+  assert.match(conditionalFocus, /getRootWindowInsets\(\)/);
+  assert.match(conditionalFocus, /insets\.isVisible\(WindowInsets\.Type\.ime\(\)\)/);
+  assert.match(conditionalFocus, /isVisible[\s\S]*composer\.requestFocus\(\)/);
+  assert.doesNotMatch(conditionalFocus, /\.show\(WindowInsets\.Type\.ime\(\)\)/);
+});
+
+test("Hermes chat opens at the latest message and new messages auto-scroll without moving focus", async () => {
+  const source = await readFile(activityPath, "utf8");
+  const onResume = source.slice(
+    source.indexOf("protected void onResume()"),
+    source.indexOf("protected void onPause()"),
+  );
+  const renderCached = source.slice(
+    source.indexOf("private void renderCachedMessages"),
+    source.indexOf("private void persistMessage"),
+  );
+  const scrollHelper = source.slice(
+    source.indexOf("private void scrollMessagesToBottom"),
+    source.indexOf("private <T extends View> T applyInsets"),
+  );
+
+  assert.match(onResume, /scrollMessagesToBottom\(false\)/);
+  assert.match(renderCached, /renderingCachedMessages = true[\s\S]*renderingCachedMessages = false/);
+  assert.match(renderCached, /scrollMessagesToBottom\(false\)/);
+  assert.match(source, /else if \(!renderingCachedMessages\) scrollMessagesToBottom\(true\)/);
+  assert.match(scrollHelper, /messageScroll\.removeCallbacks\(applyPendingBottomScroll\)/);
+  assert.match(source, /messageScroll\.smoothScrollTo\(0, bottom\)/);
+  assert.match(source, /messageScroll\.scrollTo\(0, bottom\)/);
+  assert.doesNotMatch(source, /fullScroll\(View\.FOCUS_DOWN\)/);
 });
 
 test("Hermes chat renders Telegram-style Markdown and fenced code blocks", async () => {

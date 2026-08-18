@@ -10,11 +10,17 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
@@ -36,6 +42,15 @@ public final class CryptoTestRunner extends Instrumentation {
   public void onStart() {
     Bundle result = new Bundle();
     try {
+      if ("chat-behavior".equals(arguments.getString("uiQa"))) {
+        verifyHermesChatBehaviorForQa();
+        result.putString(
+          REPORT_KEY_STREAMRESULT,
+          "Hermes chat focus and latest-message scrolling QA: PASS\n"
+        );
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if ("image-preview".equals(arguments.getString("layoutPreview"))) {
         showHermesImagePreviewForQa();
         result.putString(REPORT_KEY_STREAMRESULT, "Hermes image preview QA: PASS\n");
@@ -105,6 +120,123 @@ public final class CryptoTestRunner extends Instrumentation {
       }
     });
     waitForIdleSync();
+  }
+
+  private void verifyHermesChatBehaviorForQa() throws Exception {
+    Intent intent = new Intent(getTargetContext(), HermesChatActivity.class)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      .putExtra("demo", true)
+      .putExtra(HermesChatActivity.EXTRA_DEMO_LONG_HISTORY, true)
+      .putExtra(HermesChatActivity.EXTRA_PROFILE_LABEL, "Hermes 焦点与滚动验证");
+    HermesChatActivity activity = (HermesChatActivity) startActivitySync(intent);
+
+    Field composerField = HermesChatActivity.class.getDeclaredField("composer");
+    Field messageScrollField = HermesChatActivity.class.getDeclaredField("messageScroll");
+    Field messagesField = HermesChatActivity.class.getDeclaredField("messages");
+    composerField.setAccessible(true);
+    messageScrollField.setAccessible(true);
+    messagesField.setAccessible(true);
+    EditText composer = (EditText) composerField.get(activity);
+    ScrollView messageScroll = (ScrollView) messageScrollField.get(activity);
+    LinearLayout messages = (LinearLayout) messagesField.get(activity);
+
+    try {
+      waitForIdleSync();
+      Thread.sleep(350L);
+      waitForIdleSync();
+      requireChatAtBottom(activity, messageScroll, messages, false, true);
+
+      HermesChatCrypto.ChatMessage hiddenImeMessage = new HermesChatCrypto.ChatMessage(
+        "qa-hidden-ime-message",
+        "agent",
+        System.currentTimeMillis(),
+        1001,
+        "键盘隐藏时收到的新消息不应主动弹出输入法。",
+        new org.json.JSONArray()
+      );
+      runOnMainSync(() -> activity.onMessage(hiddenImeMessage));
+      waitForIdleSync();
+      Thread.sleep(650L);
+      waitForIdleSync();
+      requireChatAtBottom(activity, messageScroll, messages, false, true);
+
+      runOnMainSync(() -> {
+        composer.requestFocus();
+        composer.setSelection(composer.length());
+        WindowInsetsController controller = activity.getWindow().getInsetsController();
+        require(controller != null, "Hermes chat has no WindowInsetsController");
+        controller.show(WindowInsets.Type.ime());
+      });
+      require(
+        waitForImeVisibility(activity, true, 2_500L),
+        "Hermes chat keyboard did not become visible after explicit composer focus"
+      );
+
+      HermesChatCrypto.ChatMessage visibleImeMessage = new HermesChatCrypto.ChatMessage(
+        "qa-visible-ime-message",
+        "agent",
+        System.currentTimeMillis() + 1,
+        1002,
+        "键盘已显示时收到的新消息应保持输入框焦点并滚动到最新消息。",
+        new org.json.JSONArray()
+      );
+      runOnMainSync(() -> activity.onMessage(visibleImeMessage));
+      waitForIdleSync();
+      Thread.sleep(650L);
+      waitForIdleSync();
+      requireChatAtBottom(activity, messageScroll, messages, true, true);
+      runOnMainSync(() -> require(
+        composer.hasFocus(),
+        "Incoming Hermes message moved focus away from the visible composer"
+      ));
+    } finally {
+      runOnMainSync(activity::finish);
+      waitForIdleSync();
+    }
+  }
+
+  private void requireChatAtBottom(
+    HermesChatActivity activity,
+    ScrollView messageScroll,
+    LinearLayout messages,
+    boolean expectedImeVisible,
+    boolean requireOverflow
+  ) {
+    runOnMainSync(() -> {
+      int bottom = Math.max(0, messages.getHeight() - messageScroll.getHeight());
+      if (requireOverflow) require(bottom > 0, "Hermes QA history did not overflow the viewport");
+      require(
+        Math.abs(messageScroll.getScrollY() - bottom) <= 2,
+        "Hermes chat is not positioned at the latest message"
+      );
+      WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+      boolean imeVisible = insets != null && insets.isVisible(WindowInsets.Type.ime());
+      require(
+        imeVisible == expectedImeVisible,
+        expectedImeVisible
+          ? "Hermes chat unexpectedly hid the visible keyboard"
+          : "Hermes chat unexpectedly opened the keyboard"
+      );
+    });
+  }
+
+  private boolean waitForImeVisibility(
+    HermesChatActivity activity,
+    boolean expectedVisible,
+    long timeoutMs
+  ) throws InterruptedException {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    while (System.currentTimeMillis() < deadline) {
+      boolean[] visible = new boolean[1];
+      runOnMainSync(() -> {
+        WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+        visible[0] = insets != null && insets.isVisible(WindowInsets.Type.ime());
+      });
+      if (visible[0] == expectedVisible) return true;
+      Thread.sleep(50L);
+      waitForIdleSync();
+    }
+    return false;
   }
 
   private static void verifyHermesChatCrypto() throws Exception {
