@@ -15,14 +15,15 @@ const gateway = await readFile(
   "utf8",
 );
 
-test("multiplex hub keeps one hibernatable socket with durable route metadata", () => {
+test("multiplex hub keeps concurrent native-client sockets with durable route metadata", () => {
   assert.match(hub, /class HermesChatHub extends DurableObject/);
   assert.match(hub, /server\.serializeAttachment\(attachment\)/);
   assert.match(hub, /this\.ctx\.acceptWebSocket\(server, \["role:client"/);
   assert.match(hub, /normalizeHermesChatSpaceId\(routedFrame\.spaceId\)/);
   assert.match(hub, /attachment\.spaceIds\?\.includes\(spaceId\)/);
   assert.match(hub, /handleMultiplexClientFrame/);
-  assert.match(hub, /Replaced by a newer Android connection/);
+  assert.doesNotMatch(hub, /Replaced by a newer Android connection/);
+  assert.doesNotMatch(hub, /existing\.close\(1000/);
 });
 
 test("profile rooms retain old client sockets and forward durable events to registered hubs", () => {
@@ -43,6 +44,10 @@ test("profile rooms retain old client sockets and forward durable events to regi
   assert.match(room, /validateHermesChatAction\(frame, "client"\)/);
   assert.match(room, /durable: false/);
   assert.doesNotMatch(room, /storeMessage\(action/);
+  assert.match(
+    room,
+    /handleMultiplexClientFrame[\s\S]*this\.ctx\.waitUntil\(this\.broadcastToClientHubs\(spaceId, delivery\)\)/,
+  );
 });
 
 test("gateway chooses multiplex mode without removing the legacy single-space route", () => {

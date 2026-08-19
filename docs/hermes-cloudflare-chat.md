@@ -4,37 +4,41 @@
 
 家庭 NAS 不开放公网入站端口。每个 Hermes profile 启动自己的 Gateway 和
 `cloudflare_chat` 插件，由插件主动连接
-`wss://h.superstar1014.qzz.io/api/hermes-chat/ws`。安卓记事本登录现有账号后，
-动态读取可用 profile，并用 Telegram 风格的会话列表进入各自的独立聊天。
+`wss://h.superstar1014.qzz.io/api/hermes-chat/ws`。Android 与 macOS 的 My Notes 登录现有
+账号后，动态读取可用 profile，并用 Telegram 风格的会话列表进入各自的独立聊天。
 
 ```mermaid
 flowchart LR
-  A["Android My Notes"] -->|"短期票据 + WebSocket"| W["Cloudflare Worker"]
+  A["Android My Notes"] -->|"短期票据 + 同一账号"| H["用户级多路复用 Hub"]
+  M["macOS My Notes"] -->|"短期票据 + 同一账号"| H
+  H -->|"按 spaceId 路由"| W["Cloudflare Worker / Room DO"]
   N1["NAS Hermes profile A"] -->|"主动 WebSocket"| W
   N2["NAS Hermes profile B"] -->|"主动 WebSocket"| W
   W --> D1["Durable Object: space A"]
   W --> D2["Durable Object: space B"]
   A -->|"加密附件"| R["Private R2"]
+  M -->|"加密附件"| R
   N1 -->|"加密附件"| R
   N2 -->|"加密附件"| R
 ```
 
-profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，安卓端从 API
+profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，两个原生客户端从 API
 动态读取配置。当前实现最多接受 32 个 profile，目的是防止错误配置无限创建
 Durable Object。会话列表不会从 Cloudflare 拉取全部历史，只读取各 profile 的本机
-加密缓存作为摘要；已配置 profile 通过一条进程级复用 WebSocket 按 space id 路由，
-不会为每个聊天对象分别创建连接。
+加密缓存作为摘要；每个客户端内的已配置 profile 通过一条进程级复用 WebSocket 按
+space id 路由，不会为每个聊天对象分别创建连接。相同账号的 Android 和 Mac 可以同时
+连接用户级 Hub；任一客户端发送的 durable 消息都会同步扇出到其他在线客户端。
 
 ## 隔离与安全模型
 
 - 每个 profile id 确定性映射到一个 `space:<profileId>` Durable Object，聊天序号、
   离线记录和连接完全隔离。
 - 每个 profile 必须使用不同的 32 字节 `HERMES_CF_CHAT_KEY`。文字与附件均由
-  Android/NAS 使用 AES-256-GCM 加密，Cloudflare 只保存密文和路由所需元数据。
+  Android/macOS/NAS 使用 AES-256-GCM 加密，Cloudflare 只保存密文和路由所需元数据。
 - NAS profile 可以共用一个 `HERMES_CHAT_AGENT_SECRET` 做 Worker 身份认证；该
   secret 不参与消息加密。
-- Android 使用现有登录会话换取 90 秒、单次使用、绑定 profile 的 WebSocket
-  票据，长期设备令牌不会放进 WebSocket URL。
+- 原生客户端使用现有登录会话换取 90 秒、单次使用、绑定 profile 集合的 WebSocket
+  票据，长期凭据不会放进 WebSocket URL。
 - 每个附件的明文上限为 10 MiB。WebSocket 只发送加密描述符，密文二进制放入现有私有
   R2 bucket 的 `hermes-chat/v1/<profileId>/` 前缀。
 - Durable Object 保存最近 30 天且最多 500 条加密消息；断线重连按序号补发，每批
@@ -135,7 +139,7 @@ hermes -p personal plugins enable cloudflare_chat --allow-tool-override
 HERMES_CF_RELAY_URL=wss://h.superstar1014.qzz.io/api/hermes-chat/ws
 HERMES_CF_AGENT_SECRET=<与 Wrangler Secret 相同>
 HERMES_CF_SPACE_ID=primary
-HERMES_CF_CHAT_KEY=<Android 中 primary 对象生成的密钥>
+HERMES_CF_CHAT_KEY=<Android/macOS 中 primary 对象使用的同一密钥>
 HERMES_CF_AGENT_ID=nas-primary
 HERMES_CF_ALLOWED_USERS=android-owner
 HERMES_CF_ALLOW_ALL_USERS=false
@@ -147,7 +151,7 @@ HERMES_CF_ALLOW_ALL_USERS=false
 HERMES_CF_RELAY_URL=wss://h.superstar1014.qzz.io/api/hermes-chat/ws
 HERMES_CF_AGENT_SECRET=<与 Wrangler Secret 相同>
 HERMES_CF_SPACE_ID=personal
-HERMES_CF_CHAT_KEY=<Android 中 personal 会话生成的独立密钥>
+HERMES_CF_CHAT_KEY=<Android/macOS 中 personal 会话使用的同一独立密钥>
 HERMES_CF_AGENT_ID=nas-personal
 HERMES_CF_ALLOWED_USERS=android-owner
 HERMES_CF_ALLOW_ALL_USERS=false
@@ -263,7 +267,25 @@ Android Keystore 按 profile id 独立保护密钥。Android 2.14 起，全部�
   <https://hermes-agent.nousresearch.com/docs/user-guide/security/>、
   <https://hermes-agent.nousresearch.com/docs/reference/slash-commands>。
 
-### Android 2.5 附件白名单
+## macOS 使用流程
+
+1. 安装并登录最新版 `My Notes.app`，在左侧“工作区”选择 `Hermes 聊天`。
+2. 客户端从同一 Worker 动态读取 profile；进入钥匙设置，为每个 profile 粘贴 Android
+   已在使用的对应聊天密钥。不要重新生成不同密钥，也不要把密钥写进源码或文档。
+3. 密钥只保存到 macOS Keychain；消息快照保存在 Application Support 并再次使用该
+   profile 的聊天密钥加密，附件缓存只保存 R2 返回的密文。
+4. 已配置的所有 profile 共用一条 macOS 进程级多路复用 WebSocket。切换笔记页面或把
+   窗口放到后台不会主动断开；退出账号或进程结束时才关闭。
+5. Android 与 macOS 使用同一登录账号、同一 profile chat key 即可同时在线。任一端发送
+   的消息先持久化到对应 Room DO，再由用户级 Hub 同步到同账号的其他在线终端；断线端
+   之后按 durable sequence 增量补发，不会重新下载全部历史。
+
+macOS 与 Android 的当前能力基线记录在
+`docs/hermes-native-client-capabilities.json`。后续新增 Hermes 聊天能力时必须同时更新
+Android、macOS、必要的 Worker/插件协议、该能力清单以及 `npm test` 中的跨端一致性测试；
+只修改一个客户端不视为功能完成。
+
+### 原生客户端附件白名单
 
 | 类别 | 扩展名 |
 |---|---|

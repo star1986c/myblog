@@ -303,6 +303,94 @@ public actor NotesAPIClient {
     return response.usage
   }
 
+  public func hermesChatProfiles() async throws -> [HermesChatProfile] {
+    let response: HermesChatProfilesResponse = try await request(
+      path: "api/admin/hermes-chat/profiles"
+    )
+    return response.profiles
+  }
+
+  public func hermesChatMultiplexTicket(
+    spaceIDs: [String]
+  ) async throws -> HermesChatMultiplexTicket {
+    try await request(
+      method: "POST",
+      path: "api/admin/hermes-chat/multiplex-ticket",
+      body: try JSONEncoder().encode(HermesChatMultiplexTicketRequest(spaceIds: spaceIDs))
+    )
+  }
+
+  public func uploadHermesChatAttachment(
+    spaceID: String,
+    attachmentID: String,
+    ciphertext: Data
+  ) async throws {
+    guard let url = URL(
+      string: "api/hermes-chat/attachments/\(attachmentID)",
+      relativeTo: baseURL
+    )?.absoluteURL else { throw NotesAPIError.invalidResponse }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.httpBody = ciphertext
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    request.timeoutInterval = 60
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+    request.setValue(String(ciphertext.count), forHTTPHeaderField: "Content-Length")
+    request.setValue(spaceID, forHTTPHeaderField: "X-Hermes-Space")
+    request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
+    if !csrfToken.isEmpty {
+      request.setValue(csrfToken, forHTTPHeaderField: "X-CSRF-Token")
+    }
+    let (data, response) = try await session.data(for: request)
+    _ = try validate(response: response, data: data, path: request.url?.path ?? "")
+  }
+
+  public func downloadHermesChatAttachment(
+    spaceID: String,
+    attachmentID: String
+  ) async throws -> Data {
+    guard let url = URL(
+      string: "api/hermes-chat/attachments/\(attachmentID)",
+      relativeTo: baseURL
+    )?.absoluteURL else { throw NotesAPIError.invalidResponse }
+    var request = URLRequest(url: url)
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    request.timeoutInterval = 60
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+    request.setValue(spaceID, forHTTPHeaderField: "X-Hermes-Space")
+    request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
+    let (data, response) = try await session.data(for: request)
+    _ = try validate(response: response, data: data, path: request.url?.path ?? "")
+    return data
+  }
+
+  public func deleteHermesChatMessages(
+    spaceID: String,
+    messageIDs: [String],
+    attachmentIDs: [String]
+  ) async throws -> HermesChatDeleteResult {
+    try await request(
+      method: "POST",
+      path: "api/admin/hermes-chat/messages/delete",
+      body: try JSONEncoder().encode(
+        HermesChatDeleteRequest(
+          spaceId: spaceID,
+          messageIds: messageIDs,
+          attachmentIds: attachmentIDs
+        )
+      )
+    )
+  }
+
+  public func purgeHermesChat(spaceID: String) async throws -> HermesChatCleanupResult {
+    try await request(
+      method: "POST",
+      path: "api/admin/hermes-chat/cleanup",
+      body: try JSONEncoder().encode(HermesChatCleanupRequest(spaceId: spaceID))
+    )
+  }
+
   private func request<Response: Decodable>(
     method: String = "GET",
     path: String,
@@ -396,5 +484,13 @@ private struct MutationResponse: Codable { let note: NoteMutationState }
 private struct AttachmentsResponse: Codable { let attachments: [EncryptedAttachmentEnvelope] }
 private struct AttachmentResponse: Codable { let attachment: EncryptedAttachmentEnvelope }
 private struct AttachmentUsageResponse: Codable { let usage: AttachmentUsage }
+private struct HermesChatProfilesResponse: Codable { let profiles: [HermesChatProfile] }
+private struct HermesChatMultiplexTicketRequest: Codable { let spaceIds: [String] }
+private struct HermesChatDeleteRequest: Codable {
+  let spaceId: String
+  let messageIds: [String]
+  let attachmentIds: [String]
+}
+private struct HermesChatCleanupRequest: Codable { let spaceId: String }
 private struct OKResponse: Codable { let ok: Bool }
 private struct ErrorResponse: Codable { let error: String }

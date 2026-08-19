@@ -6,7 +6,7 @@ import {
   parseHermesChatFrame,
 } from "./hermes-chat-protocol.js";
 
-/** Terminates one hibernatable Android WebSocket and routes frames to profile rooms. */
+/** Terminates hibernatable native-client WebSockets and routes frames to profile rooms. */
 class HermesChatHub extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -77,14 +77,6 @@ class HermesChatHub extends DurableObject {
     const [client, server] = Object.values(pair);
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server, ["role:client", `user:${safeTag(userId)}`]);
-    for (const existing of this.ctx.getWebSockets("role:client")) {
-      if (readSocketAttachment(existing).connectionId === connectionId) continue;
-      try {
-        existing.close(1000, "Replaced by a newer Android connection");
-      } catch {
-        // A previous connection may already be closing.
-      }
-    }
     server.send(JSON.stringify({
       v: CHAT_PROTOCOL_VERSION,
       type: "ready",

@@ -120,6 +120,18 @@ The bundle is written to `output/My Notes.app`.
 The 1024px icon master is stored at `macos/AIBuildNotes/Assets/AppIcon-1024.png`; the build script
 generates and embeds the complete `.icns` representation.
 
+The macOS app also includes the same Hermes chat workspace as Android: dynamic multi-profile
+conversations, one multiplexed WebSocket, encrypted local history, incremental resume, streaming
+responses, interactive command/approval buttons, Markdown/code blocks, message search/actions, and
+encrypted attachments with image preview, media playback, open/share/save support, and profile-scoped
+cleanup. Paste each existing Android profile chat key into macOS Keychain; never add a chat key to the
+repository or an app bundle. Android and macOS may remain connected at the same time, and messages sent
+from either client are durably fanned out to the other one.
+
+`docs/hermes-native-client-capabilities.json` is the cross-client completion contract. A new Hermes
+feature is not complete until Android, macOS, the shared contract, and `npm test` parity checks are all
+updated together.
+
 ## Android notes app
 
 The native Android client lives in `android/MyNotes`. It uses the same authenticated Worker API,

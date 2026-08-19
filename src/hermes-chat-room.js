@@ -253,11 +253,15 @@ class HermesChatRoom extends DurableObject {
         duplicate: stored.duplicate,
       }));
       if (!stored.duplicate) {
+        const delivery = buildHermesChatDeliveryFrame(envelope, stored.seq);
         this.broadcastToOtherRole(
           attachment.role,
-          buildHermesChatDeliveryFrame(envelope, stored.seq),
+          delivery,
           attachment.spaceId,
         );
+        if (attachment.role === "client") {
+          this.ctx.waitUntil(this.broadcastToClientHubs(attachment.spaceId, delivery));
+        }
       }
     } catch (error) {
       sendSocketError(socket, error);
@@ -395,11 +399,13 @@ class HermesChatRoom extends DurableObject {
     const stored = this.storeMessage(envelope);
     if (!stored.duplicate) await this.ensureCleanupAlarm();
     if (!stored.duplicate) {
+      const delivery = buildHermesChatDeliveryFrame(envelope, stored.seq);
       this.broadcastToOtherRole(
         "client",
-        buildHermesChatDeliveryFrame(envelope, stored.seq),
+        delivery,
         spaceId,
       );
+      this.ctx.waitUntil(this.broadcastToClientHubs(spaceId, delivery));
     }
     return [{
       v: CHAT_PROTOCOL_VERSION,

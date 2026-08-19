@@ -3,9 +3,16 @@ import NotesCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum WorkspaceMode: String {
+  case notes
+  case hermes
+}
+
 struct RootView: View {
   @EnvironmentObject private var store: NotesStore
+  @EnvironmentObject private var hermesStore: HermesChatStore
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
+  @State private var workspaceMode: WorkspaceMode = .notes
 
   var body: some View {
     Group {
@@ -26,17 +33,38 @@ struct RootView: View {
     } message: {
       Text(store.errorMessage ?? "")
     }
+    .alert(
+      "Hermes",
+      isPresented: Binding(
+        get: { hermesStore.errorMessage != nil },
+        set: { if !$0 { hermesStore.clearError() } }
+      )
+    ) {
+      Button("知道了") { hermesStore.clearError() }
+    } message: {
+      Text(hermesStore.errorMessage ?? "")
+    }
   }
 
   private var workspace: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
-      SidebarView()
+      SidebarView(workspaceMode: $workspaceMode)
         .navigationSplitViewColumnWidth(min: 190, ideal: 225, max: 280)
     } content: {
-      NotesListView()
-        .navigationSplitViewColumnWidth(min: 300, ideal: 420, max: 640)
+      Group {
+        if workspaceMode == .notes {
+          NotesListView()
+        } else {
+          HermesConversationsView()
+        }
+      }
+      .navigationSplitViewColumnWidth(min: 300, ideal: 420, max: 640)
     } detail: {
-      NoteEditorView()
+      if workspaceMode == .notes {
+        NoteEditorView()
+      } else {
+        HermesChatView()
+      }
     }
     .navigationSplitViewStyle(.balanced)
   }
@@ -120,6 +148,8 @@ private struct FolderEditorRequest: Identifiable {
 
 private struct SidebarView: View {
   @EnvironmentObject private var store: NotesStore
+  @EnvironmentObject private var hermesStore: HermesChatStore
+  @Binding var workspaceMode: WorkspaceMode
   @State private var folderEditor: FolderEditorRequest?
   @State private var folderToDelete: NoteFolder?
   @State private var showsPasswordChange = false
@@ -129,6 +159,30 @@ private struct SidebarView: View {
       sidebarHeader
 
       List(selection: locationBinding) {
+        Section("工作区") {
+          Button {
+            workspaceMode = .hermes
+          } label: {
+            HStack(spacing: 8) {
+              Label("Hermes 聊天", systemImage: "message.fill")
+              Spacer(minLength: 8)
+              if hermesStore.totalUnread > 0 {
+                Text("\(min(99, hermesStore.totalUnread))")
+                  .font(.caption2.bold())
+                  .foregroundStyle(.white)
+                  .padding(.horizontal, 6)
+                  .padding(.vertical, 2)
+                  .background(Color.accentColor, in: Capsule())
+              }
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .listRowBackground(
+            workspaceMode == .hermes ? Color.accentColor.opacity(0.14) : Color.clear
+          )
+        }
+
         Section("笔记") {
           locationRow(
             title: "全部笔记",
@@ -149,6 +203,8 @@ private struct SidebarView: View {
                 .foregroundStyle(.tertiary)
             }
             .tag(NoteLocation.folder(folder.id))
+            .contentShape(Rectangle())
+            .onTapGesture { workspaceMode = .notes }
             .contextMenu {
               Button("上移", systemImage: "arrow.up") {
                 Task { await store.moveFolder(id: folder.id, offset: -1) }
@@ -248,6 +304,7 @@ private struct SidebarView: View {
       }
 
       Button {
+        workspaceMode = .notes
         Task { await store.createNote() }
       } label: {
         Label("新建笔记", systemImage: "square.and.pencil")
@@ -303,12 +360,19 @@ private struct SidebarView: View {
         .foregroundStyle(.tertiary)
     }
     .tag(location)
+    .contentShape(Rectangle())
+    .onTapGesture { workspaceMode = .notes }
   }
 
   private var locationBinding: Binding<NoteLocation?> {
     Binding(
       get: { store.location },
-      set: { if let location = $0 { store.selectLocation(location) } }
+      set: {
+        if let location = $0 {
+          workspaceMode = .notes
+          store.selectLocation(location)
+        }
+      }
     )
   }
 }
