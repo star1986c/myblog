@@ -6,11 +6,13 @@ import UniformTypeIdentifiers
 private enum WorkspaceMode: String {
   case notes
   case hermes
+  case cloudflareBilling
 }
 
 struct RootView: View {
   @EnvironmentObject private var store: NotesStore
   @EnvironmentObject private var hermesStore: HermesChatStore
+  @EnvironmentObject private var cloudflareBillingStore: CloudflareBillingStore
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var workspaceMode: WorkspaceMode = .notes
 
@@ -44,29 +46,51 @@ struct RootView: View {
     } message: {
       Text(hermesStore.errorMessage ?? "")
     }
+    .alert(
+      "Cloudflare 报表",
+      isPresented: Binding(
+        get: { cloudflareBillingStore.errorMessage != nil },
+        set: { if !$0 { cloudflareBillingStore.clearError() } }
+      )
+    ) {
+      Button("知道了") { cloudflareBillingStore.clearError() }
+    } message: {
+      Text(cloudflareBillingStore.errorMessage ?? "")
+    }
   }
 
+  @ViewBuilder
   private var workspace: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      SidebarView(workspaceMode: $workspaceMode)
-        .navigationSplitViewColumnWidth(min: 190, ideal: 225, max: 280)
-    } content: {
-      Group {
+    if workspaceMode == .cloudflareBilling {
+      NavigationSplitView(columnVisibility: $columnVisibility) {
+        SidebarView(workspaceMode: $workspaceMode)
+          .navigationSplitViewColumnWidth(min: 190, ideal: 225, max: 280)
+      } detail: {
+        CloudflareBillingView()
+      }
+      .navigationSplitViewStyle(.balanced)
+    } else {
+      NavigationSplitView(columnVisibility: $columnVisibility) {
+        SidebarView(workspaceMode: $workspaceMode)
+          .navigationSplitViewColumnWidth(min: 190, ideal: 225, max: 280)
+      } content: {
+        Group {
+          if workspaceMode == .notes {
+            NotesListView()
+          } else {
+            HermesConversationsView()
+          }
+        }
+        .navigationSplitViewColumnWidth(min: 300, ideal: 420, max: 640)
+      } detail: {
         if workspaceMode == .notes {
-          NotesListView()
+          NoteEditorView()
         } else {
-          HermesConversationsView()
+          HermesChatView()
         }
       }
-      .navigationSplitViewColumnWidth(min: 300, ideal: 420, max: 640)
-    } detail: {
-      if workspaceMode == .notes {
-        NoteEditorView()
-      } else {
-        HermesChatView()
-      }
+      .navigationSplitViewStyle(.balanced)
     }
-    .navigationSplitViewStyle(.balanced)
   }
 }
 
@@ -180,6 +204,18 @@ private struct SidebarView: View {
           .buttonStyle(.plain)
           .listRowBackground(
             workspaceMode == .hermes ? Color.accentColor.opacity(0.14) : Color.clear
+          )
+
+          Button {
+            workspaceMode = .cloudflareBilling
+          } label: {
+            Label("Cloudflare 报表", systemImage: "chart.bar.xaxis")
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .listRowBackground(
+            workspaceMode == .cloudflareBilling ? Color.accentColor.opacity(0.14) : Color.clear
           )
         }
 
@@ -366,7 +402,7 @@ private struct SidebarView: View {
 
   private var locationBinding: Binding<NoteLocation?> {
     Binding(
-      get: { store.location },
+      get: { workspaceMode == .notes ? store.location : nil },
       set: {
         if let location = $0 {
           workspaceMode = .notes
