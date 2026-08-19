@@ -1,5 +1,7 @@
 # Cloudflare Personal Site Implementation Plan
 
+> **历史资料：** 这是仓库在 2026-07-06 仅作为 Cloudflare 个人站点时的初始实施计划。当前项目已经演进为 My Notes 移动办公与 AI 工作区；当前范围、命令和文档入口请以根目录 [`README.md`](../../../README.md) 为准。下方未勾选项目不再代表当前待办。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rebuild the live `superstar1014.qzz.io` Worker Static Assets site as a maintainable repository, improve performance/security/SEO, deploy it to the existing Worker, and publish the code to GitHub.
