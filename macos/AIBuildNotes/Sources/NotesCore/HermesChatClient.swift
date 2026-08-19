@@ -358,11 +358,23 @@ public actor HermesChatClient {
   }
 
   private static func sendPing(_ socket: URLSessionWebSocketTask) async throws {
+    try await awaitSinglePingResult { completion in
+      socket.sendPing(pongReceiveHandler: completion)
+    }
+  }
+
+  /// URLSession may deliver a late ping callback while a WebSocket is being
+  /// cancelled or replaced. Treat the callback as one-shot so that a duplicate
+  /// delegate delivery cannot resume a checked continuation twice and crash the
+  /// process.
+  static func awaitSinglePingResult(
+    _ start: (@escaping @Sendable (Error?) -> Void) -> Void
+  ) async throws {
     try await withCheckedThrowingContinuation {
       (continuation: CheckedContinuation<Void, Error>) in
-      socket.sendPing { error in
-        if let error { continuation.resume(throwing: error) }
-        else { continuation.resume() }
+      let completion = PingCompletionGate(continuation: continuation)
+      start { error in
+        completion.resume(error: error)
       }
     }
   }
@@ -383,6 +395,31 @@ public actor HermesChatClient {
     init(crypto: HermesChatCrypto, lastSequence: Int64) {
       self.crypto = crypto
       self.lastSequence = max(0, lastSequence)
+    }
+  }
+
+  private final class PingCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(continuation: CheckedContinuation<Void, Error>) {
+      self.continuation = continuation
+    }
+
+    func resume(error: Error?) {
+      lock.lock()
+      guard let continuation else {
+        lock.unlock()
+        return
+      }
+      self.continuation = nil
+      lock.unlock()
+
+      if let error {
+        continuation.resume(throwing: error)
+      } else {
+        continuation.resume()
+      }
     }
   }
 }
