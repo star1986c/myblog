@@ -38,25 +38,30 @@ public actor HermesChatClient {
   public static let productionRelayURL = URL(
     string: "wss://h.superstar1014.qzz.io/api/hermes-chat/ws"
   )!
+  static let handshakeTimeoutMessage = "WebSocket 握手超时，正在自动重试。"
 
   public nonisolated let events: AsyncStream<HermesChatClientEvent>
 
   private let continuation: AsyncStream<HermesChatClientEvent>.Continuation
   private let relayURL: URL
   private let session: URLSession
+  private let handshakeTimeout: Duration
   private var socket: URLSessionWebSocketTask?
   private var profiles: [String: ProfileState] = [:]
   private var receiveTask: Task<Void, Never>?
   private var pingTask: Task<Void, Never>?
+  private var handshakeTask: Task<Void, Never>?
   private var generation = 0
   private var closing = false
   private var ready = false
 
   public init(
     relayURL: URL = productionRelayURL,
-    session: URLSession? = nil
+    session: URLSession? = nil,
+    handshakeTimeout: Duration = .seconds(15)
   ) {
     self.relayURL = relayURL
+    self.handshakeTimeout = handshakeTimeout
     if let session {
       self.session = session
     } else {
@@ -74,6 +79,7 @@ public actor HermesChatClient {
   }
 
   deinit {
+    handshakeTask?.cancel()
     continuation.finish()
     socket?.cancel(with: .goingAway, reason: nil)
   }
@@ -111,7 +117,7 @@ public actor HermesChatClient {
     request.setValue("Bearer \(ticket.ticket)", forHTTPHeaderField: "Authorization")
     request.setValue("client", forHTTPHeaderField: "X-Hermes-Role")
     request.setValue("multiplex", forHTTPHeaderField: "X-Hermes-Mode")
-    request.setValue("My-Notes-macOS/1.9", forHTTPHeaderField: "User-Agent")
+    request.setValue("My-Notes-macOS/1.10", forHTTPHeaderField: "User-Agent")
     let task = session.webSocketTask(with: request)
     socket = task
     task.resume()
@@ -120,6 +126,9 @@ public actor HermesChatClient {
     }
     pingTask = Task { [weak self] in
       await self?.pingLoop(socket: task, generation: currentGeneration)
+    }
+    handshakeTask = Self.makeHandshakeWatchdog(timeout: handshakeTimeout) { [weak self] in
+      await self?.failHandshakeIfPending(socket: task, generation: currentGeneration)
     }
   }
 
@@ -211,6 +220,10 @@ public actor HermesChatClient {
       }
     } catch {
       guard generation == self.generation, !closing else { return }
+      handshakeTask?.cancel()
+      handshakeTask = nil
+      pingTask?.cancel()
+      pingTask = nil
       ready = false
       self.socket = nil
       continuation.yield(.disconnected(reason: Self.errorMessage(error)))
@@ -243,6 +256,8 @@ public actor HermesChatClient {
         throw HermesChatCryptoError.invalidMessage
       }
       for spaceID in profiles.keys.sorted() { try await sendResume(spaceID: spaceID) }
+      handshakeTask?.cancel()
+      handshakeTask = nil
       ready = true
       continuation.yield(.ready)
       return
@@ -375,12 +390,36 @@ public actor HermesChatClient {
   private func closeCurrentSocket(reason: String) {
     receiveTask?.cancel()
     pingTask?.cancel()
+    handshakeTask?.cancel()
     receiveTask = nil
     pingTask = nil
+    handshakeTask = nil
     ready = false
     let old = socket
     socket = nil
     old?.cancel(with: .normalClosure, reason: Data(reason.utf8))
+  }
+
+  private func failHandshakeIfPending(
+    socket candidate: URLSessionWebSocketTask,
+    generation attemptGeneration: Int
+  ) {
+    guard attemptGeneration == generation, !closing, !ready,
+      let currentSocket = socket, currentSocket === candidate
+    else { return }
+    generation += 1
+    receiveTask?.cancel()
+    pingTask?.cancel()
+    receiveTask = nil
+    pingTask = nil
+    handshakeTask = nil
+    ready = false
+    socket = nil
+    currentSocket.cancel(
+      with: .goingAway,
+      reason: Data("macOS chat handshake timed out".utf8)
+    )
+    continuation.yield(.disconnected(reason: Self.handshakeTimeoutMessage))
   }
 
   private static func jsonObject<T: Encodable>(_ value: T) throws -> Any {
@@ -422,6 +461,21 @@ public actor HermesChatClient {
       start { error in
         completion.resume(error: error)
       }
+    }
+  }
+
+  static func makeHandshakeWatchdog(
+    timeout: Duration,
+    onTimeout: @escaping @Sendable () async -> Void
+  ) -> Task<Void, Never> {
+    Task {
+      do {
+        try await Task.sleep(for: timeout)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      await onTimeout()
     }
   }
 

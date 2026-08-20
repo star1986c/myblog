@@ -10,7 +10,13 @@ struct HermesConversationsView: View {
   private var selection: Binding<String?> {
     Binding(
       get: { store.selectedProfileID },
-      set: { store.selectProfile($0) }
+      set: { requestedProfileID in
+        Task { @MainActor in
+          await Task.yield()
+          guard store.selectedProfileID != requestedProfileID else { return }
+          store.selectProfile(requestedProfileID)
+        }
+      }
     )
   }
 

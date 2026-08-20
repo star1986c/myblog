@@ -3,6 +3,12 @@ import Testing
 
 @testable import NotesCore
 
+private actor HermesHandshakeProbe {
+  private(set) var count = 0
+
+  func fire() { count += 1 }
+}
+
 @Test("Hermes WebSocket ping callback is one-shot")
 func hermesPingCallbackIgnoresDuplicateDelivery() async throws {
   try await HermesChatClient.awaitSinglePingResult { completion in
@@ -24,6 +30,30 @@ func hermesPingCallbackKeepsFirstError() async {
   } catch {
     Issue.record("Unexpected ping error: \(error)")
   }
+}
+
+@Test("Hermes WebSocket handshake watchdog fires when ready never arrives")
+func hermesHandshakeWatchdogFires() async throws {
+  let probe = HermesHandshakeProbe()
+  let watchdog = HermesChatClient.makeHandshakeWatchdog(timeout: .milliseconds(10)) {
+    await probe.fire()
+  }
+
+  try await Task.sleep(for: .milliseconds(60))
+  #expect(await probe.count == 1)
+  watchdog.cancel()
+}
+
+@Test("Hermes WebSocket handshake watchdog cancellation suppresses timeout")
+func hermesHandshakeWatchdogCanBeCancelled() async throws {
+  let probe = HermesHandshakeProbe()
+  let watchdog = HermesChatClient.makeHandshakeWatchdog(timeout: .milliseconds(40)) {
+    await probe.fire()
+  }
+
+  watchdog.cancel()
+  try await Task.sleep(for: .milliseconds(80))
+  #expect(await probe.count == 0)
 }
 
 @Test("Hermes recent refresh adds a timestamp without changing normal incremental resume")
