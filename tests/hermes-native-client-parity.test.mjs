@@ -120,7 +120,7 @@ const markers = {
   },
   media_playback: {
     android: [/openAudioPlayer|showAudioPlayer/, /openVideoPlayer|showVideoPlayer/],
-    macos: [/HermesMediaPreview/, /VideoPlayer/],
+    macos: [/HermesMediaPreview/, /HermesAVPlayerView/, /AVPlayerView/],
   },
   document_open_share_save: {
     android: [/saveAttachment/, /shareMessageAttachments/],
@@ -165,6 +165,19 @@ test("Hermes native-client capability contract requires Android and macOS parity
       }
     }
   }
+});
+
+test("macOS Hermes media playback avoids the crashing SwiftUI AVKit bridge", async () => {
+  const source = await readFile(
+    new URL("macos/AIBuildNotes/Sources/AIBuildNotes/HermesChatMessageViews.swift", root),
+    "utf8",
+  );
+
+  assert.doesNotMatch(source, /\bVideoPlayer\s*\(/);
+  assert.match(source, /HermesAVPlayerView\(player: playback\.player\)/);
+  assert.match(source, /static func dismantleNSView/);
+  assert.match(source, /view\.player = nil/);
+  assert.match(source, /player\.replaceCurrentItem\(with: nil\)/);
 });
 
 test("Android and macOS ship the same static Hermes command names", () => {

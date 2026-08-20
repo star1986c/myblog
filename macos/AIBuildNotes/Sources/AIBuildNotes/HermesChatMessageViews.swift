@@ -748,7 +748,7 @@ private struct HermesMediaPreview: View {
   let audioOnly: Bool
   let onSave: () -> Void
   let onShare: () -> Void
-  @State private var player: AVPlayer
+  @StateObject private var playback: HermesMediaPlaybackController
 
   init(
     descriptor: HermesChatAttachmentDescriptor,
@@ -762,7 +762,7 @@ private struct HermesMediaPreview: View {
     self.audioOnly = audioOnly
     self.onSave = onSave
     self.onShare = onShare
-    _player = State(initialValue: AVPlayer(url: url))
+    _playback = StateObject(wrappedValue: HermesMediaPlaybackController(url: url))
   }
 
   var body: some View {
@@ -784,6 +784,7 @@ private struct HermesMediaPreview: View {
 
       ZStack {
         Color.black.opacity(0.94)
+        HermesAVPlayerView(player: playback.player)
         if audioOnly {
           VStack(spacing: 18) {
             Image(systemName: "waveform.circle.fill")
@@ -793,13 +794,58 @@ private struct HermesMediaPreview: View {
               .font(.title2.bold())
               .foregroundStyle(.white)
           }
+          .padding(.bottom, 64)
+          .allowsHitTesting(false)
         }
-        VideoPlayer(player: player)
       }
     }
     .frame(minWidth: 720, minHeight: audioOnly ? 420 : 560)
-    .onAppear { player.play() }
-    .onDisappear { player.pause() }
+    .onAppear { playback.play() }
+    .onDisappear { playback.stop() }
+  }
+}
+
+@MainActor
+private final class HermesMediaPlaybackController: ObservableObject {
+  let player: AVPlayer
+
+  init(url: URL) {
+    player = AVPlayer(url: url)
+  }
+
+  func play() {
+    player.play()
+  }
+
+  func stop() {
+    player.pause()
+    player.replaceCurrentItem(with: nil)
+  }
+}
+
+/// Uses AppKit's stable player view directly. This avoids loading the
+/// `_AVKit_SwiftUI` representable that aborts while constructing its generic
+/// view metadata on macOS 26.5.x.
+private struct HermesAVPlayerView: NSViewRepresentable {
+  let player: AVPlayer
+
+  func makeNSView(context: Context) -> AVPlayerView {
+    let view = AVPlayerView(frame: .zero)
+    view.controlsStyle = .floating
+    view.videoGravity = .resizeAspect
+    view.player = player
+    return view
+  }
+
+  func updateNSView(_ view: AVPlayerView, context: Context) {
+    if view.player !== player {
+      view.player = player
+    }
+  }
+
+  static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+    view.player?.pause()
+    view.player = nil
   }
 }
 
