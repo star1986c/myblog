@@ -2,6 +2,7 @@ node_modules/
 .wrangler/
 .wrangler-home/
 .dev.vars
+r2key.txt
 .DS_Store
 npm-debug.log*
 __pycache__/
