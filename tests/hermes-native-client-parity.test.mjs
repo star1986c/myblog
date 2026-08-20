@@ -180,6 +180,24 @@ test("macOS Hermes media playback avoids the crashing SwiftUI AVKit bridge", asy
   assert.match(source, /player\.replaceCurrentItem\(with: nil\)/);
 });
 
+test("macOS Hermes image preview fits the full image before applying zoom", async () => {
+  const source = await readFile(
+    new URL("macos/AIBuildNotes/Sources/AIBuildNotes/HermesChatMessageViews.swift", root),
+    "utf8",
+  );
+  const previewStart = source.indexOf("private struct HermesImagePreview");
+  const previewEnd = source.indexOf("private struct HermesMediaPreview");
+  const preview = source.slice(previewStart, previewEnd);
+
+  assert.ok(previewStart >= 0 && previewEnd > previewStart);
+  assert.match(preview, /GeometryReader/);
+  assert.match(preview, /fittedImageSize\(imageSize: image\.size, in: viewportSize\)/);
+  assert.match(preview, /width: fittedSize\.width \* scale/);
+  assert.match(preview, /height: fittedSize\.height \* scale/);
+  assert.match(preview, /let fitScale = min\(widthScale, heightScale\)/);
+  assert.doesNotMatch(preview, /\.scaleEffect\(scale\)/);
+});
+
 test("Android and macOS ship the same static Hermes command names", () => {
   const androidNames = commandNames(
     sources.android,

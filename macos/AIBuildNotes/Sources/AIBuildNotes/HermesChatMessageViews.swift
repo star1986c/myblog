@@ -705,14 +705,28 @@ private struct HermesImagePreview: View {
       Divider()
 
       if let image = NSImage(data: data) {
-        ScrollView([.horizontal, .vertical]) {
-          Image(nsImage: image)
-            .resizable()
-            .scaledToFit()
-            .scaleEffect(scale)
-            .padding(24)
+        GeometryReader { geometry in
+          let viewportSize = geometry.size
+          let fittedSize = fittedImageSize(imageSize: image.size, in: viewportSize)
+          let zoomedSize = CGSize(
+            width: fittedSize.width * scale,
+            height: fittedSize.height * scale
+          )
+
+          ScrollView([.horizontal, .vertical]) {
+            Image(nsImage: image)
+              .resizable()
+              .aspectRatio(contentMode: .fit)
+              .frame(width: zoomedSize.width, height: zoomedSize.height)
+              .padding(24)
+              .frame(
+                minWidth: viewportSize.width,
+                minHeight: viewportSize.height,
+                alignment: .center
+              )
+          }
+          .background(Color.black.opacity(0.94))
         }
-        .background(Color.black.opacity(0.94))
       } else {
         ContentUnavailableView("无法预览图片", systemImage: "photo.badge.exclamationmark")
       }
@@ -738,6 +752,22 @@ private struct HermesImagePreview: View {
       .padding(12)
     }
     .frame(minWidth: 760, minHeight: 600)
+  }
+
+  private func fittedImageSize(imageSize: CGSize, in viewportSize: CGSize) -> CGSize {
+    let availableSize = CGSize(
+      width: max(1, viewportSize.width - 48),
+      height: max(1, viewportSize.height - 48)
+    )
+    guard imageSize.width > 0, imageSize.height > 0 else { return availableSize }
+
+    let widthScale = availableSize.width / imageSize.width
+    let heightScale = availableSize.height / imageSize.height
+    let fitScale = min(widthScale, heightScale)
+    return CGSize(
+      width: imageSize.width * fitScale,
+      height: imageSize.height * fitScale
+    )
   }
 }
 
