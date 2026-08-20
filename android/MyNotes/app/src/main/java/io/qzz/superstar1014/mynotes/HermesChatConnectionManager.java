@@ -45,6 +45,7 @@ final class HermesChatConnectionManager {
   }
 
   private static final int MAX_PENDING_EVENTS = 500;
+  private static final long PERSISTENCE_BATCH_DELAY_MS = 40L;
   private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
   private static volatile HermesChatConnectionManager instance;
 
@@ -204,7 +205,10 @@ final class HermesChatConnectionManager {
 
   void shutdown() {
     cancelReconnect();
-    for (ProfileSession session : sessions.values()) cancelAwaiting(session);
+    for (ProfileSession session : sessions.values()) {
+      cancelAwaiting(session);
+      flushMessagePersistence(session);
+    }
     sessions.clear();
     if (client != null) client.shutdown();
     client = null;
@@ -269,6 +273,7 @@ final class HermesChatConnectionManager {
       ProfileSession removed = sessions.remove(profileId);
       if (removed != null) {
         cancelAwaiting(removed);
+        flushMessagePersistence(removed);
         changed = true;
       }
     }
@@ -279,6 +284,7 @@ final class HermesChatConnectionManager {
         configureClientProfile(existing);
         continue;
       }
+      if (existing != null) discardMessagePersistence(existing);
       sessions.put(config.profileId, new ProfileSession(
         config.profileId,
         config.keyFingerprint,
@@ -401,7 +407,7 @@ final class HermesChatConnectionManager {
     ProfileSession session = sessions.get(profileId);
     if (session == null) return;
     session.lastSequence = Math.max(session.lastSequence, message.sequence);
-    persistMessage(session, message);
+    queueMessagePersistence(session, message);
     if ("agent".equals(message.sender)) {
       cancelAwaiting(session);
       if (!session.visible && message.replaceSequence == 0) {
@@ -498,6 +504,35 @@ final class HermesChatConnectionManager {
     executor.submit(() -> session.history.record(message));
   }
 
+  private void queueMessagePersistence(
+    ProfileSession session,
+    HermesChatCrypto.ChatMessage message
+  ) {
+    session.pendingPersistence.add(message);
+    if (session.flushPersistence != null) return;
+    session.flushPersistence = () -> flushMessagePersistence(session);
+    handler.postDelayed(session.flushPersistence, PERSISTENCE_BATCH_DELAY_MS);
+  }
+
+  private void flushMessagePersistence(ProfileSession session) {
+    if (session.flushPersistence != null) {
+      handler.removeCallbacks(session.flushPersistence);
+      session.flushPersistence = null;
+    }
+    if (session.pendingPersistence.isEmpty()) return;
+    List<HermesChatCrypto.ChatMessage> batch = new ArrayList<>(session.pendingPersistence);
+    session.pendingPersistence.clear();
+    executor.submit(() -> session.history.recordBatch(batch));
+  }
+
+  private void discardMessagePersistence(ProfileSession session) {
+    if (session.flushPersistence != null) {
+      handler.removeCallbacks(session.flushPersistence);
+      session.flushPersistence = null;
+    }
+    session.pendingPersistence.clear();
+  }
+
   private void markAwaitingAgentResponse(ProfileSession session) {
     session.awaitingAgentResponse = true;
     if (session.expireAwaiting != null) handler.removeCallbacks(session.expireAwaiting);
@@ -588,11 +623,13 @@ final class HermesChatConnectionManager {
     final HermesChatHistoryStore history;
     final ArrayDeque<HermesChatCrypto.ChatMessage> pendingMessages = new ArrayDeque<>();
     final ArrayDeque<Acknowledgement> pendingAcknowledgements = new ArrayDeque<>();
+    final List<HermesChatCrypto.ChatMessage> pendingPersistence = new ArrayList<>();
     long lastSequence;
     Listener listener;
     boolean visible;
     boolean awaitingAgentResponse;
     Runnable expireAwaiting;
+    Runnable flushPersistence;
 
     ProfileSession(
       String profileId,

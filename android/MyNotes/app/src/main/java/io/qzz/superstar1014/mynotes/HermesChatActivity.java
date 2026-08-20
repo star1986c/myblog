@@ -84,6 +84,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private static final long INTERACTION_RESULT_TIMEOUT_MS = 20_000L;
   private static final long SHARE_FILE_LIFETIME_MS = 60 * 60 * 1_000L;
   private static final long STALE_SHARE_FILE_AGE_MS = 24 * 60 * 60 * 1_000L;
+  private static final int MESSAGE_WINDOW_SIZE = 120;
+  private static final int SEARCH_MESSAGE_WINDOW_SIZE = 60;
+  private static final int MAX_CACHED_MESSAGES = 20_000;
   private static final DateTimeFormatter MESSAGE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
     "yyyy-MM-dd HH:mm",
     Locale.ROOT
@@ -96,6 +99,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private final Map<Long, RenderedMessage> renderedMessagesBySequence = new HashMap<>();
   private final Map<String, RenderedMessage> renderedMessagesById = new HashMap<>();
   private final List<RenderedMessage> renderedMessageOrder = new ArrayList<>();
+  private final List<HermesChatCrypto.ChatMessage> cachedMessageOrder = new ArrayList<>();
   private final Set<String> selectedMessageIds = new HashSet<>();
   private final Set<String> pendingInteractionPromptIds = new HashSet<>();
   private final Map<String, PendingInteractionAction> pendingInteractionActions = new HashMap<>();
@@ -113,6 +117,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private HermesChatPrivateAttachmentCache privateAttachmentCache;
   private LinearLayout messages;
   private ScrollView messageScroll;
+  private Button loadEarlierMessagesButton;
   private TextView chatTitle;
   private TextView status;
   private LinearLayout normalHeader;
@@ -143,8 +148,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private boolean resumed;
   private boolean deletingMessages;
   private boolean renderingCachedMessages;
+  private boolean showingSearchResults;
   private boolean pendingBottomScrollSmooth;
-  private final List<RenderedMessage> messageSearchMatches = new ArrayList<>();
+  private final List<HermesChatCrypto.ChatMessage> messageSearchMatches = new ArrayList<>();
+  private int visibleMessageLimit = MESSAGE_WINDOW_SIZE;
   private int messageSearchIndex = -1;
   private RenderedMessage highlightedSearchMessage;
   private Models.HermesChatProfile selectedProfile;
@@ -291,7 +298,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
   @Override
   public void onMessage(HermesChatCrypto.ChatMessage message) {
-    persistMessage(message);
     runOnUiThread(() -> {
       if ("agent".equals(message.sender)) clearAwaitingAgentResponse();
       appendMessage(message);
@@ -310,6 +316,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       }
     });
     runOnUiThread(() -> {
+      for (HermesChatCrypto.ChatMessage cached : cachedMessageOrder) {
+        if (cached.id.equals(messageId)) {
+          cached.sequence = sequence;
+          break;
+        }
+      }
       RenderedMessage rendered = renderedMessagesById.get(messageId);
       if (rendered == null || sequence < 1) return;
       HermesChatCrypto.ChatMessage current = rendered.message;
@@ -628,16 +640,19 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void closeMessageSearch(boolean restoreComposerFocus) {
+    boolean wasActive = isMessageSearchActive();
     if (searchHeader != null) searchHeader.setVisibility(View.GONE);
-    RenderedMessage previous = highlightedSearchMessage;
     highlightedSearchMessage = null;
     messageSearchMatches.clear();
     messageSearchIndex = -1;
+    showingSearchResults = false;
     if (searchInput != null && searchInput.length() > 0) searchInput.setText("");
     if (searchCount != null) searchCount.setText("0/0");
     if (searchPrevious != null) searchPrevious.setEnabled(false);
     if (searchNext != null) searchNext.setEnabled(false);
-    if (previous != null) applyBubbleAppearance(previous);
+    if (wasActive && messages != null && !destroyed) {
+      renderVisibleCachedMessages(true);
+    }
     updateMessageSelectionUi();
     if (restoreComposerFocus) focusComposer(true);
   }
@@ -645,25 +660,26 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private void refreshMessageSearch() {
     if (!isMessageSearchActive() || searchInput == null) return;
     String query = searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
-    RenderedMessage previous = highlightedSearchMessage;
+    String previousId = highlightedSearchMessage == null
+      ? ""
+      : highlightedSearchMessage.message.id;
     messageSearchMatches.clear();
     highlightedSearchMessage = null;
     messageSearchIndex = -1;
-    if (!query.isEmpty()) {
-      for (RenderedMessage rendered : renderedMessageOrder) {
-        String value = rendered.message.text == null ? "" : rendered.message.text;
-        if (value.toLowerCase(Locale.ROOT).contains(query)) {
-          messageSearchMatches.add(rendered);
-        }
-      }
-      if (!messageSearchMatches.isEmpty()) {
-        int previousIndex = messageSearchMatches.indexOf(previous);
-        messageSearchIndex = previousIndex >= 0 ? previousIndex : 0;
-        highlightedSearchMessage = messageSearchMatches.get(messageSearchIndex);
+    if (query.isEmpty()) {
+      if (showingSearchResults) renderVisibleCachedMessages(true);
+      updateMessageSearchControls();
+      return;
+    }
+    for (HermesChatCrypto.ChatMessage message : cachedMessageOrder) {
+      String value = message.text == null ? "" : message.text;
+      if (value.toLowerCase(Locale.ROOT).contains(query)) {
+        if (message.id.equals(previousId)) messageSearchIndex = messageSearchMatches.size();
+        messageSearchMatches.add(message);
       }
     }
-    if (previous != null && previous != highlightedSearchMessage) applyBubbleAppearance(previous);
-    if (highlightedSearchMessage != null) applyBubbleAppearance(highlightedSearchMessage);
+    if (!messageSearchMatches.isEmpty() && messageSearchIndex < 0) messageSearchIndex = 0;
+    renderMessageSearchPage();
     updateMessageSearchControls();
     if (highlightedSearchMessage != null) scrollToSearchResult(highlightedSearchMessage);
   }
@@ -673,11 +689,38 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     RenderedMessage previous = highlightedSearchMessage;
     int size = messageSearchMatches.size();
     messageSearchIndex = (messageSearchIndex + direction + size) % size;
-    highlightedSearchMessage = messageSearchMatches.get(messageSearchIndex);
-    if (previous != null && previous != highlightedSearchMessage) applyBubbleAppearance(previous);
+    String targetId = messageSearchMatches.get(messageSearchIndex).id;
+    highlightedSearchMessage = renderedMessagesById.get(targetId);
+    if (highlightedSearchMessage == null) {
+      renderMessageSearchPage();
+    } else if (previous != null && previous != highlightedSearchMessage) {
+      applyBubbleAppearance(previous);
+    }
     applyBubbleAppearance(highlightedSearchMessage);
     updateMessageSearchControls();
     scrollToSearchResult(highlightedSearchMessage);
+  }
+
+  private void renderMessageSearchPage() {
+    resetRenderedMessageViews();
+    showingSearchResults = true;
+    if (messageSearchMatches.isEmpty() || messageSearchIndex < 0) return;
+    int halfWindow = SEARCH_MESSAGE_WINDOW_SIZE / 2;
+    int start = Math.max(0, messageSearchIndex - halfWindow);
+    int end = Math.min(messageSearchMatches.size(), start + SEARCH_MESSAGE_WINDOW_SIZE);
+    start = Math.max(0, end - SEARCH_MESSAGE_WINDOW_SIZE);
+    renderingCachedMessages = true;
+    try {
+      for (int index = start; index < end; index++) {
+        appendMessage(messageSearchMatches.get(index));
+      }
+    } finally {
+      renderingCachedMessages = false;
+    }
+    highlightedSearchMessage = renderedMessagesById.get(
+      messageSearchMatches.get(messageSearchIndex).id
+    );
+    if (highlightedSearchMessage != null) applyBubbleAppearance(highlightedSearchMessage);
   }
 
   private void updateMessageSearchControls() {
@@ -746,7 +789,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       new JSONArray()
     ));
     if (getIntent().getBooleanExtra(EXTRA_DEMO_LONG_HISTORY, false)) {
-      for (int index = 0; index < 24; index++) {
+      for (int index = 0; index < MESSAGE_WINDOW_SIZE + 24; index++) {
         appendMessage(new HermesChatCrypto.ChatMessage(
           "demo-history-" + index,
           index % 3 == 0 ? "client" : "agent",
@@ -780,6 +823,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     renderedMessagesBySequence.clear();
     renderedMessagesById.clear();
     renderedMessageOrder.clear();
+    cachedMessageOrder.clear();
+    visibleMessageLimit = MESSAGE_WINDOW_SIZE;
     clearAllPendingInteractions();
     selectedMessageIds.clear();
     closeMessageSearch(false);
@@ -1204,7 +1249,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       );
       composer.setText("");
       appendMessage(message);
-      persistMessage(message);
       markAwaitingAgentResponse();
       focusComposer(true);
     } catch (Exception error) {
@@ -1299,8 +1343,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           caption,
           attachments
         );
-        HermesChatHistoryStore targetHistory = historyStore;
-        if (targetHistory != null) targetHistory.record(message);
         runOnUiThread(() -> {
           if (generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)
@@ -1327,36 +1369,97 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void renderCachedMessages(HermesChatHistoryStore.Snapshot snapshot) {
-    renderedMessageIds.clear();
-    renderedMessagesBySequence.clear();
-    renderedMessagesById.clear();
-    renderedMessageOrder.clear();
+    cachedMessageOrder.clear();
+    cachedMessageOrder.addAll(snapshot.messages);
     selectedMessageIds.clear();
     updateMessageSelectionUi();
-    messages.removeAllViews();
-    renderingCachedMessages = true;
-    try {
-      for (HermesChatCrypto.ChatMessage message : snapshot.messages) appendMessage(message);
-    } finally {
-      renderingCachedMessages = false;
-    }
-    scrollMessagesToBottom(false);
-    if (!snapshot.messages.isEmpty()) {
+    renderVisibleCachedMessages(true);
+    int visibleCount = Math.min(cachedMessageOrder.size(), visibleMessageLimit);
+    if (!cachedMessageOrder.isEmpty()) {
       showConnectionAwareStatus(
-        "已加载 " + snapshot.messages.size() + " 条本地加密消息，正在连接…"
+        "本地缓存 " + cachedMessageOrder.size() + " 条，当前显示 "
+          + visibleCount + " 条，正在连接…"
       );
     }
   }
 
-  private void persistMessage(HermesChatCrypto.ChatMessage message) {
-    HermesChatHistoryStore targetStore = historyStore;
-    long generation = profileGeneration;
-    if (targetStore == null) return;
-    executor.submit(() -> {
-      if (!destroyed && generation == profileGeneration && historyStore == targetStore) {
-        targetStore.record(message);
+  private void renderVisibleCachedMessages(boolean scrollToBottom) {
+    resetRenderedMessageViews();
+    showingSearchResults = false;
+    int start = Math.max(0, cachedMessageOrder.size() - visibleMessageLimit);
+    renderingCachedMessages = true;
+    try {
+      for (int index = start; index < cachedMessageOrder.size(); index++) {
+        appendMessage(cachedMessageOrder.get(index));
       }
-    });
+    } finally {
+      renderingCachedMessages = false;
+    }
+    updateLoadEarlierMessagesControl();
+    if (scrollToBottom) scrollMessagesToBottom(false);
+  }
+
+  private void resetRenderedMessageViews() {
+    renderedMessageIds.clear();
+    renderedMessagesBySequence.clear();
+    renderedMessagesById.clear();
+    renderedMessageOrder.clear();
+    loadEarlierMessagesButton = null;
+    messages.removeAllViews();
+  }
+
+  private void updateLoadEarlierMessagesControl() {
+    if (showingSearchResults || isMessageSearchActive()) {
+      if (loadEarlierMessagesButton != null) {
+        messages.removeView(loadEarlierMessagesButton);
+        loadEarlierMessagesButton = null;
+      }
+      return;
+    }
+    int hiddenCount = Math.max(0, cachedMessageOrder.size() - renderedMessageOrder.size());
+    if (hiddenCount == 0) {
+      if (loadEarlierMessagesButton != null) {
+        messages.removeView(loadEarlierMessagesButton);
+        loadEarlierMessagesButton = null;
+      }
+      return;
+    }
+    if (loadEarlierMessagesButton == null) {
+      loadEarlierMessagesButton = new Button(this);
+      loadEarlierMessagesButton.setAllCaps(false);
+      loadEarlierMessagesButton.setTextSize(13);
+      loadEarlierMessagesButton.setTextColor(getColor(R.color.brand_primary_dark));
+      loadEarlierMessagesButton.setBackground(roundedStroke(
+        R.color.surface,
+        R.color.divider,
+        16,
+        1
+      ));
+      loadEarlierMessagesButton.setOnClickListener(view -> loadEarlierCachedMessages());
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44));
+      params.setMargins(dp(24), dp(2), dp(24), dp(8));
+      messages.addView(loadEarlierMessagesButton, 0, params);
+    }
+    loadEarlierMessagesButton.setText("加载更早的本地消息（还有 " + hiddenCount + " 条）");
+  }
+
+  private void loadEarlierCachedMessages() {
+    if (cachedMessageOrder.isEmpty() || !selectedMessageIds.isEmpty()) return;
+    String anchorId = renderedMessageOrder.isEmpty()
+      ? ""
+      : renderedMessageOrder.get(0).message.id;
+    visibleMessageLimit = Math.min(
+      cachedMessageOrder.size(),
+      visibleMessageLimit + MESSAGE_WINDOW_SIZE
+    );
+    renderVisibleCachedMessages(false);
+    RenderedMessage anchor = renderedMessagesById.get(anchorId);
+    if (anchor != null) {
+      messageScroll.post(() -> messageScroll.scrollTo(
+        0,
+        Math.max(0, anchor.row.getTop() - dp(52))
+      ));
+    }
   }
 
   private void toggleMessageSelection(RenderedMessage rendered) {
@@ -1473,9 +1576,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         || messageIds == null || messageIds.isEmpty()) return;
     Set<String> attachmentIds = new HashSet<>();
     for (String messageId : messageIds) {
-      RenderedMessage rendered = renderedMessagesById.get(messageId);
-      if (rendered == null) continue;
-      JSONArray attachments = rendered.message.attachments;
+      HermesChatCrypto.ChatMessage cached = cachedMessageForId(messageId);
+      if (cached == null) continue;
+      clearPendingInteraction(interactionId(cached.interaction));
+      JSONArray attachments = cached.attachments;
       for (int index = 0; index < attachments.length(); index++) {
         JSONObject descriptor = attachments.optJSONObject(index);
         String attachmentId = descriptor == null ? "" : descriptor.optString("id");
@@ -1495,7 +1599,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
           deletingMessages = false;
-          removeRenderedMessages(messageIds);
+          cachedMessageOrder.clear();
+          cachedMessageOrder.addAll(snapshot.messages);
+          selectedMessageIds.removeAll(messageIds);
+          renderVisibleCachedMessages(false);
+          updateMessageSelectionUi();
           restoreConversationStatus();
           toast(
             "已删除 " + messageIds.size() + " 条消息；云端附件 "
@@ -1515,23 +1623,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     });
   }
 
-  private void removeRenderedMessages(Set<String> messageIds) {
-    for (String messageId : messageIds) {
-      RenderedMessage rendered = renderedMessagesById.remove(messageId);
-      if (rendered == null) continue;
-      clearPendingInteraction(interactionId(rendered.message.interaction));
-      messages.removeView(rendered.row);
-      renderedMessageOrder.remove(rendered);
-      renderedMessageIds.remove(messageId);
-      renderedMessagesBySequence.entrySet().removeIf(
-        entry -> entry.getValue() == rendered
-      );
-    }
-    selectedMessageIds.removeAll(messageIds);
-    if (isMessageSearchActive()) refreshMessageSearch();
-    updateMessageSelectionUi();
-  }
-
   private void applyBubbleAppearance(RenderedMessage rendered) {
     if (rendered == null) return;
     int background = rendered.outgoing ? R.color.brand_primary : R.color.surface_tonal;
@@ -1549,6 +1640,13 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void appendMessage(HermesChatCrypto.ChatMessage message) {
+    if (!renderingCachedMessages) {
+      cacheIncomingMessage(message);
+      if (isMessageSearchActive()) {
+        refreshMessageSearch();
+        return;
+      }
+    }
     if (!renderedMessageIds.add(message.id)) return;
     if (message.replaceSequence > 0) {
       replaceMessage(message);
@@ -1615,26 +1713,17 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     if (message.sequence > 0) {
       renderedMessagesBySequence.put(message.sequence, rendered);
     }
-    if (isMessageSearchActive()) refreshMessageSearch();
-    else if (!renderingCachedMessages) scrollMessagesToBottom(true);
+    if (!renderingCachedMessages) {
+      trimRenderedMessagesToWindow();
+      updateLoadEarlierMessagesControl();
+      scrollMessagesToBottom(true);
+    }
   }
 
   private void replaceMessage(HermesChatCrypto.ChatMessage message) {
     RenderedMessage rendered = renderedMessagesBySequence.get(message.replaceSequence);
     if (rendered == null) {
-      if (message.finalUpdate) {
-        appendNewMessage(new HermesChatCrypto.ChatMessage(
-          message.id,
-          message.sender,
-          message.sentAt,
-          message.sequence,
-          message.text,
-          message.attachments,
-          message.interaction,
-          0,
-          false
-        ));
-      }
+      if (message.finalUpdate && !renderingCachedMessages) renderVisibleCachedMessages(true);
       return;
     }
     HermesChatCrypto.ChatMessage original = rendered.message;
@@ -1658,8 +1747,83 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     String sentTime = formatMessageTime(original.sentAt);
     rendered.meta.setText(message.finalUpdate ? sentTime : sentTime + " · 正在回复");
     rendered.streaming = !message.finalUpdate;
-    if (isMessageSearchActive()) refreshMessageSearch();
-    else if (!renderingCachedMessages) scrollMessagesToBottom(true);
+    if (!renderingCachedMessages) scrollMessagesToBottom(true);
+  }
+
+  private void cacheIncomingMessage(HermesChatCrypto.ChatMessage incoming) {
+    if (incoming.replaceSequence > 0) {
+      int targetIndex = cachedMessageIndexForSequence(incoming.replaceSequence);
+      if (targetIndex >= 0) {
+        HermesChatCrypto.ChatMessage target = cachedMessageOrder.get(targetIndex);
+        JSONArray attachments = incoming.attachments.length() > 0
+          ? incoming.attachments
+          : target.attachments;
+        cachedMessageOrder.set(targetIndex, new HermesChatCrypto.ChatMessage(
+          target.id,
+          target.sender,
+          target.sentAt,
+          target.sequence,
+          incoming.text,
+          attachments,
+          incoming.interaction,
+          0,
+          false
+        ));
+      } else if (incoming.finalUpdate) {
+        cachedMessageOrder.add(new HermesChatCrypto.ChatMessage(
+          incoming.id,
+          incoming.sender,
+          incoming.sentAt,
+          incoming.sequence,
+          incoming.text,
+          incoming.attachments,
+          incoming.interaction,
+          0,
+          false
+        ));
+      }
+      trimCachedMessageOrder();
+      return;
+    }
+    int existingIndex = cachedMessageIndexForId(incoming.id);
+    if (existingIndex >= 0) cachedMessageOrder.set(existingIndex, incoming);
+    else cachedMessageOrder.add(incoming);
+    trimCachedMessageOrder();
+  }
+
+  private void trimCachedMessageOrder() {
+    int overflow = cachedMessageOrder.size() - MAX_CACHED_MESSAGES;
+    if (overflow > 0) cachedMessageOrder.subList(0, overflow).clear();
+  }
+
+  private int cachedMessageIndexForId(String id) {
+    for (int index = 0; index < cachedMessageOrder.size(); index++) {
+      if (cachedMessageOrder.get(index).id.equals(id)) return index;
+    }
+    return -1;
+  }
+
+  private int cachedMessageIndexForSequence(long sequence) {
+    if (sequence < 1) return -1;
+    for (int index = 0; index < cachedMessageOrder.size(); index++) {
+      if (cachedMessageOrder.get(index).sequence == sequence) return index;
+    }
+    return -1;
+  }
+
+  private HermesChatCrypto.ChatMessage cachedMessageForId(String id) {
+    int index = cachedMessageIndexForId(id);
+    return index < 0 ? null : cachedMessageOrder.get(index);
+  }
+
+  private void trimRenderedMessagesToWindow() {
+    while (renderedMessageOrder.size() > visibleMessageLimit) {
+      RenderedMessage oldest = renderedMessageOrder.remove(0);
+      renderedMessagesById.remove(oldest.message.id);
+      renderedMessageIds.remove(oldest.message.id);
+      renderedMessagesBySequence.entrySet().removeIf(entry -> entry.getValue() == oldest);
+      messages.removeView(oldest.row);
+    }
   }
 
   private static String formatMessageTime(long sentAt) {

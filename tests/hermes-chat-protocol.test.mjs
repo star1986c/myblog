@@ -4,6 +4,7 @@ import {
   buildHermesChatDeliveryFrame,
   createHermesChatMultiplexTicket,
   createHermesChatTicket,
+  normalizeHermesChatReplaySince,
   parseHermesChatFrame,
   planHermesChatAgentAdmission,
   validateHermesChatAction,
@@ -180,6 +181,21 @@ test("accepts only bounded encrypted Hermes chat messages", () => {
   assert.throws(
     () => parseHermesChatFrame("x".repeat(65 * 1024)),
     /too large/i,
+  );
+});
+
+test("accepts only a bounded timestamp for optional recent-message replay", () => {
+  const now = 1_800_000_000_000;
+  const since = now - 2 * 86_400_000;
+  const customSince = now - 90 * 86_400_000;
+
+  assert.equal(normalizeHermesChatReplaySince(undefined, now), null);
+  assert.equal(normalizeHermesChatReplaySince(since, now), since);
+  assert.equal(normalizeHermesChatReplaySince(customSince, now), customSince);
+  assert.throws(() => normalizeHermesChatReplaySince(0, now), /timestamp/i);
+  assert.throws(
+    () => normalizeHermesChatReplaySince(now + 5 * 60 * 1000 + 1, now),
+    /timestamp/i,
   );
 });
 

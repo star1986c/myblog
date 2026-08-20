@@ -56,3 +56,10 @@ test("gateway chooses multiplex mode without removing the legacy single-space ro
   assert.match(gateway, /return await hermesChatHub\(env, hubKey\)\.fetch/);
   assert.match(gateway, /return await room\.fetch\(internalRequest\)/);
 });
+
+test("recent replay is optional and filters indexed server history by creation time", () => {
+  assert.match(room, /frame\.afterSeq, frame\.since/);
+  assert.match(room, /normalizeHermesChatReplaySince\(sinceValue\)/);
+  assert.match(room, /conditions\.push\("created_at >= \?"\)/);
+  assert.match(room, /since === null \? Math\.max\(afterSeq, serverOffset\) : afterSeq/);
+});

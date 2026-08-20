@@ -12,9 +12,13 @@ public final class HermesChatStore: ObservableObject {
   @Published public private(set) var awaitingProfiles: Set<String> = []
   @Published public private(set) var configuredProfileIDs: Set<String> = []
   @Published public private(set) var isRefreshing = false
+  @Published public private(set) var isRefreshingMessages = false
   @Published public private(set) var isSending = false
   @Published public private(set) var errorMessage: String?
   @Published public private(set) var retentionDays: Int
+  @Published public private(set) var refreshLookbackDays: Int
+
+  public nonisolated static let refreshLookbackOptions = [1, 2, 3, 7, 14, 30, 90]
 
   private let api: NotesAPIClient
   private let keyStore: any HermesChatKeyStoring
@@ -25,13 +29,17 @@ public final class HermesChatStore: ObservableObject {
   private var cryptos: [String: HermesChatCrypto] = [:]
   private var histories: [String: HermesChatHistoryStore] = [:]
   private var lastSequences: [String: Int64] = [:]
+  private var localProfileIDs = Set<String>()
+  private var pendingMessagesByProfile: [String: [PendingIncomingMessage]] = [:]
   private var eventTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
+  private var messageFlushTask: Task<Void, Never>?
   private var awaitingTasks: [String: Task<Void, Never>] = [:]
   private var started = false
   private var applicationActive = true
   private var reconnectAttempt = 0
   private var configurationGeneration = 0
+  private var recentRefreshProfileID: String?
 
   public init(
     api: NotesAPIClient = NotesAPIClient(),
@@ -49,6 +57,8 @@ public final class HermesChatStore: ObservableObject {
     self.previewsOnly = previewsOnly
     let stored = defaults.object(forKey: "hermes_chat_retention_days_v1") as? Int ?? 30
     retentionDays = [0, 7, 30, 90].contains(stored) ? stored : 30
+    let storedLookback = defaults.object(forKey: "hermes_chat_refresh_days_v1") as? Int ?? 2
+    refreshLookbackDays = Self.normalizedRefreshLookbackDays(storedLookback)
   }
 
   #if DEBUG
@@ -157,6 +167,9 @@ public final class HermesChatStore: ObservableObject {
     reconnectTask = nil
     eventTask?.cancel()
     eventTask = nil
+    messageFlushTask?.cancel()
+    messageFlushTask = nil
+    await flushPendingMessages()
     for task in awaitingTasks.values { task.cancel() }
     awaitingTasks = [:]
     await client.disconnect()
@@ -169,6 +182,9 @@ public final class HermesChatStore: ObservableObject {
     cryptos = [:]
     histories = [:]
     lastSequences = [:]
+    localProfileIDs = []
+    isRefreshingMessages = false
+    recentRefreshProfileID = nil
   }
 
   public func refreshProfiles() async {
@@ -191,7 +207,10 @@ public final class HermesChatStore: ObservableObject {
     if selectedProfileID == nil || !profiles.contains(where: { $0.id == selectedProfileID }) {
       selectedProfileID = profiles.first?.id
     }
-    await configureLocalProfilesAndConnect()
+    let refreshedProfileIDs = Set(profiles.map(\.id))
+    if refreshedProfileIDs != localProfileIDs {
+      await configureLocalProfilesAndConnect()
+    }
   }
 
   @discardableResult
@@ -243,6 +262,24 @@ public final class HermesChatStore: ObservableObject {
     reconnectTask = nil
     reconnectAttempt = 0
     await connectConfiguredProfiles()
+  }
+
+  public func refreshRecentMessages(days: Int? = nil) async {
+    let requestedDays = Self.normalizedRefreshLookbackDays(days ?? refreshLookbackDays)
+    guard !isRefreshingMessages,
+      let spaceID = selectedProfileID,
+      configuredProfileIDs.contains(spaceID)
+    else { return }
+    let now = Int64(Date().timeIntervalSince1970 * 1_000)
+    let since = max(1, now - Int64(requestedDays) * 86_400_000)
+    refreshLookbackDays = requestedDays
+    defaults.set(requestedDays, forKey: "hermes_chat_refresh_days_v1")
+    recentRefreshProfileID = spaceID
+    isRefreshingMessages = true
+    reconnectTask?.cancel()
+    reconnectTask = nil
+    reconnectAttempt = 0
+    await connectConfiguredProfiles(recentSyncSinceByProfile: [spaceID: since])
   }
 
   public func send(
@@ -481,10 +518,13 @@ public final class HermesChatStore: ObservableObject {
     messagesByProfile = nextMessages.filter { id, _ in profiles.contains { $0.id == id } }
     lastSequences = nextSequences
     configuredProfileIDs = configured
+    localProfileIDs = Set(profiles.map(\.id))
     await connectConfiguredProfiles()
   }
 
-  private func connectConfiguredProfiles() async {
+  private func connectConfiguredProfiles(
+    recentSyncSinceByProfile: [String: Int64] = [:]
+  ) async {
     reconnectTask?.cancel()
     reconnectTask = nil
     guard started, !configuredProfileIDs.isEmpty else {
@@ -498,10 +538,12 @@ public final class HermesChatStore: ObservableObject {
       let ticket = try await api.hermesChatMultiplexTicket(spaceIDs: ids)
       let configurations = try ids.map { id in
         guard let crypto = cryptos[id] else { throw HermesChatCryptoError.invalidKey }
+        let recentSince = recentSyncSinceByProfile[id]
         return HermesChatClientProfile(
           spaceID: id,
           crypto: crypto,
-          lastSequence: lastSequences[id] ?? 0
+          lastSequence: recentSince == nil ? (lastSequences[id] ?? 0) : 0,
+          resumeSinceMilliseconds: recentSince
         )
       }
       await client.connect(ticket: ticket, profileConfigurations: configurations)
@@ -520,13 +562,10 @@ public final class HermesChatStore: ObservableObject {
       lastSequences[spaceID] = max(lastSequences[spaceID] ?? 0, message.sequence)
       let countUnread = message.isAgent && message.replaceSequence == 0
         && (!applicationActive || selectedProfileID != spaceID)
-      apply(message, spaceID: spaceID, countUnread: countUnread)
+      queue(message, spaceID: spaceID, countUnread: countUnread)
       if message.isAgent {
         cancelAwaiting(spaceID)
         typingProfiles.remove(spaceID)
-      }
-      if let history = histories[spaceID] {
-        _ = await history.record(message)
       }
     case .acknowledged(let spaceID, let messageID, let sequence):
       if let index = messagesByProfile[spaceID]?.firstIndex(where: { $0.id == messageID }) {
@@ -535,6 +574,18 @@ public final class HermesChatStore: ObservableObject {
       lastSequences[spaceID] = max(lastSequences[spaceID] ?? 0, sequence)
       if let history = histories[spaceID] {
         _ = await history.acknowledge(messageID: messageID, sequence: sequence)
+      }
+    case .resumed(let spaceID, let latestSequence):
+      messageFlushTask?.cancel()
+      messageFlushTask = nil
+      await flushPendingMessages()
+      lastSequences[spaceID] = max(lastSequences[spaceID] ?? 0, latestSequence)
+      if let history = histories[spaceID] {
+        _ = await history.advanceCheckpoint(to: latestSequence)
+      }
+      if recentRefreshProfileID == spaceID {
+        recentRefreshProfileID = nil
+        isRefreshingMessages = false
       }
     case .actionAcknowledged(_, _, let delivered):
       if !delivered { errorMessage = "Hermes Agent 当前未连接，操作没有执行。" }
@@ -557,31 +608,74 @@ public final class HermesChatStore: ObservableObject {
     spaceID: String,
     countUnread: Bool
   ) {
-    var messages = messagesByProfile[spaceID] ?? []
-    if incoming.replaceSequence > 0 {
-      if let index = messages.firstIndex(where: { $0.sequence == incoming.replaceSequence }) {
-        messages[index].text = incoming.text
-        if !incoming.attachments.isEmpty { messages[index].attachments = incoming.attachments }
-        messages[index].interaction = incoming.interaction
-      } else if incoming.finalUpdate {
-        var standalone = incoming
-        standalone.replaceSequence = 0
-        standalone.finalUpdate = false
-        messages.append(standalone)
+    applyBatch(
+      [PendingIncomingMessage(message: incoming, countUnread: countUnread)],
+      spaceID: spaceID
+    )
+  }
+
+  private func queue(
+    _ message: HermesChatMessage,
+    spaceID: String,
+    countUnread: Bool
+  ) {
+    pendingMessagesByProfile[spaceID, default: []].append(
+      PendingIncomingMessage(message: message, countUnread: countUnread)
+    )
+    guard messageFlushTask == nil else { return }
+    messageFlushTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(40))
+      guard !Task.isCancelled else { return }
+      await self?.flushPendingMessages()
+    }
+  }
+
+  private func flushPendingMessages() async {
+    messageFlushTask = nil
+    let pending = pendingMessagesByProfile
+    pendingMessagesByProfile = [:]
+    guard !pending.isEmpty else { return }
+    for (spaceID, values) in pending {
+      applyBatch(values, spaceID: spaceID)
+    }
+    for (spaceID, values) in pending {
+      if let history = histories[spaceID] {
+        _ = await history.recordBatch(values.map(\.message))
       }
-    } else if let index = messages.firstIndex(where: { $0.id == incoming.id }) {
-      messages[index] = incoming
-    } else {
-      messages.append(incoming)
     }
-    messages.sort {
-      if $0.sentAt != $1.sentAt { return $0.sentAt < $1.sentAt }
-      if $0.sequence != $1.sequence { return $0.sequence < $1.sequence }
-      return $0.id < $1.id
+  }
+
+  private func applyBatch(
+    _ incomingMessages: [PendingIncomingMessage],
+    spaceID: String
+  ) {
+    guard !incomingMessages.isEmpty else { return }
+    var messages = messagesByProfile[spaceID] ?? []
+    var unreadDelta = 0
+    for pending in incomingMessages {
+      let incoming = pending.message
+      if incoming.replaceSequence > 0 {
+        if let index = messages.firstIndex(where: { $0.sequence == incoming.replaceSequence }) {
+          messages[index].text = incoming.text
+          if !incoming.attachments.isEmpty { messages[index].attachments = incoming.attachments }
+          messages[index].interaction = incoming.interaction
+        } else if incoming.finalUpdate {
+          var standalone = incoming
+          standalone.replaceSequence = 0
+          standalone.finalUpdate = false
+          messages.append(standalone)
+        }
+      } else if let index = messages.firstIndex(where: { $0.id == incoming.id }) {
+        messages[index] = incoming
+      } else {
+        messages.append(incoming)
+        if pending.countUnread { unreadDelta += 1 }
+      }
     }
+    messages.sort(by: Self.messageOrder)
     if messages.count > 20_000 { messages.removeFirst(messages.count - 20_000) }
     messagesByProfile[spaceID] = messages
-    if countUnread { unreadByProfile[spaceID, default: 0] += 1 }
+    if unreadDelta > 0 { unreadByProfile[spaceID, default: 0] += unreadDelta }
   }
 
   private func markAwaiting(_ spaceID: String) {
@@ -605,6 +699,8 @@ public final class HermesChatStore: ObservableObject {
   private func handleDisconnect(reason: String) {
     guard started else { return }
     connectionState = .disconnected(reason)
+    recentRefreshProfileID = nil
+    isRefreshingMessages = false
     reconnectTask?.cancel()
     let exponent = min(reconnectAttempt, 4)
     let base = min(45.0, 2.0 * pow(2.0, Double(exponent)))
@@ -620,6 +716,24 @@ public final class HermesChatStore: ObservableObject {
   private func cacheProfiles(_ profiles: [HermesChatProfile]) {
     guard let data = try? JSONEncoder().encode(profiles) else { return }
     defaults.set(data, forKey: "hermes_chat_profiles_v1")
+  }
+
+  private static func messageOrder(
+    _ left: HermesChatMessage,
+    _ right: HermesChatMessage
+  ) -> Bool {
+    if left.sentAt != right.sentAt { return left.sentAt < right.sentAt }
+    if left.sequence != right.sequence { return left.sequence < right.sequence }
+    return left.id < right.id
+  }
+
+  nonisolated static func normalizedRefreshLookbackDays(_ days: Int) -> Int {
+    min(3_650, max(1, days))
+  }
+
+  private struct PendingIncomingMessage {
+    let message: HermesChatMessage
+    let countUnread: Bool
   }
 
   private func cachedProfiles() -> [HermesChatProfile] {

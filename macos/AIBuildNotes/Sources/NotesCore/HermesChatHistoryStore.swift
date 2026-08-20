@@ -43,36 +43,58 @@ public actor HermesChatHistoryStore {
 
   @discardableResult
   public func record(_ incoming: HermesChatMessage) -> HermesChatHistorySnapshot {
-    var snapshot = loadSnapshot()
-    if incoming.replaceSequence > 0 && !incoming.finalUpdate { return snapshot }
+    recordBatch([incoming])
+  }
 
-    if incoming.replaceSequence > 0 {
-      if let index = snapshot.messages.firstIndex(where: {
-        $0.sequence == incoming.replaceSequence
-      }) {
-        var target = snapshot.messages[index]
-        target.text = incoming.text
-        if !incoming.attachments.isEmpty { target.attachments = incoming.attachments }
-        target.interaction = incoming.interaction
-        target.replaceSequence = 0
-        target.finalUpdate = false
-        snapshot.messages[index] = target
+  @discardableResult
+  public func recordBatch(_ incomingMessages: [HermesChatMessage]) -> HermesChatHistorySnapshot {
+    var snapshot = loadSnapshot()
+    var changed = false
+    for incoming in incomingMessages {
+      if incoming.replaceSequence > 0 && !incoming.finalUpdate { continue }
+
+      if incoming.replaceSequence > 0 {
+        if let index = snapshot.messages.firstIndex(where: {
+          $0.sequence == incoming.replaceSequence
+        }) {
+          var target = snapshot.messages[index]
+          target.text = incoming.text
+          if !incoming.attachments.isEmpty { target.attachments = incoming.attachments }
+          target.interaction = incoming.interaction
+          target.replaceSequence = 0
+          target.finalUpdate = false
+          snapshot.messages[index] = target
+        } else {
+          var standalone = incoming
+          standalone.replaceSequence = 0
+          standalone.finalUpdate = false
+          snapshot.messages.append(standalone)
+        }
+      } else if let index = snapshot.messages.firstIndex(where: { $0.id == incoming.id }) {
+        snapshot.messages[index] = incoming
       } else {
-        var standalone = incoming
-        standalone.replaceSequence = 0
-        standalone.finalUpdate = false
-        snapshot.messages.append(standalone)
+        snapshot.messages.append(incoming)
       }
-    } else if let index = snapshot.messages.firstIndex(where: { $0.id == incoming.id }) {
-      snapshot.messages[index] = incoming
-    } else {
-      snapshot.messages.append(incoming)
+      snapshot.lastSequence = max(snapshot.lastSequence, max(0, incoming.sequence))
+      changed = true
     }
 
+    guard changed else { return snapshot }
+    snapshot.messages.sort(by: Self.messageOrder)
     if snapshot.messages.count > Self.maximumMessages {
       snapshot.messages.removeFirst(snapshot.messages.count - Self.maximumMessages)
     }
-    snapshot.lastSequence = max(snapshot.lastSequence, max(0, incoming.sequence))
+    cached = snapshot
+    try? write(snapshot)
+    return snapshot
+  }
+
+  @discardableResult
+  public func advanceCheckpoint(to sequence: Int64) -> HermesChatHistorySnapshot {
+    var snapshot = loadSnapshot()
+    let sequence = max(0, sequence)
+    guard sequence > snapshot.lastSequence else { return snapshot }
+    snapshot.lastSequence = sequence
     cached = snapshot
     try? write(snapshot)
     return snapshot
@@ -182,6 +204,15 @@ public actor HermesChatHistoryStore {
       && message.sequence >= 0
       && message.text.count <= 50_000
       && message.attachments.count <= 8
+  }
+
+  private static func messageOrder(
+    _ left: HermesChatMessage,
+    _ right: HermesChatMessage
+  ) -> Bool {
+    if left.sentAt != right.sentAt { return left.sentAt < right.sentAt }
+    if left.sequence != right.sequence { return left.sequence < right.sequence }
+    return left.id < right.id
   }
 
   private static func normalize(_ value: String) throws -> String {

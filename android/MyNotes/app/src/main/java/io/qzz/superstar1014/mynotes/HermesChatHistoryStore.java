@@ -57,41 +57,49 @@ final class HermesChatHistoryStore {
   }
 
   Snapshot record(HermesChatCrypto.ChatMessage incoming) {
+    return recordBatch(List.of(incoming));
+  }
+
+  Snapshot recordBatch(List<HermesChatCrypto.ChatMessage> incomingMessages) {
     synchronized (FILE_LOCK) {
       Snapshot current = readSnapshot();
-      if (incoming.replaceSequence > 0 && !incoming.finalUpdate) return current;
       List<HermesChatCrypto.ChatMessage> messages = mutableCopy(current.messages);
-      if (incoming.replaceSequence > 0) {
-        int targetIndex = indexOfSequence(messages, incoming.replaceSequence);
-        if (targetIndex >= 0) {
-          HermesChatCrypto.ChatMessage target = messages.get(targetIndex);
-          JSONArray attachments = incoming.attachments.length() > 0
-            ? cloneArray(incoming.attachments)
-            : cloneArray(target.attachments);
-          messages.set(targetIndex, new HermesChatCrypto.ChatMessage(
-            target.id,
-            target.sender,
-            target.sentAt,
-            target.sequence,
-            incoming.text,
-            attachments,
-            cloneObject(incoming.interaction),
-            0,
-            false
-          ));
+      long lastSequence = current.lastSequence;
+      boolean changed = false;
+      for (HermesChatCrypto.ChatMessage incoming : incomingMessages) {
+        if (incoming.replaceSequence > 0 && !incoming.finalUpdate) continue;
+        if (incoming.replaceSequence > 0) {
+          int targetIndex = indexOfSequence(messages, incoming.replaceSequence);
+          if (targetIndex >= 0) {
+            HermesChatCrypto.ChatMessage target = messages.get(targetIndex);
+            JSONArray attachments = incoming.attachments.length() > 0
+              ? cloneArray(incoming.attachments)
+              : cloneArray(target.attachments);
+            messages.set(targetIndex, new HermesChatCrypto.ChatMessage(
+              target.id,
+              target.sender,
+              target.sentAt,
+              target.sequence,
+              incoming.text,
+              attachments,
+              cloneObject(incoming.interaction),
+              0,
+              false
+            ));
+          } else {
+            messages.add(asStandalone(incoming));
+          }
         } else {
-          messages.add(asStandalone(incoming));
+          int existingIndex = indexOfId(messages, incoming.id);
+          if (existingIndex >= 0) messages.set(existingIndex, copy(incoming));
+          else messages.add(copy(incoming));
         }
-      } else {
-        int existingIndex = indexOfId(messages, incoming.id);
-        if (existingIndex >= 0) messages.set(existingIndex, copy(incoming));
-        else messages.add(copy(incoming));
+        lastSequence = Math.max(lastSequence, Math.max(0, incoming.sequence));
+        changed = true;
       }
+      if (!changed) return current;
       trimOldest(messages);
-      Snapshot updated = new Snapshot(
-        Math.max(current.lastSequence, Math.max(0, incoming.sequence)),
-        messages
-      );
+      Snapshot updated = new Snapshot(lastSequence, messages);
       writeSnapshot(updated);
       return updated;
     }

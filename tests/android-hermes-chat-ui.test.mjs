@@ -243,7 +243,7 @@ test("Hermes chat opens at the latest message and new messages auto-scroll witho
   );
   const renderCached = source.slice(
     source.indexOf("private void renderCachedMessages"),
-    source.indexOf("private void persistMessage"),
+    source.indexOf("private void toggleMessageSelection"),
   );
   const scrollHelper = source.slice(
     source.indexOf("private void scrollMessagesToBottom"),
@@ -253,11 +253,35 @@ test("Hermes chat opens at the latest message and new messages auto-scroll witho
   assert.match(onResume, /scrollMessagesToBottom\(false\)/);
   assert.match(renderCached, /renderingCachedMessages = true[\s\S]*renderingCachedMessages = false/);
   assert.match(renderCached, /scrollMessagesToBottom\(false\)/);
-  assert.match(source, /else if \(!renderingCachedMessages\) scrollMessagesToBottom\(true\)/);
+  assert.match(source, /if \(!renderingCachedMessages\) \{[\s\S]*scrollMessagesToBottom\(true\)/);
   assert.match(scrollHelper, /messageScroll\.removeCallbacks\(applyPendingBottomScroll\)/);
   assert.match(source, /messageScroll\.smoothScrollTo\(0, bottom\)/);
   assert.match(source, /messageScroll\.scrollTo\(0, bottom\)/);
   assert.doesNotMatch(source, /fullScroll\(View\.FOCUS_DOWN\)/);
+});
+
+test("Android keeps full encrypted history while rendering bounded chat and search windows", async () => {
+  const source = await readFile(activityPath, "utf8");
+  const cachedRender = source.slice(
+    source.indexOf("private void renderCachedMessages"),
+    source.indexOf("private void toggleMessageSelection"),
+  );
+  const search = source.slice(
+    source.indexOf("private void refreshMessageSearch"),
+    source.indexOf("private void updateMessageSearchControls"),
+  );
+
+  assert.match(source, /MESSAGE_WINDOW_SIZE = 120/);
+  assert.match(source, /SEARCH_MESSAGE_WINDOW_SIZE = 60/);
+  assert.match(source, /cachedMessageOrder\.addAll\(snapshot\.messages\)/);
+  assert.match(cachedRender, /cachedMessageOrder\.size\(\) - visibleMessageLimit/);
+  assert.match(cachedRender, /visibleMessageLimit \+ MESSAGE_WINDOW_SIZE/);
+  assert.match(cachedRender, /加载更早的本地消息/);
+  assert.match(source, /trimRenderedMessagesToWindow\(\)/);
+  assert.match(search, /for \(HermesChatCrypto\.ChatMessage message : cachedMessageOrder\)/);
+  assert.match(search, /SEARCH_MESSAGE_WINDOW_SIZE \/ 2/);
+  assert.match(search, /start \+ SEARCH_MESSAGE_WINDOW_SIZE/);
+  assert.doesNotMatch(cachedRender, /for \(HermesChatCrypto\.ChatMessage message : snapshot\.messages\)/);
 });
 
 test("Hermes chat renders Telegram-style Markdown and fenced code blocks", async () => {
@@ -324,7 +348,7 @@ test("long-press message actions route attachment share, save, and playback by t
   assert.match(provider, /ParcelFileDescriptor\.MODE_READ_ONLY/);
 });
 
-test("Hermes chat searches only ordered messages already loaded in the Android app", async () => {
+test("Hermes chat searches the complete ordered local cache without a server query", async () => {
   const activity = await readFile(activityPath, "utf8");
   const search = activity.slice(
     activity.indexOf("private void refreshMessageSearch()"),
@@ -332,8 +356,8 @@ test("Hermes chat searches only ordered messages already loaded in the Android a
   );
 
   assert.match(activity, /R\.drawable\.ic_search, "搜索本地聊天消息"/);
-  assert.match(search, /for \(RenderedMessage rendered : renderedMessageOrder\)/);
-  assert.match(search, /rendered\.message\.text/);
+  assert.match(search, /for \(HermesChatCrypto\.ChatMessage message : cachedMessageOrder\)/);
+  assert.match(search, /message\.text/);
   assert.match(search, /toLowerCase\(Locale\.ROOT\)\.contains\(query\)/);
   assert.doesNotMatch(search, /api\.|connection\.|hermesChat/);
   assert.match(activity, /smoothScrollTo\(0, Math\.max\(0, rendered\.row\.getTop\(\) - dp\(12\)\)\)/);

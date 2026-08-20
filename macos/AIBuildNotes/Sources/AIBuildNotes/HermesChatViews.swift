@@ -231,17 +231,36 @@ struct HermesChatView: View {
   @State private var selectedMessageIDs = Set<String>()
   @State private var selectionMode = false
   @State private var pendingDelete: [HermesChatMessage] = []
+  @State private var visibleMessageLimit = 160
+  @State private var visibleSearchResultLimit = 160
   @FocusState private var composerFocused: Bool
 
   private var profile: HermesChatProfile? { store.selectedProfile }
   private var messages: [HermesChatMessage] { store.selectedMessages }
-  private var visibleMessages: [HermesChatMessage] {
+  private var hasSearchQuery: Bool {
+    showsSearch && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+  private var matchingMessages: [HermesChatMessage] {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard showsSearch, !query.isEmpty else { return messages }
+    guard hasSearchQuery else { return [] }
     return messages.filter { message in
       message.text.localizedCaseInsensitiveContains(query)
         || message.attachments.contains { $0.name.localizedCaseInsensitiveContains(query) }
     }
+  }
+
+  private var visibleMessages: [HermesChatMessage] {
+    if hasSearchQuery {
+      return Array(matchingMessages.suffix(visibleSearchResultLimit))
+    }
+    return Array(messages.suffix(visibleMessageLimit))
+  }
+
+  private var hiddenLocalMessageCount: Int {
+    if hasSearchQuery {
+      return max(0, matchingMessages.count - visibleMessages.count)
+    }
+    return max(0, messages.count - visibleMessages.count)
   }
 
   var body: some View {
@@ -253,6 +272,7 @@ struct HermesChatView: View {
           if showsSearch { searchBar }
           if store.isConfigured(spaceID: profile.id) {
             messageTimeline(profile)
+              .id(profile.id)
             Divider()
             composer(profile)
           } else {
@@ -304,7 +324,12 @@ struct HermesChatView: View {
       selectedMessageIDs = []
       selectionMode = false
       searchText = ""
+      visibleMessageLimit = 160
+      visibleSearchResultLimit = 160
       Task { @MainActor in composerFocused = true }
+    }
+    .onChange(of: searchText) { _, _ in
+      visibleSearchResultLimit = 160
     }
     .onAppear {
       HermesTemporaryAttachmentFiles.cleanupExpired()
@@ -353,12 +378,31 @@ struct HermesChatView: View {
           Image(systemName: showsSearch ? "xmark" : "magnifyingglass")
         }
         .help(showsSearch ? "关闭本地消息搜索" : "搜索本地聊天消息")
-        Button {
-          Task { await store.reconnect() }
-        } label: {
-          Image(systemName: "arrow.clockwise")
+        if store.isRefreshingMessages {
+          ProgressView()
+            .controlSize(.small)
+            .frame(width: 24, height: 24)
+            .help("正在同步云端消息")
+        } else {
+          Menu {
+            ForEach(HermesChatStore.refreshLookbackOptions, id: \.self) { days in
+              Button {
+                Task { await store.refreshRecentMessages(days: days) }
+              } label: {
+                if days == store.refreshLookbackDays {
+                  Label("最近 \(days) 天", systemImage: "checkmark")
+                } else {
+                  Text("最近 \(days) 天")
+                }
+              }
+            }
+          } label: {
+            Image(systemName: "arrow.clockwise")
+          }
+          .menuStyle(.borderlessButton)
+          .fixedSize()
+          .help("按时间范围同步当前会话；默认最近 \(store.refreshLookbackDays) 天")
         }
-        .help("重新连接 WebSocket")
         Button {
           showsSettings = true
         } label: {
@@ -378,7 +422,7 @@ struct HermesChatView: View {
       TextField("搜索本机缓存中的文字或附件名称", text: $searchText)
         .textFieldStyle(.plain)
       if !searchText.isEmpty {
-        Text("\(visibleMessages.count) 条")
+        Text("\(visibleMessages.count)/\(matchingMessages.count) 条")
           .font(.caption.monospacedDigit())
           .foregroundStyle(.secondary)
         Button {
@@ -419,6 +463,26 @@ struct HermesChatView: View {
             }
             .frame(minHeight: 260)
           } else {
+            if hiddenLocalMessageCount > 0 {
+              Button {
+                if hasSearchQuery {
+                  visibleSearchResultLimit += 160
+                } else {
+                  visibleMessageLimit += 160
+                }
+              } label: {
+                Label(
+                  hasSearchQuery
+                    ? "加载更早的搜索结果（还有 \(hiddenLocalMessageCount) 条）"
+                    : "加载更早的本地消息（还有 \(hiddenLocalMessageCount) 条）",
+                  systemImage: "clock.arrow.circlepath"
+                )
+              }
+              .buttonStyle(.borderless)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .padding(.bottom, 4)
+            }
             ForEach(visibleMessages) { message in
               HermesMessageRow(
                 message: message,

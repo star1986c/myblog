@@ -93,6 +93,45 @@ func hermesHistoryAppliesFinalEdit() async throws {
   #expect(final.lastSequence == 22)
 }
 
+@Test("Hermes history batches replay writes and advances an empty replay checkpoint")
+func hermesHistoryBatchesReplayAndAdvancesCheckpoint() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let crypto = try HermesChatCrypto(
+    encodedKey: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  )
+  let store = try HermesChatHistoryStore(
+    spaceID: "primary",
+    crypto: crypto,
+    directory: root
+  )
+  let replay = [
+    HermesChatMessage(
+      id: "newer",
+      sender: "agent",
+      sentAt: 1_800_000_000_010,
+      sequence: 12,
+      text: "newer"
+    ),
+    HermesChatMessage(
+      id: "older",
+      sender: "client",
+      sentAt: 1_800_000_000_000,
+      sequence: 11,
+      text: "older"
+    ),
+  ]
+
+  let recorded = await store.recordBatch(replay)
+  #expect(recorded.messages.map(\.id) == ["older", "newer"])
+  #expect(recorded.lastSequence == 12)
+
+  let advanced = await store.advanceCheckpoint(to: 20)
+  #expect(advanced.lastSequence == 20)
+  #expect(advanced.messages.map(\.id) == ["older", "newer"])
+}
+
 @Test("Hermes attachment cache stores only encrypted R2 bytes")
 func hermesAttachmentCiphertextCache() async throws {
   let root = FileManager.default.temporaryDirectory

@@ -392,9 +392,13 @@ public final class CryptoTestRunner extends Instrumentation {
     Field composerField = HermesChatActivity.class.getDeclaredField("composer");
     Field messageScrollField = HermesChatActivity.class.getDeclaredField("messageScroll");
     Field messagesField = HermesChatActivity.class.getDeclaredField("messages");
+    Field cachedMessagesField = HermesChatActivity.class.getDeclaredField("cachedMessageOrder");
+    Field renderedMessagesField = HermesChatActivity.class.getDeclaredField("renderedMessageOrder");
     composerField.setAccessible(true);
     messageScrollField.setAccessible(true);
     messagesField.setAccessible(true);
+    cachedMessagesField.setAccessible(true);
+    renderedMessagesField.setAccessible(true);
     EditText composer = (EditText) composerField.get(activity);
     ScrollView messageScroll = (ScrollView) messageScrollField.get(activity);
     LinearLayout messages = (LinearLayout) messagesField.get(activity);
@@ -403,6 +407,18 @@ public final class CryptoTestRunner extends Instrumentation {
       waitForIdleSync();
       Thread.sleep(350L);
       waitForIdleSync();
+      runOnMainSync(() -> {
+        try {
+          List<?> cachedMessages = (List<?>) cachedMessagesField.get(activity);
+          List<?> renderedMessages = (List<?>) renderedMessagesField.get(activity);
+          require(cachedMessages.size() > renderedMessages.size(),
+            "Hermes QA history did not keep older messages in the local model");
+          require(renderedMessages.size() == 120,
+            "Hermes chat rendered more than its initial message window");
+        } catch (IllegalAccessException error) {
+          throw new IllegalStateException(error);
+        }
+      });
       requireChatAtBottom(activity, messageScroll, messages, false, true);
 
       HermesChatCrypto.ChatMessage hiddenImeMessage = new HermesChatCrypto.ChatMessage(

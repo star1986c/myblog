@@ -208,3 +208,18 @@ test("interactive prompt state is retained in the encrypted per-profile cache", 
   assert.match(crypto, /final JSONObject interaction/);
   assert.match(crypto, /validateInteraction\(interaction\)/);
 });
+
+test("Android coalesces replay persistence and avoids duplicate Activity snapshot writes", async () => {
+  const [activity, manager, history] = await Promise.all([
+    source("HermesChatActivity.java"),
+    source("HermesChatConnectionManager.java"),
+    source("HermesChatHistoryStore.java"),
+  ]);
+
+  assert.match(history, /Snapshot recordBatch\(List<HermesChatCrypto\.ChatMessage> incomingMessages\)/);
+  assert.match(manager, /PERSISTENCE_BATCH_DELAY_MS = 40L/);
+  assert.match(manager, /queueMessagePersistence\(session, message\)/);
+  assert.match(manager, /session\.history\.recordBatch\(batch\)/);
+  assert.doesNotMatch(activity, /private void persistMessage\(/);
+  assert.doesNotMatch(activity, /targetHistory\.record\(message\)/);
+});

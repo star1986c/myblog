@@ -4,11 +4,22 @@ public struct HermesChatClientProfile: Sendable {
   public let spaceID: String
   public let crypto: HermesChatCrypto
   public let lastSequence: Int64
+  public let resumeSinceMilliseconds: Int64?
 
-  public init(spaceID: String, crypto: HermesChatCrypto, lastSequence: Int64) {
+  public init(
+    spaceID: String,
+    crypto: HermesChatCrypto,
+    lastSequence: Int64,
+    resumeSinceMilliseconds: Int64? = nil
+  ) {
     self.spaceID = spaceID
     self.crypto = crypto
     self.lastSequence = max(0, lastSequence)
+    if let resumeSinceMilliseconds, resumeSinceMilliseconds > 0 {
+      self.resumeSinceMilliseconds = resumeSinceMilliseconds
+    } else {
+      self.resumeSinceMilliseconds = nil
+    }
   }
 }
 
@@ -16,6 +27,7 @@ public enum HermesChatClientEvent: Sendable {
   case ready
   case message(spaceID: String, message: HermesChatMessage)
   case acknowledged(spaceID: String, messageID: String, sequence: Int64)
+  case resumed(spaceID: String, latestSequence: Int64)
   case actionAcknowledged(spaceID: String, actionID: String, delivered: Bool)
   case typing(spaceID: String, active: Bool)
   case profileError(spaceID: String, reason: String)
@@ -73,7 +85,14 @@ public actor HermesChatClient {
     closeCurrentSocket(reason: "macOS chat reconnecting")
     let configured = Dictionary(
       uniqueKeysWithValues: profileConfigurations.map {
-        ($0.spaceID, ProfileState(crypto: $0.crypto, lastSequence: $0.lastSequence))
+        (
+          $0.spaceID,
+          ProfileState(
+            crypto: $0.crypto,
+            lastSequence: $0.lastSequence,
+            resumeSinceMilliseconds: $0.resumeSinceMilliseconds
+          )
+        )
       }
     )
     let ticketSpaces = Set(ticket.spaceIds)
@@ -92,7 +111,7 @@ public actor HermesChatClient {
     request.setValue("Bearer \(ticket.ticket)", forHTTPHeaderField: "Authorization")
     request.setValue("client", forHTTPHeaderField: "X-Hermes-Role")
     request.setValue("multiplex", forHTTPHeaderField: "X-Hermes-Mode")
-    request.setValue("My-Notes-macOS/1.6", forHTTPHeaderField: "User-Agent")
+    request.setValue("My-Notes-macOS/1.9", forHTTPHeaderField: "User-Agent")
     let task = session.webSocketTask(with: request)
     socket = task
     task.resume()
@@ -256,7 +275,17 @@ public actor HermesChatClient {
       }
       continuation.yield(.message(spaceID: spaceID, message: message))
     case "resume_complete":
-      if frame["hasMore"] as? Bool == true { try await sendResume(spaceID: spaceID) }
+      if frame["hasMore"] as? Bool == true {
+        try await sendResume(spaceID: spaceID)
+      } else {
+        let latestSequence = max(0, Self.int64(frame["latestSeq"]) ?? 0)
+        if var profile = profiles[spaceID] {
+          profile.lastSequence = max(profile.lastSequence, latestSequence)
+          profile.resumeSinceMilliseconds = nil
+          profiles[spaceID] = profile
+        }
+        continuation.yield(.resumed(spaceID: spaceID, latestSequence: latestSequence))
+      }
     case "ack":
       let durable = frame["durable"] as? Bool ?? true
       let id = frame["id"] as? String ?? ""
@@ -298,11 +327,28 @@ public actor HermesChatClient {
 
   private func sendResume(spaceID: String) async throws {
     let profile = try requireProfile(spaceID)
-    try await sendRouted(spaceID: spaceID, frame: [
+    try await sendRouted(
+      spaceID: spaceID,
+      frame: Self.resumeFrame(
+        afterSequence: profile.lastSequence,
+        sinceMilliseconds: profile.resumeSinceMilliseconds
+      )
+    )
+  }
+
+  static func resumeFrame(
+    afterSequence: Int64,
+    sinceMilliseconds: Int64? = nil
+  ) -> [String: Any] {
+    var frame: [String: Any] = [
       "v": 1,
       "type": "resume",
-      "afterSeq": profile.lastSequence,
-    ])
+      "afterSeq": max(0, afterSequence),
+    ]
+    if let sinceMilliseconds, sinceMilliseconds > 0 {
+      frame["since"] = sinceMilliseconds
+    }
+    return frame
   }
 
   private func sendRouted(spaceID: String, frame: [String: Any]) async throws {
@@ -391,10 +437,16 @@ public actor HermesChatClient {
     let crypto: HermesChatCrypto
     var lastSequence: Int64
     var lastTypingActive: Bool?
+    var resumeSinceMilliseconds: Int64?
 
-    init(crypto: HermesChatCrypto, lastSequence: Int64) {
+    init(
+      crypto: HermesChatCrypto,
+      lastSequence: Int64,
+      resumeSinceMilliseconds: Int64?
+    ) {
       self.crypto = crypto
       self.lastSequence = max(0, lastSequence)
+      self.resumeSinceMilliseconds = resumeSinceMilliseconds
     }
   }
 

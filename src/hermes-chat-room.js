@@ -3,6 +3,7 @@ import {
   CHAT_PROTOCOL_VERSION,
   buildHermesChatDeliveryFrame,
   isReplacedHermesChatAgentAttachment,
+  normalizeHermesChatReplaySince,
   parseHermesChatFrame,
   planHermesChatAgentAdmission,
   validateHermesChatAction,
@@ -180,7 +181,7 @@ class HermesChatRoom extends DurableObject {
         return;
       }
       if (frame.type === "resume") {
-        this.replay(socket, attachment, frame.afterSeq);
+        this.replay(socket, attachment, frame.afterSeq, frame.since);
         return;
       }
       if (frame.type === "received") {
@@ -366,7 +367,7 @@ class HermesChatRoom extends DurableObject {
     const frame = parseHermesChatFrame(JSON.stringify(rawFrame));
     const receiver = { role: "client", userId };
     if (frame.type === "resume") {
-      return this.replayFrames(receiver, frame.afterSeq);
+      return this.replayFrames(receiver, frame.afterSeq, frame.since);
     }
     if (frame.type === "typing") {
       this.broadcastToOtherRole("client", {
@@ -535,38 +536,39 @@ class HermesChatRoom extends DurableObject {
     }
   }
 
-  replay(socket, receiver, afterSeqValue) {
-    for (const frame of this.replayFrames(receiver, afterSeqValue)) {
+  replay(socket, receiver, afterSeqValue, sinceValue) {
+    for (const frame of this.replayFrames(receiver, afterSeqValue, sinceValue)) {
       socket.send(JSON.stringify(frame));
     }
   }
 
-  replayFrames(receiver, afterSeqValue) {
+  replayFrames(receiver, afterSeqValue, sinceValue) {
     const afterSeq = Number(afterSeqValue);
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
       throw new Error("Invalid Hermes chat resume sequence.");
     }
+    const since = normalizeHermesChatReplaySince(sinceValue);
     const receiverRole = receiver.role;
     const serverOffset = this.consumerOffset(receiverRole, receiver.userId);
-    const effectiveAfterSeq = Math.max(afterSeq, serverOffset);
-    const rows = receiverRole === "client"
-      ? this.ctx.storage.sql.exec(
-        `SELECT seq, envelope FROM messages
-         WHERE seq > ?
-         ORDER BY seq ASC
-         LIMIT ?`,
-        effectiveAfterSeq,
-        REPLAY_BATCH_SIZE,
-      ).toArray()
-      : this.ctx.storage.sql.exec(
-        `SELECT seq, envelope FROM messages
-         WHERE seq > ? AND sender_role <> ?
-         ORDER BY seq ASC
-         LIMIT ?`,
-        effectiveAfterSeq,
-        receiverRole,
-        REPLAY_BATCH_SIZE,
-      ).toArray();
+    const effectiveAfterSeq = since === null ? Math.max(afterSeq, serverOffset) : afterSeq;
+    const conditions = ["seq > ?"];
+    const parameters = [effectiveAfterSeq];
+    if (receiverRole !== "client") {
+      conditions.push("sender_role <> ?");
+      parameters.push(receiverRole);
+    }
+    if (since !== null) {
+      conditions.push("created_at >= ?");
+      parameters.push(since);
+    }
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT seq, envelope FROM messages
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY seq ASC
+       LIMIT ?`,
+      ...parameters,
+      REPLAY_BATCH_SIZE,
+    ).toArray();
     const frames = rows.map((row) => buildHermesChatDeliveryFrame(
         JSON.parse(row.envelope),
         row.seq,

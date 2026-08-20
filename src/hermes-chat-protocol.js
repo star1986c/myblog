@@ -217,6 +217,18 @@ function parseHermesChatFrame(message) {
   return frame;
 }
 
+function normalizeHermesChatReplaySince(value, now = Date.now()) {
+  if (value === undefined || value === null) return null;
+  if (
+    !Number.isSafeInteger(value)
+    || value < 1
+    || value > now + 5 * 60 * 1000
+  ) {
+    throw new ServiceError("Invalid Hermes chat replay timestamp.", 400);
+  }
+  return value;
+}
+
 function validateHermesChatMessage(frame, expectedSender) {
   if (frame.v !== CHAT_PROTOCOL_VERSION || frame.type !== "message") {
     throw new ServiceError("Unsupported Hermes chat message.", 400);
@@ -372,6 +384,7 @@ export {
   isReplacedHermesChatAgentAttachment,
   normalizeHermesChatSpaceId,
   normalizeHermesChatSpaceIds,
+  normalizeHermesChatReplaySince,
   parseHermesChatFrame,
   planHermesChatAgentAdmission,
   readBearerToken,
