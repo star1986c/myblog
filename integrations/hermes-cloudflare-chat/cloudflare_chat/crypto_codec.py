@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 PROTOCOL_VERSION = 1
 MAX_TEXT_CHARS = 50_000
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_AGENT_ATTACHMENT_BYTES = 512 * 1024 * 1024
+PRIVATE_ATTACHMENT_STORAGE = "r2-private-v1"
 MAX_INTERACTION_OPTIONS = 24
 INTERACTION_KINDS = frozenset({
     "approval",
@@ -91,7 +94,10 @@ class ChatCipher:
             raise ValueError("message text is invalid or too large")
         message_id = message_id or str(uuid.uuid4())
         sent_at = int(sent_at if sent_at is not None else time.time() * 1000)
-        payload: dict[str, Any] = {"text": text, "attachments": attachments or []}
+        payload: dict[str, Any] = {
+            "text": text,
+            "attachments": _normalize_attachments(attachments or [], sender=sender),
+        }
         if interaction is not None and interaction_response is not None:
             raise ValueError("message cannot contain both an interaction and a response")
         if interaction is not None:
@@ -161,8 +167,7 @@ class ChatCipher:
         attachments = payload.get("attachments", [])
         if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS:
             raise ValueError("decrypted message text is invalid")
-        if not isinstance(attachments, list) or len(attachments) > 8:
-            raise ValueError("decrypted attachment list is invalid")
+        attachments = _normalize_attachments(attachments, sender=expected_sender)
         result = {"text": text, "attachments": attachments}
         if "interaction" in payload:
             if expected_sender != "agent":
@@ -217,6 +222,8 @@ class ChatCipher:
         )
 
     def decrypt_attachment(self, ciphertext: bytes, descriptor: dict[str, Any]) -> bytes:
+        if descriptor.get("storage") == PRIVATE_ATTACHMENT_STORAGE:
+            raise ValueError("private R2 attachments are not encrypted chat attachments")
         attachment_id = str(descriptor.get("id") or "")
         content_type = _safe_content_type(str(descriptor.get("contentType") or ""))
         plaintext_bytes = int(descriptor.get("plaintextBytes"))
@@ -247,6 +254,60 @@ def _safe_content_type(value: str) -> str:
     ):
         raise ValueError("invalid attachment content type")
     return content_type
+
+
+def _normalize_attachments(value: Any, *, sender: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 8:
+        raise ValueError("decrypted attachment list is invalid")
+    result: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError("attachment descriptor must be an object")
+        attachment_id = _safe_uuid(raw.get("id"), "attachment id")
+        filename = _safe_filename(str(raw.get("name") or "attachment.bin"))
+        content_type = _safe_content_type(str(raw.get("contentType") or ""))
+        plaintext_bytes = raw.get("plaintextBytes")
+        if (
+            not isinstance(plaintext_bytes, int)
+            or isinstance(plaintext_bytes, bool)
+            or plaintext_bytes < 1
+        ):
+            raise ValueError("attachment size is invalid")
+        storage = str(raw.get("storage") or "")
+        if storage == PRIVATE_ATTACHMENT_STORAGE:
+            sha256 = str(raw.get("sha256") or "").lower()
+            if (
+                sender != "agent"
+                or plaintext_bytes <= MAX_ATTACHMENT_BYTES
+                or plaintext_bytes > MAX_AGENT_ATTACHMENT_BYTES
+                or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+            ):
+                raise ValueError("private R2 attachment descriptor is invalid")
+            result.append({
+                "id": attachment_id,
+                "name": filename,
+                "contentType": content_type,
+                "plaintextBytes": plaintext_bytes,
+                "storage": PRIVATE_ATTACHMENT_STORAGE,
+                "sha256": sha256,
+            })
+            continue
+        if storage not in {"", "encrypted-v1"} or plaintext_bytes > MAX_ATTACHMENT_BYTES:
+            raise ValueError("encrypted attachment descriptor is invalid")
+        nonce = str(raw.get("nonce") or "")
+        if len(_b64url_decode(nonce)) != 12:
+            raise ValueError("encrypted attachment nonce is invalid")
+        descriptor = {
+            "id": attachment_id,
+            "name": filename,
+            "contentType": content_type,
+            "plaintextBytes": plaintext_bytes,
+            "nonce": nonce,
+        }
+        if storage:
+            descriptor["storage"] = storage
+        result.append(descriptor)
+    return result
 
 
 def _normalize_interaction(value: Any) -> dict[str, Any]:

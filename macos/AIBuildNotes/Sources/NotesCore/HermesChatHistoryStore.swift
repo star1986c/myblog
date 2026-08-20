@@ -166,7 +166,9 @@ public actor HermesChatHistoryStore {
     guard encrypted.count <= Self.maximumSnapshotBytes else {
       throw HermesChatCryptoError.invalidEnvelope
     }
-    try encrypted.write(to: snapshotURL, options: [.atomic, .completeFileProtection])
+    // The snapshot is already AES-GCM encrypted. File protection writing is not
+    // supported on all macOS volumes, so rely on atomic write and POSIX 0600.
+    try encrypted.write(to: snapshotURL, options: [.atomic])
     try? FileManager.default.setAttributes(
       [.posixPermissions: 0o600],
       ofItemAtPath: snapshotURL.path

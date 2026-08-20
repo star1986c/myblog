@@ -27,6 +27,22 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.3.0 keeps Android/macOS uploads and all inbound files on the existing
+10 MiB end-to-end encrypted path, while allowing this trusted NAS Agent to
+deliver larger generated files directly to the private R2 bucket. Files above
+10 MiB are hashed in a stream, uploaded with a short-lived object-specific PUT
+URL, verified by the Worker, and only then referenced inside the encrypted chat
+message. The filename, media type, size, hash, and message stay encrypted; the
+large R2 object itself is private but is not encrypted with the chat key. The
+default Agent output ceiling is 512 MiB. Set
+`HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES` to a lower matching value on each
+profile if desired. `HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS` defaults to 900.
+No permanent R2 credential is stored on the NAS. Deploy and configure the
+matching Worker, replace the complete plugin directory for every profile, then
+restart each Gateway. New Android and macOS clients are required to open the
+new large-object attachment format; old encrypted attachments remain fully
+compatible.
+
 Version 0.2.0 adds Hermes-native interactive prompts to the encrypted Android
 chat. The adapter implements `send_model_picker`, `send_choice_picker`,
 `send_exec_approval`, `send_slash_confirm`, and `send_clarify` using the same

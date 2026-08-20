@@ -17,6 +17,7 @@ final class Models {
   static final int MAX_TITLE_LENGTH = 200;
   static final int MAX_CONTENT_LENGTH = 500_000;
   static final int MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+  static final int MAX_HERMES_AGENT_ATTACHMENT_BYTES = 512 * 1024 * 1024;
   static final int UNKNOWN_ATTACHMENT_COUNT = -1;
 
   static final class User {
@@ -74,6 +75,43 @@ final class Models {
         json.optString("ticket"),
         spaceIds,
         json.optInt("expiresInSeconds", 90)
+      );
+    }
+  }
+
+  static final class HermesChatDirectDownloadTicket {
+    final String attachmentId;
+    final String storage;
+    final int plaintextBytes;
+    final String sha256;
+    final String downloadUrl;
+    final int expiresInSeconds;
+
+    HermesChatDirectDownloadTicket(
+      String attachmentId,
+      String storage,
+      int plaintextBytes,
+      String sha256,
+      String downloadUrl,
+      int expiresInSeconds
+    ) {
+      this.attachmentId = attachmentId;
+      this.storage = storage;
+      this.plaintextBytes = plaintextBytes;
+      this.sha256 = sha256;
+      this.downloadUrl = downloadUrl;
+      this.expiresInSeconds = expiresInSeconds;
+    }
+
+    static HermesChatDirectDownloadTicket fromJson(JSONObject json) throws JSONException {
+      JSONObject ticket = json.getJSONObject("ticket");
+      return new HermesChatDirectDownloadTicket(
+        ticket.getString("attachmentId"),
+        ticket.getString("storage"),
+        ticket.getInt("plaintextBytes"),
+        ticket.getString("sha256"),
+        ticket.getString("downloadUrl"),
+        ticket.optInt("expiresInSeconds", 900)
       );
     }
   }

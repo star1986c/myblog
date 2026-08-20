@@ -23,6 +23,10 @@ struct HermesChatAPITests {
       attachmentID: "550e8400-e29b-41d4-a716-446655440000",
       ciphertext: Data(repeating: 7, count: 32)
     )
+    let directTicket = try await api.hermesChatDirectDownloadTicket(
+      spaceID: "primary",
+      attachmentID: "550e8400-e29b-41d4-a716-446655440099"
+    )
     _ = try await api.deleteHermesChatMessages(
       spaceID: "primary",
       messageIDs: ["550e8400-e29b-41d4-a716-446655440001"],
@@ -31,6 +35,8 @@ struct HermesChatAPITests {
 
     #expect(profiles.map(\.id) == ["primary", "personal"])
     #expect(ticket.spaceIds == ["primary", "personal"])
+    #expect(directTicket.storage == "r2-private-v1")
+    #expect(directTicket.plaintextBytes == 10 * 1024 * 1024 + 1)
     let upload = try #require(
       HermesChatURLProtocol.requests.first { $0.url?.path.contains("/attachments/") == true }
     )
@@ -40,6 +46,12 @@ struct HermesChatAPITests {
       HermesChatURLProtocol.requests.first { $0.url?.path.hasSuffix("/messages/delete") == true }
     )
     #expect(deletion.value(forHTTPHeaderField: "X-CSRF-Token") == "hermes-csrf-token")
+    let direct = try #require(
+      HermesChatURLProtocol.requests.first {
+        $0.url?.path.hasSuffix("/attachments/download-ticket") == true
+      }
+    )
+    #expect(direct.value(forHTTPHeaderField: "X-CSRF-Token") == "hermes-csrf-token")
   }
 }
 
@@ -80,6 +92,19 @@ private final class HermesChatURLProtocol: URLProtocol, @unchecked Sendable {
       case ("POST", let path) where path.contains("/api/hermes-chat/attachments/"):
         #expect(request.value(forHTTPHeaderField: "X-CSRF-Token") == "hermes-csrf-token")
         object = ["ok": true]
+      case ("POST", "/api/admin/hermes-chat/attachments/download-ticket"):
+        #expect(request.value(forHTTPHeaderField: "X-CSRF-Token") == "hermes-csrf-token")
+        object = [
+          "ticket": [
+            "attachmentId": "550e8400-e29b-41d4-a716-446655440099",
+            "storage": "r2-private-v1",
+            "plaintextBytes": 10 * 1024 * 1024 + 1,
+            "sha256": String(repeating: "ab", count: 32),
+            "downloadUrl": "https://test.r2.cloudflarestorage.com/notes/object?signature=1",
+            "expiresInSeconds": 900,
+            "expiresAt": "2026-08-20T10:15:00.000Z",
+          ]
+        ]
       case ("POST", "/api/admin/hermes-chat/messages/delete"):
         #expect(request.value(forHTTPHeaderField: "X-CSRF-Token") == "hermes-csrf-token")
         object = [

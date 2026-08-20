@@ -13,11 +13,18 @@ test("deployment config binds the existing private notes R2 bucket", () => {
   ]);
 });
 
-test("deployment requires both session and notes-key secrets", () => {
+test("deployment requires account, notes, Hermes, and R2 signing secrets", () => {
   assert.deepEqual(
     [...wrangler.secrets.required].sort(),
-    ["HERMES_CHAT_AGENT_SECRET", "NOTES_KEY_ENCRYPTION_SECRET", "SESSION_SECRET"],
+    [
+      "HERMES_CHAT_AGENT_SECRET",
+      "HERMES_CHAT_R2_ACCESS_KEY_ID",
+      "HERMES_CHAT_R2_SECRET_ACCESS_KEY",
+      "NOTES_KEY_ENCRYPTION_SECRET",
+      "SESSION_SECRET",
+    ],
   );
+  assert.match(wrangler.vars.HERMES_CHAT_R2_ACCOUNT_ID, /^[0-9a-f]{32}$/);
 });
 
 test("deployment config binds the Hermes chat Durable Object", () => {
@@ -35,6 +42,7 @@ test("deployment config binds the Hermes chat Durable Object", () => {
     "primary:Hermes 主助手,personal:Hermes 个人助手",
   );
   assert.equal(wrangler.vars.HERMES_CHAT_CLOUD_RETENTION_DAYS, "30");
+  assert.equal(wrangler.vars.HERMES_CHAT_R2_BUCKET_NAME, "notes");
   assert.equal(wrangler.compatibility_date, "2026-08-17");
   assert.deepEqual(wrangler.routes, [
     { pattern: "superstar1014.qzz.io", custom_domain: true },

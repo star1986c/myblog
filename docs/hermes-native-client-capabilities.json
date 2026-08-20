@@ -8,7 +8,7 @@
     { "id": "multiplex_websocket", "title": "One long-lived WebSocket routes every configured profile", "requiredOn": ["android", "macos"] },
     { "id": "concurrent_devices", "title": "Android and macOS can stay online together for one account", "requiredOn": ["android", "macos"], "serverRequired": true },
     { "id": "cross_device_sync", "title": "Messages sent by either native client appear on the other client", "requiredOn": ["android", "macos"], "serverRequired": true },
-    { "id": "end_to_end_encryption", "title": "Messages, actions, and attachments use compatible AES-256-GCM envelopes", "requiredOn": ["android", "macos"] },
+    { "id": "end_to_end_encryption", "title": "Messages, actions, and standard attachments use compatible AES-256-GCM envelopes", "requiredOn": ["android", "macos"] },
     { "id": "secure_profile_keys", "title": "Each profile key is isolated in platform secure storage", "requiredOn": ["android", "macos"] },
     { "id": "encrypted_local_history", "title": "Local history snapshots remain encrypted and profile-isolated", "requiredOn": ["android", "macos"] },
     { "id": "incremental_resume", "title": "Reconnect resumes after the local durable sequence instead of pulling all history", "requiredOn": ["android", "macos"] },
@@ -24,6 +24,7 @@
     { "id": "image_preview_share_save", "title": "Images can be enlarged, shared, and saved", "requiredOn": ["android", "macos"] },
     { "id": "media_playback", "title": "Encrypted audio and video can be played on demand", "requiredOn": ["android", "macos"] },
     { "id": "document_open_share_save", "title": "Documents and archives can be opened, shared, and saved", "requiredOn": ["android", "macos"] },
+    { "id": "agent_large_private_attachments", "title": "Agent files above 10 MiB use private R2, encrypted descriptors, streamed downloads, and SHA-256 verification", "requiredOn": ["android", "macos"], "serverRequired": true },
     { "id": "message_actions", "title": "Text can be copied/shared/saved and one or many messages can be deleted", "requiredOn": ["android", "macos"], "serverRequired": true },
     { "id": "retention_cleanup", "title": "Local encrypted caches and Cloudflare message/attachment data can be cleaned per profile", "requiredOn": ["android", "macos"], "serverRequired": true },
     { "id": "persistent_process_connection", "title": "Navigation or backgrounding does not intentionally release the process-level socket", "requiredOn": ["android", "macos"] }

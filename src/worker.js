@@ -59,6 +59,12 @@ import {
   uploadHermesChatAttachment,
 } from "./hermes-chat-attachment-repository.js";
 import {
+  cancelHermesChatDirectUpload,
+  confirmHermesChatDirectUpload,
+  createHermesChatDirectDownloadTicket,
+  createHermesChatDirectUploadTicket,
+} from "./hermes-chat-direct-upload.js";
+import {
   authorizeHermesChatAgent,
   configuredHermesChatProfiles,
   handleHermesChatAgentMessage,
@@ -125,6 +131,10 @@ async function handleRequest(request, env, ctx) {
 
   if (url.pathname === "/api/hermes-chat/messages") {
     return withSiteHeaders(request, await handleHermesChatAgentMessage(request, env));
+  }
+
+  if (url.pathname.startsWith("/api/hermes-chat/direct-uploads")) {
+    return withSiteHeaders(request, await handleHermesChatDirectUploadApi(request, env, url.pathname));
   }
 
   if (url.pathname.startsWith("/api/hermes-chat/attachments/")) {
@@ -887,6 +897,17 @@ async function handleAdminApi(request, env, path) {
     });
   }
 
+  if (path === "/api/admin/hermes-chat/attachments/download-ticket" && request.method === "POST") {
+    const payload = await readJson(request);
+    const spaceId = requireConfiguredHermesChatSpace(env, payload.spaceId).id;
+    return jsonResponse({
+      ticket: await createHermesChatDirectDownloadTicket(env, {
+        attachmentId: payload.attachmentId,
+        spaceId,
+      }),
+    });
+  }
+
   if (path === "/api/admin/hermes-chat/cleanup" && request.method === "POST") {
     const payload = await readJson(request);
     const spaceId = requireConfiguredHermesChatSpace(env, payload.spaceId).id;
@@ -1215,6 +1236,59 @@ async function handleHermesChatAttachmentApi(request, env, pathname) {
   return jsonResponse(
     { error: "Method not allowed" },
     { status: 405, headers: { Allow: "GET, POST" } },
+  );
+}
+
+async function handleHermesChatDirectUploadApi(request, env, pathname) {
+  const agent = await authorizeHermesChatAgent(request, env);
+  if (!agent) throw new ServiceError("Unauthorized.", 401);
+  const spaceId = requireConfiguredHermesChatSpace(
+    env,
+    request.headers.get("X-Hermes-Space"),
+  ).id;
+
+  if (pathname === "/api/hermes-chat/direct-uploads" && request.method === "POST") {
+    const payload = await readJson(request);
+    return jsonResponse({
+      ticket: await createHermesChatDirectUploadTicket(env, {
+        attachmentId: payload.attachmentId,
+        spaceId,
+        agentId: agent.id,
+        plaintextBytes: payload.plaintextBytes,
+        sha256: payload.sha256,
+      }),
+    }, { status: 201 });
+  }
+
+  if (pathname === "/api/hermes-chat/direct-uploads/complete" && request.method === "POST") {
+    const payload = await readJson(request);
+    return jsonResponse({
+      attachment: await confirmHermesChatDirectUpload(env, {
+        attachmentId: payload.attachmentId,
+        spaceId,
+        agentId: agent.id,
+        plaintextBytes: payload.plaintextBytes,
+        sha256: payload.sha256,
+      }),
+    });
+  }
+
+  const prefix = "/api/hermes-chat/direct-uploads/";
+  const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : "";
+  if (suffix && !suffix.includes("/") && request.method === "DELETE") {
+    return jsonResponse({
+      ok: true,
+      ...await cancelHermesChatDirectUpload(env, {
+        attachmentId: decodeURIComponent(suffix),
+        spaceId,
+        agentId: agent.id,
+      }),
+    });
+  }
+
+  return jsonResponse(
+    { error: "Not found" },
+    { status: 404 },
   );
 }
 

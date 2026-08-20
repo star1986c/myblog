@@ -18,6 +18,8 @@ const sources = {
     "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatCrypto.java",
     "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatHistoryStore.java",
     "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatAttachmentPolicy.java",
+    "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatPrivateAttachmentCache.java",
+    "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/NotesApiClient.java",
     "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesCommandCatalog.java",
     "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/HermesChatUnreadStore.java",
     "android/MyNotes/app/src/main/java/io/qzz/superstar1014/mynotes/SecureSessionStore.java",
@@ -31,6 +33,8 @@ const sources = {
     "macos/AIBuildNotes/Sources/NotesCore/HermesChatClient.swift",
     "macos/AIBuildNotes/Sources/NotesCore/HermesChatCrypto.swift",
     "macos/AIBuildNotes/Sources/NotesCore/HermesChatHistoryStore.swift",
+    "macos/AIBuildNotes/Sources/NotesCore/HermesChatAttachmentCache.swift",
+    "macos/AIBuildNotes/Sources/NotesCore/NotesAPIClient.swift",
     "macos/AIBuildNotes/Sources/NotesCore/HermesChatKeychain.swift",
     "macos/AIBuildNotes/Sources/NotesCore/HermesChatAttachmentPolicy.swift",
     "macos/AIBuildNotes/Sources/NotesCore/HermesCommandCatalog.swift",
@@ -39,6 +43,7 @@ const sources = {
   server: await readSources([
     "src/hermes-chat-hub.js",
     "src/hermes-chat-room.js",
+    "src/hermes-chat-direct-upload.js",
     "src/worker.js",
   ]),
 };
@@ -125,6 +130,11 @@ const markers = {
   document_open_share_save: {
     android: [/saveAttachment/, /shareMessageAttachments/],
     macos: [/NSWorkspace\.shared\.open/, /saveData/, /NSSharingServicePicker/],
+  },
+  agent_large_private_attachments: {
+    android: [/PRIVATE_ATTACHMENT_STORAGE/, /downloadHermesChatDirectAttachment/, /MessageDigest\.getInstance\("SHA-256"\)/],
+    macos: [/privateAttachmentStorage/, /downloadHermesChatDirectAttachment/, /validatePrivateFile/],
+    server: [/createHermesChatDirectUploadTicket/, /x-amz-checksum-sha256/, /If-None-Match/],
   },
   message_actions: {
     android: [/confirmDeleteSelectedMessages/, /ACTION_PROCESS_TEXT|shareTextMessage|shareMessage/],

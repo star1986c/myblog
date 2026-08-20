@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "wrangler": "^4.24.3"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20"
   }
 }

@@ -26,6 +26,8 @@ public struct HermesEncryptedAttachment: Equatable, Sendable {
 
 public struct HermesChatCrypto: Sendable {
   public static let maximumAttachmentBytes = 10 * 1024 * 1024
+  public static let maximumAgentAttachmentBytes = 512 * 1024 * 1024
+  public static let privateAttachmentStorage = "r2-private-v1"
 
   private let key: SymmetricKey
 
@@ -54,6 +56,9 @@ public struct HermesChatCrypto: Sendable {
       throw HermesChatCryptoError.invalidMessage
     }
     guard replaceSequence >= 0 else { throw HermesChatCryptoError.invalidMessage }
+    for attachment in attachments {
+      try Self.validate(descriptor: attachment, sender: sender)
+    }
     let payload = HermesChatPlaintextPayload(
       text: text,
       attachments: attachments,
@@ -116,7 +121,9 @@ public struct HermesChatCrypto: Sendable {
       guard payload.text.count <= 50_000, payload.attachments.count <= 8 else {
         throw HermesChatCryptoError.invalidMessage
       }
-      for attachment in payload.attachments { try Self.validate(descriptor: attachment) }
+      for attachment in payload.attachments {
+        try Self.validate(descriptor: attachment, sender: envelope.sender)
+      }
       return HermesChatMessage(
         id: envelope.id,
         sender: envelope.sender,
@@ -173,8 +180,9 @@ public struct HermesChatCrypto: Sendable {
     _ ciphertext: Data,
     descriptor: HermesChatAttachmentDescriptor
   ) throws -> Data {
-    try Self.validate(descriptor: descriptor)
-    guard let nonceData = Data(base64URLEncoded: descriptor.nonce), nonceData.count == 12,
+    try Self.validate(descriptor: descriptor, sender: "client")
+    guard let nonce = descriptor.nonce,
+      let nonceData = Data(base64URLEncoded: nonce), nonceData.count == 12,
       ciphertext.count >= 16
     else { throw HermesChatCryptoError.invalidAttachment }
     do {
@@ -298,12 +306,32 @@ public struct HermesChatCrypto: Sendable {
     return Data("hermes-chat-local-cache-v1|\(normalized)".utf8)
   }
 
-  private static func validate(descriptor: HermesChatAttachmentDescriptor) throws {
+  private static func validate(
+    descriptor: HermesChatAttachmentDescriptor,
+    sender: String
+  ) throws {
     guard isCanonicalUUID(descriptor.id), descriptor.plaintextBytes > 0,
-      descriptor.plaintextBytes <= maximumAttachmentBytes,
-      descriptor.name.count <= 120,
-      Data(base64URLEncoded: descriptor.nonce)?.count == 12,
+      !descriptor.name.isEmpty, descriptor.name.count <= 120,
       (try? safeContentType(descriptor.contentType)) == descriptor.contentType
+    else { throw HermesChatCryptoError.invalidAttachment }
+    if descriptor.isPrivateR2 {
+      guard sender == "agent",
+        descriptor.plaintextBytes > maximumAttachmentBytes,
+        descriptor.plaintextBytes <= maximumAgentAttachmentBytes,
+        descriptor.nonce?.isEmpty != false,
+        let sha256 = descriptor.sha256,
+        sha256.count == 64,
+        sha256 == sha256.lowercased(),
+        sha256.range(of: "^[0-9a-f]{64}$", options: .regularExpression)
+          == sha256.startIndex..<sha256.endIndex
+      else { throw HermesChatCryptoError.invalidAttachment }
+      return
+    }
+    guard descriptor.storage == nil || descriptor.storage == "" || descriptor.storage == "encrypted-v1",
+      descriptor.sha256 == nil || descriptor.sha256 == "",
+      descriptor.plaintextBytes <= maximumAttachmentBytes,
+      let nonce = descriptor.nonce,
+      Data(base64URLEncoded: nonce)?.count == 12
     else { throw HermesChatCryptoError.invalidAttachment }
   }
 

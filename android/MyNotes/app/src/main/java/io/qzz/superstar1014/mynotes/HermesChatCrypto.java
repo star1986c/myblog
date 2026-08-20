@@ -14,6 +14,8 @@ import javax.crypto.spec.SecretKeySpec;
 
 final class HermesChatCrypto {
   static final int MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+  static final int MAX_AGENT_ATTACHMENT_BYTES = 512 * 1024 * 1024;
+  static final String PRIVATE_ATTACHMENT_STORAGE = "r2-private-v1";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   private final SecretKeySpec key;
@@ -57,9 +59,11 @@ final class HermesChatCrypto {
     if (!"client".equals(sender) && !"agent".equals(sender)) {
       throw new IllegalArgumentException("消息发送者无效。");
     }
+    JSONArray safeAttachments = attachments == null ? new JSONArray() : attachments;
+    validateAttachmentList(safeAttachments, sender);
     JSONObject plaintext = new JSONObject()
       .put("text", text == null ? "" : text)
-      .put("attachments", attachments == null ? new JSONArray() : attachments);
+      .put("attachments", safeAttachments);
     if (replaceSequence > 0) {
       plaintext.put("replaceSeq", replaceSequence).put("final", finalUpdate);
     } else if (replaceSequence < 0) {
@@ -121,15 +125,17 @@ final class HermesChatCrypto {
         && (replaceSequence < 1 || !payload.has("replaceSeq") || !payload.has("final"))) {
       throw new IllegalArgumentException("消息替换元数据无效。");
     }
+    JSONArray attachments = payload.optJSONArray("attachments") == null
+      ? new JSONArray()
+      : payload.getJSONArray("attachments");
+    validateAttachmentList(attachments, sender);
     return new ChatMessage(
       messageId,
       sender,
       sentAt,
       sequence,
       payload.optString("text"),
-      payload.optJSONArray("attachments") == null
-        ? new JSONArray()
-        : payload.getJSONArray("attachments"),
+      attachments,
       interaction == null ? new JSONObject() : interaction,
       replaceSequence,
       finalUpdate
@@ -191,6 +197,7 @@ final class HermesChatCrypto {
   }
 
   byte[] decryptAttachment(byte[] ciphertext, JSONObject descriptor) throws Exception {
+    validateAttachmentDescriptor(descriptor, "client");
     String attachmentId = descriptor.getString("id");
     String contentType = safeContentType(descriptor.getString("contentType"));
     int plaintextBytes = descriptor.getInt("plaintextBytes");
@@ -281,6 +288,48 @@ final class HermesChatCrypto {
       throw new IllegalArgumentException("附件类型无效。");
     }
     return contentType;
+  }
+
+  static boolean isPrivateAttachment(JSONObject descriptor) {
+    return descriptor != null
+      && PRIVATE_ATTACHMENT_STORAGE.equals(descriptor.optString("storage"));
+  }
+
+  static void validateAttachmentDescriptor(JSONObject descriptor, String sender) throws Exception {
+    if (descriptor == null) throw new IllegalArgumentException("附件描述无效。");
+    requireUuid(descriptor.getString("id"), "附件 id 无效。");
+    String name = descriptor.getString("name");
+    String contentType = descriptor.getString("contentType");
+    if (name.isEmpty() || name.length() > 120 || !safeContentType(contentType).equals(contentType)) {
+      throw new IllegalArgumentException("附件元数据无效。");
+    }
+    int plaintextBytes = descriptor.getInt("plaintextBytes");
+    if (isPrivateAttachment(descriptor)) {
+      String sha256 = descriptor.optString("sha256");
+      if (!"agent".equals(sender)
+          || plaintextBytes <= MAX_ATTACHMENT_BYTES
+          || plaintextBytes > MAX_AGENT_ATTACHMENT_BYTES
+          || !sha256.matches("[0-9a-f]{64}")
+          || (!descriptor.optString("nonce").isEmpty())) {
+        throw new IllegalArgumentException("Hermes 大附件描述无效。");
+      }
+      return;
+    }
+    String storage = descriptor.optString("storage");
+    if ((!storage.isEmpty() && !"encrypted-v1".equals(storage))
+        || plaintextBytes < 1
+        || plaintextBytes > MAX_ATTACHMENT_BYTES
+        || decode(descriptor.getString("nonce")).length != 12
+        || !descriptor.optString("sha256").isEmpty()) {
+      throw new IllegalArgumentException("加密附件描述无效。");
+    }
+  }
+
+  private static void validateAttachmentList(JSONArray attachments, String sender) throws Exception {
+    if (attachments.length() > 8) throw new IllegalArgumentException("一条消息最多包含 8 个附件。");
+    for (int index = 0; index < attachments.length(); index++) {
+      validateAttachmentDescriptor(attachments.getJSONObject(index), sender);
+    }
   }
 
   private static JSONObject validateInteraction(JSONObject value) throws Exception {

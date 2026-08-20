@@ -125,7 +125,7 @@ PYTHONPATH=integrations/hermes-cloudflare-chat \
 
 ## Cloudflare 初始化与部署
 
-当前 Worker 名为 `wispy-cloud-0978`，资源绑定定义在 `wrangler.jsonc`。新环境需要先创建或确认 D1、应用迁移并设置三个必需 secret：
+当前 Worker 名为 `wispy-cloud-0978`，资源绑定定义在 `wrangler.jsonc`。新环境需要先创建或确认 D1、应用迁移并设置聊天与笔记 secret：
 
 ```bash
 npx wrangler d1 create superstar1014-blog
@@ -134,6 +134,17 @@ npx wrangler secret put SESSION_SECRET
 npx wrangler secret put NOTES_KEY_ENCRYPTION_SECRET
 npx wrangler secret put HERMES_CHAT_AGENT_SECRET
 ```
+
+若启用 Hermes Agent 大附件直传，还要创建一个仅限 `notes` bucket、权限为
+Object Read & Write 的 R2 API Token。Account ID 作为非敏感部署变量保存在
+`wrangler.jsonc`；只把 Access Key ID 和 Secret Access Key 保存为 Worker secret：
+
+```bash
+npx wrangler secret put HERMES_CHAT_R2_ACCESS_KEY_ID
+npx wrangler secret put HERMES_CHAT_R2_SECRET_ACCESS_KEY
+```
+
+这些 R2 凭据不能写入 NAS 插件、Android/macOS 客户端或仓库文件。
 
 最后执行：
 

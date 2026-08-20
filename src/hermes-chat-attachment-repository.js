@@ -128,6 +128,8 @@ function requireSpaceId(value) {
 
 export {
   MAX_CHAT_ATTACHMENT_CIPHERTEXT_BYTES,
+  MAX_CHAT_ATTACHMENT_PLAINTEXT_BYTES,
+  attachmentObjectKey,
   deleteHermesChatAttachments,
   deleteHermesChatAttachmentsById,
   downloadHermesChatAttachment,

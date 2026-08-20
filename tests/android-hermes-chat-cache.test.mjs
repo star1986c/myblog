@@ -176,7 +176,7 @@ test("Android refreshes the cookie-bound CSRF token before Hermes chat mutations
   );
   assert.equal(
     (api.match(/requireFreshAuthenticatedSession\(\);/g) || []).length,
-    3,
+    4,
   );
   assert.match(
     api,
@@ -189,6 +189,10 @@ test("Android refreshes the cookie-bound CSRF token before Hermes chat mutations
   assert.match(
     api,
     /void uploadHermesChatAttachment\([\s\S]*?\) throws Exception \{\s*requireFreshAuthenticatedSession\(\);/,
+  );
+  assert.match(
+    api,
+    /HermesChatDirectDownloadTicket hermesChatDirectDownloadTicket\([\s\S]*?\) throws Exception \{\s*requireFreshAuthenticatedSession\(\);/,
   );
 });
 

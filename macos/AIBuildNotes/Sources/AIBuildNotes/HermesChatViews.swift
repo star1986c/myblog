@@ -464,7 +464,7 @@ struct HermesChatView: View {
   private var securityBanner: some View {
     HStack(spacing: 8) {
       Image(systemName: "lock.fill")
-      Text("消息和附件端到端加密 · 本机加密缓存默认保留 \(store.retentionDays == 0 ? "不限时间" : "\(store.retentionDays) 天")")
+      Text("消息和附件描述端到端加密 · Agent 大文件使用私有 R2 · 本机缓存保留 \(store.retentionDays == 0 ? "不限时间" : "\(store.retentionDays) 天")")
         .lineLimit(2)
       Spacer(minLength: 0)
     }
@@ -1043,7 +1043,7 @@ private struct HermesProfileSettingsSheet: View {
     VStack(alignment: .leading, spacing: 12) {
       Label("云端数据", systemImage: "cloud")
         .font(.headline)
-      Text("Cloudflare Durable Object 保存加密消息，R2 保存加密附件。只清理当前 profile，不影响其他助手。")
+      Text("Cloudflare Durable Object 保存加密消息，R2 保存加密附件与 Agent 私有大文件。只清理当前 profile，不影响其他助手。")
         .font(.callout)
         .foregroundStyle(.secondary)
       Button("清空“\(profile.label)”的云端消息与附件…", role: .destructive) {

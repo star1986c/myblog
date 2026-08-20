@@ -135,6 +135,30 @@ class ChatCipherTests(unittest.TestCase):
         with self.assertRaises(Exception):
             self.cipher.decrypt_attachment(encrypted.ciphertext, tampered)
 
+    def test_agent_private_r2_descriptor_is_authenticated_inside_the_message(self):
+        descriptor = {
+            "id": "550e8400-e29b-41d4-a716-446655440099",
+            "name": "generated.mp4",
+            "contentType": "video/mp4",
+            "plaintextBytes": 10 * 1024 * 1024 + 1,
+            "storage": "r2-private-v1",
+            "sha256": "ab" * 32,
+        }
+        envelope = self.cipher.encrypt_message(
+            sender="agent",
+            text="video",
+            attachments=[descriptor],
+        )
+        payload = self.cipher.decrypt_message(envelope, expected_sender="agent")
+        self.assertEqual(payload["attachments"], [descriptor])
+
+        with self.assertRaisesRegex(ValueError, "private R2"):
+            self.cipher.encrypt_message(
+                sender="client",
+                text="forged",
+                attachments=[descriptor],
+            )
+
     def test_chat_key_requires_exactly_32_bytes(self):
         encoded = base64.urlsafe_b64encode(self.key).decode("ascii").rstrip("=")
         self.assertEqual(decode_chat_key(encoded), self.key)

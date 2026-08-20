@@ -365,6 +365,60 @@ public actor NotesAPIClient {
     return data
   }
 
+  public func hermesChatDirectDownloadTicket(
+    spaceID: String,
+    attachmentID: String
+  ) async throws -> HermesChatDirectDownloadTicket {
+    let response: HermesChatDirectDownloadTicketResponse = try await request(
+      method: "POST",
+      path: "api/admin/hermes-chat/attachments/download-ticket",
+      body: try JSONEncoder().encode(
+        HermesChatDirectDownloadTicketRequest(
+          spaceId: spaceID,
+          attachmentId: attachmentID
+        )
+      )
+    )
+    return response.ticket
+  }
+
+  public func downloadHermesChatDirectAttachment(
+    ticket: HermesChatDirectDownloadTicket,
+    to destination: URL
+  ) async throws -> URL {
+    guard let url = URL(string: ticket.downloadUrl),
+      url.scheme == "https",
+      let host = url.host?.lowercased(),
+      host.hasSuffix(".r2.cloudflarestorage.com"),
+      ticket.plaintextBytes > HermesChatCrypto.maximumAttachmentBytes,
+      ticket.plaintextBytes <= HermesChatCrypto.maximumAgentAttachmentBytes
+    else { throw NotesAPIError.invalidResponse }
+    var request = URLRequest(url: url)
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    request.timeoutInterval = 60 * 60
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+    let (temporaryURL, response) = try await session.download(for: request)
+    defer { try? FileManager.default.removeItem(at: temporaryURL) }
+    guard let http = response as? HTTPURLResponse,
+      (200..<300).contains(http.statusCode),
+      http.url?.scheme == "https",
+      let responseHost = http.url?.host?.lowercased(),
+      responseHost.hasSuffix(".r2.cloudflarestorage.com")
+    else { throw NotesAPIError.invalidResponse }
+    let values = try temporaryURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+    guard values.isRegularFile == true, values.fileSize == ticket.plaintextBytes else {
+      throw NotesAPIError.invalidResponse
+    }
+    try FileManager.default.createDirectory(
+      at: destination.deletingLastPathComponent(),
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
+    try? FileManager.default.removeItem(at: destination)
+    try FileManager.default.moveItem(at: temporaryURL, to: destination)
+    return destination
+  }
+
   public func deleteHermesChatMessages(
     spaceID: String,
     messageIDs: [String],
@@ -486,6 +540,13 @@ private struct AttachmentResponse: Codable { let attachment: EncryptedAttachment
 private struct AttachmentUsageResponse: Codable { let usage: AttachmentUsage }
 private struct HermesChatProfilesResponse: Codable { let profiles: [HermesChatProfile] }
 private struct HermesChatMultiplexTicketRequest: Codable { let spaceIds: [String] }
+private struct HermesChatDirectDownloadTicketRequest: Codable {
+  let spaceId: String
+  let attachmentId: String
+}
+private struct HermesChatDirectDownloadTicketResponse: Codable {
+  let ticket: HermesChatDirectDownloadTicket
+}
 private struct HermesChatDeleteRequest: Codable {
   let spaceId: String
   let messageIds: [String]

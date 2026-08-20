@@ -583,6 +583,40 @@ public final class CryptoTestRunner extends Instrumentation {
       Arrays.equals(image, crypto.decryptAttachment(encrypted.ciphertext, encrypted.descriptor)),
       "Hermes attachment round trip failed"
     );
+
+    org.json.JSONObject privateDescriptor = new org.json.JSONObject()
+      .put("id", "550e8400-e29b-41d4-a716-446655440099")
+      .put("name", "generated.mp4")
+      .put("contentType", "video/mp4")
+      .put("plaintextBytes", HermesChatCrypto.MAX_ATTACHMENT_BYTES + 1)
+      .put("storage", HermesChatCrypto.PRIVATE_ATTACHMENT_STORAGE)
+      .put("sha256", "ab".repeat(32));
+    org.json.JSONObject privateEnvelope = crypto.encryptMessage(
+      "agent",
+      "大文件输出",
+      new org.json.JSONArray().put(privateDescriptor),
+      "550e8400-e29b-41d4-a716-446655440098",
+      1_800_000_000_300L
+    );
+    require(
+      HermesChatCrypto.isPrivateAttachment(
+        crypto.decryptMessage(privateEnvelope, 10).attachments.getJSONObject(0)
+      ),
+      "Hermes private R2 descriptor was not accepted for Agent output"
+    );
+    boolean forgedPrivateUploadRejected = false;
+    try {
+      crypto.encryptMessage(
+        "client",
+        "伪造直传",
+        new org.json.JSONArray().put(privateDescriptor),
+        "550e8400-e29b-41d4-a716-446655440097",
+        1_800_000_000_301L
+      );
+    } catch (IllegalArgumentException expected) {
+      forgedPrivateUploadRejected = true;
+    }
+    require(forgedPrivateUploadRejected, "Client forged a private R2 attachment descriptor");
   }
 
   private static void verifyHermesChatRichMessages() {

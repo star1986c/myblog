@@ -342,6 +342,7 @@ public final class HermesChatStore: ObservableObject {
     _ descriptor: HermesChatAttachmentDescriptor,
     spaceID: String
   ) async throws -> Data {
+    guard !descriptor.isPrivateR2 else { throw HermesChatCryptoError.invalidAttachment }
     guard let crypto = cryptos[spaceID] else { throw HermesChatCryptoError.invalidKey }
     let ciphertext: Data
     if let cached = await attachmentCache.data(for: descriptor, spaceID: spaceID) {
@@ -354,6 +355,40 @@ public final class HermesChatStore: ObservableObject {
       await attachmentCache.store(ciphertext, for: descriptor, spaceID: spaceID)
     }
     return try crypto.decryptAttachment(ciphertext, descriptor: descriptor)
+  }
+
+  public func attachmentFile(
+    _ descriptor: HermesChatAttachmentDescriptor,
+    spaceID: String
+  ) async throws -> URL {
+    if !descriptor.isPrivateR2 {
+      return try Self.writeTemporaryAttachment(
+        try await attachmentData(descriptor, spaceID: spaceID),
+        descriptor: descriptor,
+        spaceID: spaceID
+      )
+    }
+    if let cached = await attachmentCache.privateFile(for: descriptor, spaceID: spaceID) {
+      return cached
+    }
+    let ticket = try await api.hermesChatDirectDownloadTicket(
+      spaceID: spaceID,
+      attachmentID: descriptor.id
+    )
+    guard ticket.attachmentId == descriptor.id,
+      ticket.storage == HermesChatCrypto.privateAttachmentStorage,
+      ticket.plaintextBytes == descriptor.plaintextBytes,
+      ticket.sha256 == descriptor.sha256
+    else { throw HermesChatCryptoError.invalidAttachment }
+    let staging = FileManager.default.temporaryDirectory
+      .appendingPathComponent("MyNotes-Hermes-Downloads", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: false)
+    _ = try await api.downloadHermesChatDirectAttachment(ticket: ticket, to: staging)
+    return try await attachmentCache.storePrivateDownloadedFile(
+      staging,
+      for: descriptor,
+      spaceID: spaceID
+    )
   }
 
   public func deleteMessages(_ messages: [HermesChatMessage], spaceID: String) async -> Bool {
@@ -612,6 +647,29 @@ public final class HermesChatStore: ObservableObject {
     if let value = (error as? LocalizedError)?.errorDescription, !value.isEmpty { return value }
     let value = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     return value.isEmpty ? "Hermes 操作失败，请稍后重试。" : value
+  }
+
+  private static func writeTemporaryAttachment(
+    _ data: Data,
+    descriptor: HermesChatAttachmentDescriptor,
+    spaceID: String
+  ) throws -> URL {
+    let base = FileManager.default.temporaryDirectory
+      .appendingPathComponent("MyNotes-Hermes", isDirectory: true)
+      .appendingPathComponent(spaceID, isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: base,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let filename = URL(fileURLWithPath: descriptor.name).lastPathComponent
+    let url = base.appendingPathComponent("\(descriptor.id)-\(filename)", isDirectory: false)
+    try data.write(to: url, options: [.atomic])
+    try? FileManager.default.setAttributes(
+      [.posixPermissions: 0o600],
+      ofItemAtPath: url.path
+    )
+    return url
   }
 }
 

@@ -372,7 +372,7 @@ test("chat images keep a visible expand action and a font-safe preview toolbar",
     activity.indexOf("private void addFileCard"),
   );
   const preview = activity.slice(
-    activity.indexOf("private void showImagePreview(Bitmap"),
+    activity.indexOf("private void showImagePreview(JSONObject"),
     activity.indexOf("private void shareImage"),
   );
 

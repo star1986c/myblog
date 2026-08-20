@@ -38,21 +38,39 @@ public struct HermesChatAttachmentDescriptor: Codable, Equatable, Hashable, Iden
   public let name: String
   public let contentType: String
   public let plaintextBytes: Int
-  public let nonce: String
+  public let nonce: String?
+  public let storage: String?
+  public let sha256: String?
 
   public init(
     id: String,
     name: String,
     contentType: String,
     plaintextBytes: Int,
-    nonce: String
+    nonce: String? = nil,
+    storage: String? = nil,
+    sha256: String? = nil
   ) {
     self.id = id
     self.name = name
     self.contentType = contentType
     self.plaintextBytes = plaintextBytes
     self.nonce = nonce
+    self.storage = storage
+    self.sha256 = sha256
   }
+
+  public var isPrivateR2: Bool { storage == "r2-private-v1" }
+}
+
+public struct HermesChatDirectDownloadTicket: Codable, Equatable, Sendable {
+  public let attachmentId: String
+  public let storage: String
+  public let plaintextBytes: Int
+  public let sha256: String
+  public let downloadUrl: String
+  public let expiresInSeconds: Int
+  public let expiresAt: String
 }
 
 public struct HermesChatInteractionOption: Codable, Equatable, Hashable, Identifiable, Sendable {

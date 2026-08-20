@@ -31,11 +31,19 @@ from gateway.platforms.base import (
 )
 try:
     from websockets.asyncio.client import connect as websocket_connect
-    from .crypto_codec import ChatCipher, MAX_ATTACHMENT_BYTES, decode_chat_key
+    from .crypto_codec import (
+        ChatCipher,
+        MAX_AGENT_ATTACHMENT_BYTES,
+        MAX_ATTACHMENT_BYTES,
+        PRIVATE_ATTACHMENT_STORAGE,
+        decode_chat_key,
+    )
 except ImportError:
     websocket_connect = None
     ChatCipher = None
+    MAX_AGENT_ATTACHMENT_BYTES = 512 * 1024 * 1024
     MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+    PRIVATE_ATTACHMENT_STORAGE = "r2-private-v1"
     decode_chat_key = None
 
 
@@ -45,7 +53,9 @@ MAX_MESSAGE_ATTACHMENTS = 8
 MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.2.0"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.0"
+DIRECT_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024
+DIRECT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
     ".png": ("image/png", "image"),
     ".jpg": ("image/jpeg", "image"),
@@ -131,6 +141,71 @@ _MEDIA_IMAGE_RE = re.compile(
     r"^[ \t]*MEDIA:[ \t]*(?P<source>[^\r\n]+?)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+class _FileChunkIterable:
+    def __init__(self, path: Path, expected_size: int):
+        self.path = path
+        self.expected_size = expected_size
+
+    def __iter__(self):
+        total = 0
+        with self.path.open("rb") as source:
+            while True:
+                chunk = source.read(DIRECT_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > self.expected_size:
+                    raise ValueError("outbound attachment changed during direct upload")
+                yield chunk
+        if total != self.expected_size:
+            raise ValueError("outbound attachment changed during direct upload")
+
+
+def _agent_attachment_max_bytes() -> int:
+    raw = str(os.getenv("HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES") or "").strip()
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = 0
+    if MAX_ATTACHMENT_BYTES < configured <= MAX_AGENT_ATTACHMENT_BYTES:
+        return configured
+    return MAX_AGENT_ATTACHMENT_BYTES
+
+
+def _direct_upload_timeout_seconds() -> int:
+    raw = str(os.getenv("HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS") or "").strip()
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = 0
+    return configured if 60 <= configured <= 3600 else 900
+
+
+def _sha256_file(path: Path, expected_size: int) -> str:
+    before = path.stat()
+    if before.st_size != expected_size:
+        raise ValueError("outbound attachment changed before hashing")
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as source:
+        while True:
+            chunk = source.read(DIRECT_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > expected_size:
+                raise ValueError("outbound attachment changed while hashing")
+            digest.update(chunk)
+    after = path.stat()
+    if (
+        total != expected_size
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+    ):
+        raise ValueError("outbound attachment changed while hashing")
+    return digest.hexdigest()
 
 
 def _get_secret(name: str, default: str = "") -> str:
@@ -1411,6 +1486,9 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             ack = await self._send_and_wait_for_ack(envelope, envelope["id"])
             return SendResult(success=True, message_id=str(ack.get("seq") or envelope["id"]))
         except Exception as error:
+            # The relay may have persisted the message even when its ACK was lost.
+            # Keep confirmed objects in that ambiguous case; lifecycle expiration is
+            # safer than deleting a file referenced by an already durable message.
             return SendResult(success=False, error=str(error), retryable=True)
 
     async def _send_and_wait_for_ack(
@@ -1491,10 +1569,179 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         except HTTPError as error:
             raise _attachment_http_error("upload", error) from error
 
+    def _upload_direct_file(
+        self,
+        path: Path,
+        *,
+        plaintext_bytes: int,
+        content_type: str,
+        filename: str,
+    ) -> dict[str, Any]:
+        attachment_id = str(uuid.uuid4())
+        sha256 = _sha256_file(path, plaintext_bytes)
+        request_payload = {
+            "attachmentId": attachment_id,
+            "plaintextBytes": plaintext_bytes,
+            "sha256": sha256,
+        }
+        ticket_response = self._direct_upload_json(
+            "",
+            request_payload,
+            method="POST",
+            expected_statuses={201},
+        )
+        ticket = ticket_response.get("ticket")
+        if not isinstance(ticket, dict):
+            raise ConnectionError("direct upload ticket response is invalid")
+        upload_url = str(ticket.get("uploadUrl") or "")
+        parsed_upload_url = urlsplit(upload_url)
+        required_headers = ticket.get("requiredHeaders")
+        if (
+            ticket.get("attachmentId") != attachment_id
+            or ticket.get("storage") != PRIVATE_ATTACHMENT_STORAGE
+            or int(ticket.get("plaintextBytes") or 0) != plaintext_bytes
+            or str(ticket.get("sha256") or "").lower() != sha256
+            or parsed_upload_url.scheme != "https"
+            or not parsed_upload_url.hostname
+            or not parsed_upload_url.hostname.endswith(".r2.cloudflarestorage.com")
+            or not isinstance(required_headers, dict)
+        ):
+            raise ConnectionError("direct upload ticket does not match the attachment")
+        headers = {
+            str(name): str(value)
+            for name, value in required_headers.items()
+            if isinstance(name, str) and isinstance(value, str)
+        }
+        if headers.get("Content-Type") != "application/octet-stream":
+            raise ConnectionError("direct upload ticket is missing its content type")
+        headers.update({
+            "Content-Length": str(plaintext_bytes),
+            "User-Agent": HTTP_USER_AGENT,
+        })
+        upload_request = Request(
+            upload_url,
+            data=_FileChunkIterable(path, plaintext_bytes),
+            headers=headers,
+            method="PUT",
+        )
+        timeout = _direct_upload_timeout_seconds()
+        try:
+            with urlopen(upload_request, timeout=timeout) as response:
+                if response.status not in {200, 201}:
+                    raise ConnectionError(
+                        f"direct R2 upload returned HTTP {response.status}"
+                    )
+        except HTTPError as error:
+            self._cancel_direct_attachment(attachment_id)
+            raise _attachment_http_error("direct R2 upload", error) from error
+        except Exception:
+            self._cancel_direct_attachment(attachment_id)
+            raise
+
+        try:
+            confirmation = self._direct_upload_json(
+                "/complete",
+                request_payload,
+                method="POST",
+                expected_statuses={200},
+            ).get("attachment")
+            if (
+                not isinstance(confirmation, dict)
+                or confirmation.get("id") != attachment_id
+                or confirmation.get("storage") != PRIVATE_ATTACHMENT_STORAGE
+                or int(confirmation.get("plaintextBytes") or 0) != plaintext_bytes
+                or str(confirmation.get("sha256") or "").lower() != sha256
+            ):
+                raise ConnectionError("direct upload confirmation is invalid")
+        except Exception:
+            self._cancel_direct_attachment(attachment_id)
+            raise
+
+        return {
+            "id": attachment_id,
+            "name": filename,
+            "contentType": content_type,
+            "plaintextBytes": plaintext_bytes,
+            "storage": PRIVATE_ATTACHMENT_STORAGE,
+            "sha256": sha256,
+        }
+
+    def _direct_upload_json(
+        self,
+        suffix: str,
+        payload: dict[str, Any],
+        *,
+        method: str,
+        expected_statuses: set[int],
+    ) -> dict[str, Any]:
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        headers = self._http_headers()
+        headers.update({
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Length": str(len(encoded)),
+        })
+        request = Request(
+            self._direct_upload_url(suffix),
+            data=encoded,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urlopen(request, timeout=45) as response:
+                if response.status not in expected_statuses:
+                    raise ConnectionError(
+                        f"direct upload API returned HTTP {response.status}"
+                    )
+                raw = response.read(DIRECT_UPLOAD_RESPONSE_MAX_BYTES + 1)
+        except HTTPError as error:
+            raise _attachment_http_error("direct upload API", error) from error
+        if len(raw) > DIRECT_UPLOAD_RESPONSE_MAX_BYTES:
+            raise ConnectionError("direct upload API response is too large")
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ConnectionError("direct upload API returned invalid JSON") from error
+        if not isinstance(decoded, dict):
+            raise ConnectionError("direct upload API response is invalid")
+        return decoded
+
+    def _cancel_direct_attachment(self, attachment_id: str) -> None:
+        request = Request(
+            self._direct_upload_url(f"/{attachment_id}"),
+            headers=self._http_headers(),
+            method="DELETE",
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                if response.status != 200:
+                    logger.warning(
+                        "Cloudflare Chat direct attachment cancel returned HTTP %s",
+                        response.status,
+                    )
+        except HTTPError as error:
+            if error.code != 404:
+                logger.warning(
+                    "Cloudflare Chat direct attachment cancel failed: %s",
+                    _attachment_http_error("cancel", error),
+                )
+        except Exception as error:
+            logger.warning("Cloudflare Chat direct attachment cancel failed: %s", error)
+
     def _attachment_url(self, attachment_id: str) -> str:
         parsed = urlsplit(self.relay_url)
         scheme = "https" if parsed.scheme == "wss" else "http"
         return urlunsplit((scheme, parsed.netloc, f"/api/hermes-chat/attachments/{attachment_id}", "", ""))
+
+    def _direct_upload_url(self, suffix: str) -> str:
+        parsed = urlsplit(self.relay_url)
+        scheme = "https" if parsed.scheme == "wss" else "http"
+        return urlunsplit((
+            scheme,
+            parsed.netloc,
+            f"/api/hermes-chat/direct-uploads{suffix}",
+            "",
+            "",
+        ))
 
     def _message_url(self) -> str:
         parsed = urlsplit(self.relay_url)
@@ -1569,21 +1816,11 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             source = self.validate_media_delivery_path(str(image_url or ""))
             if not source:
                 raise ValueError("Unsafe or unreadable image path")
-        data, content_type, filename = await asyncio.to_thread(
-            self._read_outbound_image,
+        return await self._encrypt_and_upload_local_file(
             source,
+            file_name=None,
+            allowed_categories={"image"},
         )
-        encrypted = self._cipher.encrypt_attachment(
-            data,
-            content_type=content_type,
-            filename=filename,
-        )
-        await asyncio.to_thread(
-            self._upload_attachment,
-            encrypted.descriptor["id"],
-            encrypted.ciphertext,
-        )
-        return encrypted.descriptor
 
     async def _encrypt_and_upload_local_file(
         self,
@@ -1592,12 +1829,21 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         file_name: str | None,
         allowed_categories: set[str],
     ) -> dict[str, Any]:
-        data, content_type, filename = await asyncio.to_thread(
-            self._read_outbound_file,
+        path, size, content_type, filename = await asyncio.to_thread(
+            self._inspect_outbound_file,
             file_path,
             file_name,
             allowed_categories,
         )
+        if size > MAX_ATTACHMENT_BYTES:
+            return await asyncio.to_thread(
+                self._upload_direct_file,
+                path,
+                plaintext_bytes=size,
+                content_type=content_type,
+                filename=filename,
+            )
+        data = await asyncio.to_thread(self._read_small_outbound_file, path, size)
         encrypted = self._cipher.encrypt_attachment(
             data,
             content_type=content_type,
@@ -1619,6 +1865,21 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         file_name: str | None,
         allowed_categories: set[str],
     ):
+        path, size, content_type, filename = self._inspect_outbound_file(
+            file_path,
+            file_name,
+            allowed_categories,
+        )
+        if size > MAX_ATTACHMENT_BYTES:
+            raise ValueError("outbound attachment exceeds 10 MiB")
+        return self._read_small_outbound_file(path, size), content_type, filename
+
+    def _inspect_outbound_file(
+        self,
+        file_path: str,
+        file_name: str | None,
+        allowed_categories: set[str],
+    ) -> tuple[Path, int, str, str]:
         parsed = urlsplit(str(file_path or ""))
         if parsed.scheme not in {"", "file"}:
             raise ValueError("outbound attachment must be a local file")
@@ -1628,18 +1889,25 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         if not path.is_file():
             raise ValueError("outbound attachment is not a readable file")
         size = path.stat().st_size
-        if size < 1 or size > MAX_ATTACHMENT_BYTES:
-            raise ValueError("outbound attachment exceeds 10 MiB")
+        maximum_bytes = _agent_attachment_max_bytes()
+        if size < 1 or size > maximum_bytes:
+            raise ValueError(
+                f"outbound attachment exceeds the Agent limit of {maximum_bytes} bytes"
+            )
         filename = Path(str(file_name or path.name)).name or path.name
         guessed_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         content_type, category = _resolve_file_type(filename, guessed_type)
         if category not in allowed_categories:
             raise ValueError(f"attachment category {category} is not supported by this send method")
+        return path, size, content_type, filename
+
+    @staticmethod
+    def _read_small_outbound_file(path: Path, size: int) -> bytes:
         with path.open("rb") as source:
             data = source.read(MAX_ATTACHMENT_BYTES + 1)
         if len(data) != size or len(data) > MAX_ATTACHMENT_BYTES:
             raise ValueError("outbound attachment changed or exceeded 10 MiB while reading")
-        return data, content_type, filename
+        return data
 
     def _cleanup_media_cache(self) -> None:
         cutoff = time.time() - 24 * 60 * 60
@@ -1706,6 +1974,8 @@ async def _standalone_send(
 ) -> dict[str, Any]:
     """Deliver cron output without opening a second long-lived agent socket."""
     del thread_id, force_document
+    adapter: CloudflareChatAdapter | None = None
+    attachments: list[dict[str, Any]] = []
     try:
         adapter = CloudflareChatAdapter(pconfig)
         if not _valid_configuration(
@@ -1728,7 +1998,6 @@ async def _standalone_send(
             }
 
         text = str(message or "")
-        attachments: list[dict[str, Any]] = []
         delivered_spans: list[tuple[int, int]] = []
         standalone_media = list(media_files or [])
         if len(standalone_media) > MAX_MESSAGE_ATTACHMENTS:
@@ -2035,9 +2304,11 @@ def register(ctx) -> None:
         pii_safe=False,
         allow_update_command=True,
         platform_hint=(
-            "You are chatting with the owner through a private Android notes app. "
+            "You are chatting with the owner through private Android and macOS notes apps. "
             "Telegram-style Markdown, fenced code blocks, images, audio, video, documents, "
-            "Office files, archives, and EPUB files are supported up to 10 MiB each. "
+            "Office files, archives, and EPUB files are supported. User uploads remain "
+            "limited to 10 MiB; generated Agent output can use private R2 direct upload "
+            "up to the configured 512 MiB default. "
             "Use the platform document, voice, or video delivery methods for generated files "
             "and only provide safe local absolute paths. After image_generate succeeds, "
             "always include a standalone MEDIA:<absolute-path> line in the final response, "

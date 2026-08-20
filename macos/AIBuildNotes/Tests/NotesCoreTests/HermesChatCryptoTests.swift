@@ -79,6 +79,39 @@ func hermesChatAttachmentRoundTrip() throws {
   }
 }
 
+@Test("macOS accepts private R2 descriptors only from the Hermes Agent")
+func hermesChatPrivateR2DescriptorValidation() throws {
+  let crypto = try HermesChatCrypto(encodedKey: hermesFixtureKey)
+  let descriptor = HermesChatAttachmentDescriptor(
+    id: "550e8400-e29b-41d4-a716-446655440099",
+    name: "generated.mp4",
+    contentType: "video/mp4",
+    plaintextBytes: HermesChatCrypto.maximumAttachmentBytes + 1,
+    storage: HermesChatCrypto.privateAttachmentStorage,
+    sha256: String(repeating: "ab", count: 32)
+  )
+  let envelope = try crypto.encryptMessageEnvelope(
+    sender: "agent",
+    text: "大文件输出",
+    attachments: [descriptor],
+    messageID: "550e8400-e29b-41d4-a716-446655440098",
+    sentAt: 1_800_000_000_002
+  )
+  let message = try crypto.decryptMessageEnvelope(envelope, sequence: 18)
+  #expect(message.attachments == [descriptor])
+  #expect(message.attachments[0].isPrivateR2)
+
+  #expect(throws: HermesChatCryptoError.invalidAttachment) {
+    try crypto.encryptMessageEnvelope(
+      sender: "client",
+      text: "伪造直传",
+      attachments: [descriptor],
+      messageID: "550e8400-e29b-41d4-a716-446655440097",
+      sentAt: 1_800_000_000_003
+    )
+  }
+}
+
 @Test("Hermes local history encryption is isolated by profile id")
 func hermesChatLocalSnapshotBinding() throws {
   let crypto = try HermesChatCrypto(encodedKey: hermesFixtureKey)

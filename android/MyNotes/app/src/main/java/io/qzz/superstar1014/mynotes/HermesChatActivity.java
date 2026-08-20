@@ -56,6 +56,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -109,6 +110,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private HermesChatConnectionManager.Listener connectionListener;
   private HermesChatHistoryStore historyStore;
   private HermesChatImageCache imageCache;
+  private HermesChatPrivateAttachmentCache privateAttachmentCache;
   private LinearLayout messages;
   private ScrollView messageScroll;
   private TextView chatTitle;
@@ -489,7 +491,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     column.addView(headerContainer, new LinearLayout.LayoutParams(-1, dp(68)));
 
     TextView privacy = text(
-      "消息和附件端到端加密，本机加密缓存默认保留 30 天。",
+      "消息和附件描述端到端加密；Agent 大文件使用私有 R2，本机缓存默认保留 30 天。",
       12,
       R.color.text_secondary
     );
@@ -773,6 +775,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     crypto = null;
     historyStore = null;
     imageCache = null;
+    privateAttachmentCache = null;
     renderedMessageIds.clear();
     renderedMessagesBySequence.clear();
     renderedMessagesById.clear();
@@ -807,17 +810,21 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           targetCrypto
         );
         HermesChatImageCache targetImages = new HermesChatImageCache(this, spaceId);
+        HermesChatPrivateAttachmentCache targetPrivateAttachments =
+          new HermesChatPrivateAttachmentCache(this, spaceId);
         HermesChatHistoryStore.Snapshot snapshot = targetHistory.loadAndCleanup(
           HermesChatCacheSettings.retentionDays(this),
           System.currentTimeMillis()
         );
         targetImages.retain(snapshot.messages);
+        targetPrivateAttachments.retain(snapshot.messages);
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
           crypto = targetCrypto;
           historyStore = targetHistory;
           imageCache = targetImages;
+          privateAttachmentCache = targetPrivateAttachments;
           renderCachedMessages(snapshot);
           connectionListener = scopedListener(generation);
           try {
@@ -1460,7 +1467,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     Models.HermesChatProfile targetProfile = selectedProfile;
     HermesChatHistoryStore targetHistory = historyStore;
     HermesChatImageCache targetCache = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     if (targetProfile == null || targetHistory == null || targetCache == null
+        || targetPrivateAttachments == null
         || messageIds == null || messageIds.isEmpty()) return;
     Set<String> attachmentIds = new HashSet<>();
     for (String messageId : messageIds) {
@@ -1482,6 +1491,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         JSONObject cloud = api.deleteHermesChatMessages(spaceId, messageIds, attachmentIds);
         HermesChatHistoryStore.Snapshot snapshot = targetHistory.deleteMessages(messageIds);
         targetCache.retain(snapshot.messages);
+        targetPrivateAttachments.retain(snapshot.messages);
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
           deletingMessages = false;
@@ -2302,7 +2312,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void shareMessageAttachments(RenderedMessage rendered) {
-    if (rendered == null || selectedProfile == null || crypto == null || imageCache == null) {
+    if (rendered == null || selectedProfile == null || crypto == null || imageCache == null
+        || privateAttachmentCache == null) {
       return;
     }
     JSONArray attachments;
@@ -2320,8 +2331,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache targetCache = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
-    showConnectionAwareStatus("正在解密分享附件…");
+    showConnectionAwareStatus("正在准备分享附件…");
     executor.submit(() -> {
       List<File> shareFiles = new ArrayList<>();
       ArrayList<Uri> shareUris = new ArrayList<>();
@@ -2331,16 +2343,26 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           JSONObject item = attachments.getJSONObject(index);
           HermesChatAttachmentPolicy.ResolvedType type = resolveAttachment(item);
           if (type == null) throw new IllegalArgumentException("不支持此附件格式。");
-          byte[] plaintext = loadDecryptedAttachment(
-            item,
-            spaceId,
-            targetCrypto,
-            targetCache
-          );
           File file = HermesShareFileProvider.createAttachmentFile(this, type.extension);
           shareFiles.add(file);
           try (FileOutputStream output = new FileOutputStream(file)) {
-            output.write(plaintext);
+            if (HermesChatCrypto.isPrivateAttachment(item)) {
+              File source = loadPrivateAttachmentFile(
+                item,
+                spaceId,
+                targetPrivateAttachments
+              );
+              try (InputStream input = new FileInputStream(source)) {
+                copyStream(input, output);
+              }
+            } else {
+              output.write(loadDecryptedAttachment(
+                item,
+                spaceId,
+                targetCrypto,
+                targetCache
+              ));
+            }
             output.getFD().sync();
           }
           shareUris.add(HermesShareFileProvider.uriFor(
@@ -2422,27 +2444,30 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void saveImageAttachment(JSONObject descriptor) {
-    if (descriptor == null || selectedProfile == null || crypto == null || imageCache == null) {
+    if (descriptor == null || selectedProfile == null || crypto == null || imageCache == null
+        || privateAttachmentCache == null) {
       return;
     }
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache targetCache = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
-    showConnectionAwareStatus("正在解密并保存图片…");
+    showConnectionAwareStatus("正在准备并保存图片…");
     executor.submit(() -> {
       try {
-        byte[] plaintext = loadDecryptedAttachment(
-          descriptor,
-          spaceId,
-          targetCrypto,
-          targetCache
-        );
+        File privateFile = HermesChatCrypto.isPrivateAttachment(descriptor)
+          ? loadPrivateAttachmentFile(descriptor, spaceId, targetPrivateAttachments)
+          : null;
+        byte[] plaintext = privateFile == null
+          ? loadDecryptedAttachment(descriptor, spaceId, targetCrypto, targetCache)
+          : null;
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
           restoreConversationStatus();
-          saveImageToGallery(plaintext, descriptor);
+          if (privateFile != null) saveImageFileToGallery(privateFile, descriptor);
+          else saveImageToGallery(plaintext, descriptor);
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
@@ -2483,13 +2508,15 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       addFileCard(bubble, descriptor, resolved, outgoing);
       return;
     }
-    if (selectedProfile == null || crypto == null || imageCache == null) return;
+    if (selectedProfile == null || crypto == null || imageCache == null
+        || privateAttachmentCache == null) return;
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache imageCache = this.imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
     TextView loading = text(
-      "正在解密图片…",
+      "正在准备图片…",
       12,
       outgoing ? R.color.on_brand : R.color.text_secondary
     );
@@ -2498,13 +2525,23 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     bubble.addView(loading, loadingParams);
     executor.submit(() -> {
       try {
-        byte[] ciphertext = imageCache.read(descriptor);
-        if (ciphertext == null) {
-          ciphertext = api.downloadHermesChatAttachment(spaceId, descriptor.getString("id"));
-          imageCache.write(descriptor, ciphertext);
+        Bitmap bitmap;
+        if (HermesChatCrypto.isPrivateAttachment(descriptor)) {
+          File file = loadPrivateAttachmentFile(
+            descriptor,
+            spaceId,
+            targetPrivateAttachments
+          );
+          bitmap = decodeBoundedBitmap(file, 1_024);
+        } else {
+          byte[] ciphertext = imageCache.read(descriptor);
+          if (ciphertext == null) {
+            ciphertext = api.downloadHermesChatAttachment(spaceId, descriptor.getString("id"));
+            imageCache.write(descriptor, ciphertext);
+          }
+          byte[] plaintext = targetCrypto.decryptAttachment(ciphertext, descriptor);
+          bitmap = decodeBoundedBitmap(plaintext, 1_024);
         }
-        byte[] plaintext = targetCrypto.decryptAttachment(ciphertext, descriptor);
-        Bitmap bitmap = decodeBoundedBitmap(plaintext, 1_024);
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
@@ -2666,7 +2703,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void requestSaveAttachment(JSONObject descriptor) {
-    if (selectedProfile == null || crypto == null || imageCache == null) return;
+    if (selectedProfile == null || crypto == null || imageCache == null
+        || privateAttachmentCache == null) return;
     try {
       String name = descriptor.optString("name", "Hermes-附件");
       HermesChatAttachmentPolicy.ResolvedType resolved = HermesChatAttachmentPolicy.resolve(
@@ -2694,20 +2732,31 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private void saveAttachmentToUri(Uri destination, JSONObject descriptor, String spaceId) {
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache targetCache = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
-    if (targetCrypto == null || targetCache == null) return;
-    showConnectionAwareStatus("正在解密并保存附件…");
+    if (targetCrypto == null || targetCache == null || targetPrivateAttachments == null) return;
+    showConnectionAwareStatus("正在准备并保存附件…");
     executor.submit(() -> {
       try {
-        byte[] plaintext = loadDecryptedAttachment(
-          descriptor,
-          spaceId,
-          targetCrypto,
-          targetCache
-        );
         try (OutputStream output = getContentResolver().openOutputStream(destination, "wt")) {
           if (output == null) throw new IllegalStateException("无法写入所选位置。");
-          output.write(plaintext);
+          if (HermesChatCrypto.isPrivateAttachment(descriptor)) {
+            File source = loadPrivateAttachmentFile(
+              descriptor,
+              spaceId,
+              targetPrivateAttachments
+            );
+            try (InputStream input = new FileInputStream(source)) {
+              copyStream(input, output);
+            }
+          } else {
+            output.write(loadDecryptedAttachment(
+              descriptor,
+              spaceId,
+              targetCrypto,
+              targetCache
+            ));
+          }
         }
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
@@ -2730,39 +2779,51 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     JSONObject descriptor,
     HermesChatAttachmentPolicy.ResolvedType resolved
   ) {
-    if (selectedProfile == null || crypto == null || imageCache == null) return;
+    if (selectedProfile == null || crypto == null || imageCache == null
+        || privateAttachmentCache == null) return;
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache targetCache = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
     showConnectionAwareStatus("正在准备" + resolved.category.label + "播放…");
     executor.submit(() -> {
       File playbackFile = null;
+      boolean deleteAfterPlayback = !HermesChatCrypto.isPrivateAttachment(descriptor);
       try {
-        byte[] plaintext = loadDecryptedAttachment(
-          descriptor,
-          spaceId,
-          targetCrypto,
-          targetCache
-        );
-        playbackFile = createPlaybackFile(resolved.extension, plaintext);
+        if (!deleteAfterPlayback) {
+          playbackFile = loadPrivateAttachmentFile(
+            descriptor,
+            spaceId,
+            targetPrivateAttachments
+          );
+        } else {
+          byte[] plaintext = loadDecryptedAttachment(
+            descriptor,
+            spaceId,
+            targetCrypto,
+            targetCache
+          );
+          playbackFile = createPlaybackFile(resolved.extension, plaintext);
+        }
         File readyFile = playbackFile;
+        boolean deleteReadyFile = deleteAfterPlayback;
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) {
-            deletePlaybackFile(readyFile);
+            if (deleteReadyFile) deletePlaybackFile(readyFile);
             return;
           }
           restoreConversationStatus();
           String name = descriptor.optString("name", resolved.category.label);
           if (resolved.category == HermesChatAttachmentPolicy.Category.AUDIO) {
-            showAudioPlayer(readyFile, name);
+            showAudioPlayer(readyFile, name, deleteReadyFile);
           } else {
-            showVideoPlayer(readyFile, name);
+            showVideoPlayer(readyFile, name, deleteReadyFile);
           }
         });
       } catch (Exception error) {
-        if (playbackFile != null) deletePlaybackFile(playbackFile);
+        if (deleteAfterPlayback && playbackFile != null) deletePlaybackFile(playbackFile);
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
           showConnectionAwareStatus("播放准备失败");
@@ -2779,6 +2840,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     HermesChatCrypto targetCrypto,
     HermesChatImageCache targetCache
   ) throws Exception {
+    if (HermesChatCrypto.isPrivateAttachment(descriptor)) {
+      throw new IllegalArgumentException("Hermes 大附件必须使用文件流读取。");
+    }
     byte[] ciphertext = targetCache.read(descriptor);
     if (ciphertext == null) {
       ciphertext = api.downloadHermesChatAttachment(spaceId, descriptor.getString("id"));
@@ -2787,14 +2851,42 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     return targetCrypto.decryptAttachment(ciphertext, descriptor);
   }
 
-  private void showAudioPlayer(File file, String name) {
+  private File loadPrivateAttachmentFile(
+    JSONObject descriptor,
+    String spaceId,
+    HermesChatPrivateAttachmentCache targetCache
+  ) throws Exception {
+    HermesChatCrypto.validateAttachmentDescriptor(descriptor, "agent");
+    File cached = targetCache.read(descriptor);
+    if (cached != null) return cached;
+    Models.HermesChatDirectDownloadTicket ticket = api.hermesChatDirectDownloadTicket(
+      spaceId,
+      descriptor.getString("id")
+    );
+    if (!ticket.attachmentId.equals(descriptor.getString("id"))
+        || !HermesChatCrypto.PRIVATE_ATTACHMENT_STORAGE.equals(ticket.storage)
+        || ticket.plaintextBytes != descriptor.getInt("plaintextBytes")
+        || !ticket.sha256.equals(descriptor.getString("sha256"))) {
+      throw new IllegalArgumentException("Hermes 大附件下载凭证与消息不一致。");
+    }
+    File staging = targetCache.createStagingFile();
+    try {
+      api.downloadHermesChatDirectAttachment(ticket, staging);
+      return targetCache.commit(staging, descriptor);
+    } catch (Exception error) {
+      staging.delete();
+      throw error;
+    }
+  }
+
+  private void showAudioPlayer(File file, String name, boolean deleteAfterPlayback) {
     MediaPlayer player = new MediaPlayer();
     try {
       player.setDataSource(file.getAbsolutePath());
       player.prepare();
     } catch (Exception error) {
       player.release();
-      deletePlaybackFile(file);
+      if (deleteAfterPlayback) deletePlaybackFile(file);
       toast("音频无法播放：" + error.getMessage());
       focusComposer(true);
       return;
@@ -2874,7 +2966,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       handler.removeCallbacks(update);
       try { player.stop(); } catch (IllegalStateException ignoredState) {}
       player.release();
-      deletePlaybackFile(file);
+      if (deleteAfterPlayback) deletePlaybackFile(file);
       focusComposer(true);
     });
     playbackDialogs.add(dialog);
@@ -2883,7 +2975,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     handler.post(update);
   }
 
-  private void showVideoPlayer(File file, String name) {
+  private void showVideoPlayer(File file, String name, boolean deleteAfterPlayback) {
     Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
     FrameLayout root = new FrameLayout(this);
     root.setBackgroundColor(Color.BLACK);
@@ -2932,7 +3024,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     dialog.setOnDismissListener(ignored -> {
       playbackDialogs.remove(dialog);
       video.stopPlayback();
-      deletePlaybackFile(file);
+      if (deleteAfterPlayback) deletePlaybackFile(file);
       focusComposer(true);
     });
     playbackDialogs.add(dialog);
@@ -3008,28 +3100,32 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void showImagePreview(JSONObject descriptor) {
-    if (selectedProfile == null || crypto == null || imageCache == null) return;
+    if (selectedProfile == null || crypto == null || imageCache == null
+        || privateAttachmentCache == null) return;
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
     HermesChatImageCache targetImages = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
     showConnectionAwareStatus("正在打开大图…");
     executor.submit(() -> {
       try {
-        byte[] plaintext = loadDecryptedAttachment(
-          descriptor,
-          spaceId,
-          targetCrypto,
-          targetImages
-        );
-        Bitmap bitmap = decodeBoundedBitmap(plaintext, 2_048);
+        File privateFile = HermesChatCrypto.isPrivateAttachment(descriptor)
+          ? loadPrivateAttachmentFile(descriptor, spaceId, targetPrivateAttachments)
+          : null;
+        byte[] plaintext = privateFile == null
+          ? loadDecryptedAttachment(descriptor, spaceId, targetCrypto, targetImages)
+          : null;
+        Bitmap bitmap = privateFile == null
+          ? decodeBoundedBitmap(plaintext, 2_048)
+          : decodeBoundedBitmap(privateFile, 2_048);
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
           showConnectionAwareStatus(
             awaitingAgentResponse ? "正在思考…" : "已加密"
           );
-          showImagePreview(bitmap, plaintext, descriptor);
+          showImagePreview(bitmap, plaintext, privateFile, descriptor);
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
@@ -3042,7 +3138,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     });
   }
 
-  private void showImagePreview(Bitmap bitmap, byte[] plaintext, JSONObject descriptor) {
+  private void showImagePreview(
+    Bitmap bitmap,
+    byte[] plaintext,
+    File privateFile,
+    JSONObject descriptor
+  ) {
     Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
     FrameLayout root = new FrameLayout(this);
     root.setBackgroundColor(Color.BLACK);
@@ -3062,19 +3163,25 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     TextView close = imagePreviewActionButton("关闭", "关闭图片预览");
     close.setOnClickListener(view -> dialog.dismiss());
     actions.addView(close, new LinearLayout.LayoutParams(dp(56), dp(48)));
-    TextView title = text("加密聊天图片", 15, android.R.color.white);
+    TextView title = text("聊天图片", 15, android.R.color.white);
     title.setGravity(Gravity.CENTER);
     title.setSingleLine(true);
     title.setEllipsize(TextUtils.TruncateAt.END);
-    title.setContentDescription("加密聊天图片预览");
+    title.setContentDescription("聊天图片预览");
     LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(48), 1);
     titleParams.setMargins(dp(8), 0, dp(8), 0);
     actions.addView(title, titleParams);
     TextView share = imagePreviewActionButton("分享", "分享图片");
-    share.setOnClickListener(view -> shareImage(plaintext, descriptor));
+    share.setOnClickListener(view -> {
+      if (privateFile != null) shareImageFile(privateFile, descriptor);
+      else shareImage(plaintext, descriptor);
+    });
     actions.addView(share, new LinearLayout.LayoutParams(dp(56), dp(48)));
     TextView save = imagePreviewActionButton("保存相册", "保存图片到相册");
-    save.setOnClickListener(view -> saveImageToGallery(plaintext, descriptor));
+    save.setOnClickListener(view -> {
+      if (privateFile != null) saveImageFileToGallery(privateFile, descriptor);
+      else saveImageToGallery(plaintext, descriptor);
+    });
     LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(dp(80), dp(48));
     saveParams.setMarginStart(dp(8));
     actions.addView(save, saveParams);
@@ -3106,6 +3213,61 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         shareFile = HermesShareFileProvider.createImageFile(this, resolved.extension);
         try (FileOutputStream output = new FileOutputStream(shareFile)) {
           output.write(plaintext);
+          output.getFD().sync();
+        }
+        Uri shareUri = HermesShareFileProvider.uriFor(
+          this,
+          shareFile,
+          galleryFilename(name, resolved.contentType)
+        );
+        File readyFile = shareFile;
+        runOnUiThread(() -> {
+          if (destroyed) {
+            readyFile.delete();
+            return;
+          }
+          try {
+            Intent shareIntent = new Intent(Intent.ACTION_SEND);
+            shareIntent.setType(resolved.contentType);
+            shareIntent.putExtra(Intent.EXTRA_STREAM, shareUri);
+            shareIntent.setClipData(ClipData.newUri(
+              getContentResolver(),
+              "Hermes chat image",
+              shareUri
+            ));
+            shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(shareIntent, "分享图片到");
+            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(chooser);
+            SHARE_CLEANUP_HANDLER.postDelayed(readyFile::delete, SHARE_FILE_LIFETIME_MS);
+          } catch (Exception error) {
+            readyFile.delete();
+            toast("无法分享图片：" + error.getMessage());
+          }
+        });
+      } catch (Exception error) {
+        if (shareFile != null) shareFile.delete();
+        runOnUiThread(() -> toast("无法分享图片：" + error.getMessage()));
+      }
+    });
+  }
+
+  private void shareImageFile(File source, JSONObject descriptor) {
+    executor.submit(() -> {
+      File shareFile = null;
+      try {
+        String contentType = descriptor.getString("contentType");
+        String name = descriptor.optString("name", "Hermes-image");
+        HermesChatAttachmentPolicy.ResolvedType resolved =
+          HermesChatAttachmentPolicy.resolve(contentType, name);
+        if (resolved.category != HermesChatAttachmentPolicy.Category.IMAGE
+            || !resolved.contentType.startsWith("image/")) {
+          throw new IllegalArgumentException("不是有效图片。");
+        }
+        shareFile = HermesShareFileProvider.createImageFile(this, resolved.extension);
+        try (InputStream input = new FileInputStream(source);
+             FileOutputStream output = new FileOutputStream(shareFile)) {
+          copyStream(input, output);
           output.getFD().sync();
         }
         Uri shareUri = HermesShareFileProvider.uriFor(
@@ -3182,6 +3344,44 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     });
   }
 
+  private void saveImageFileToGallery(File source, JSONObject descriptor) {
+    executor.submit(() -> {
+      Uri destination = null;
+      try {
+        String contentType = descriptor.getString("contentType");
+        if (!contentType.startsWith("image/")) throw new IllegalArgumentException("不是有效图片。");
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, galleryFilename(
+          descriptor.optString("name", "Hermes-image"),
+          contentType
+        ));
+        values.put(MediaStore.MediaColumns.MIME_TYPE, contentType);
+        values.put(
+          MediaStore.MediaColumns.RELATIVE_PATH,
+          Environment.DIRECTORY_PICTURES + "/My Notes"
+        );
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        destination = getContentResolver().insert(
+          MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+          values
+        );
+        if (destination == null) throw new IllegalStateException("无法创建相册图片。");
+        try (InputStream input = new FileInputStream(source);
+             OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+          if (output == null) throw new IllegalStateException("无法写入相册图片。");
+          copyStream(input, output);
+        }
+        ContentValues published = new ContentValues();
+        published.put(MediaStore.MediaColumns.IS_PENDING, 0);
+        getContentResolver().update(destination, published, null, null);
+        runOnUiThread(() -> toast("图片已保存到“图片/My Notes”。"));
+      } catch (Exception error) {
+        if (destination != null) getContentResolver().delete(destination, null, null);
+        runOnUiThread(() -> toast("保存图片失败：" + error.getMessage()));
+      }
+    });
+  }
+
   private static Bitmap decodeBoundedBitmap(byte[] data, int maximumDimension) {
     BitmapFactory.Options bounds = new BitmapFactory.Options();
     bounds.inJustDecodeBounds = true;
@@ -3199,6 +3399,31 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length, options);
     if (bitmap == null) throw new IllegalArgumentException("图片格式无法显示。");
     return bitmap;
+  }
+
+  private static Bitmap decodeBoundedBitmap(File file, int maximumDimension) {
+    BitmapFactory.Options bounds = new BitmapFactory.Options();
+    bounds.inJustDecodeBounds = true;
+    BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+    if (bounds.outWidth < 1 || bounds.outHeight < 1) {
+      throw new IllegalArgumentException("图片格式无法显示。");
+    }
+    int sample = 1;
+    while (Math.max(bounds.outWidth / sample, bounds.outHeight / sample) > maximumDimension) {
+      sample *= 2;
+    }
+    BitmapFactory.Options options = new BitmapFactory.Options();
+    options.inSampleSize = sample;
+    options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+    Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+    if (bitmap == null) throw new IllegalArgumentException("图片格式无法显示。");
+    return bitmap;
+  }
+
+  private static void copyStream(InputStream input, OutputStream output) throws Exception {
+    byte[] buffer = new byte[1024 * 1024];
+    int count;
+    while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
   }
 
   private static String galleryFilename(String value, String contentType) {
@@ -3272,7 +3497,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     new AlertDialog.Builder(this)
       .setTitle("清理当前聊天的全部缓存？")
       .setMessage(
-        "会删除当前聊天对象在本机以及 Cloudflare 上的历史消息和加密附件，无法恢复。"
+        "会删除当前聊天对象在本机以及 Cloudflare 上的历史消息和对应附件，无法恢复。"
           + "同步序号会保留，重连时不会重新下载这些旧消息。"
       )
       .setPositiveButton("同时清理", (dialog, which) -> clearCurrentHistoryAndCloud())
@@ -3283,14 +3508,16 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private void cleanupCurrentHistory(boolean showResult) {
     HermesChatHistoryStore targetHistory = historyStore;
     HermesChatImageCache targetImages = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     long generation = profileGeneration;
-    if (targetHistory == null || targetImages == null) return;
+    if (targetHistory == null || targetImages == null || targetPrivateAttachments == null) return;
     executor.submit(() -> {
       HermesChatHistoryStore.Snapshot snapshot = targetHistory.loadAndCleanup(
         HermesChatCacheSettings.retentionDays(this),
         System.currentTimeMillis()
       );
       targetImages.retain(snapshot.messages);
+      targetPrivateAttachments.retain(snapshot.messages);
       runOnUiThread(() -> {
         if (destroyed || generation != profileGeneration || historyStore != targetHistory) return;
         renderCachedMessages(snapshot);
@@ -3302,9 +3529,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private void clearCurrentHistoryAndCloud() {
     HermesChatHistoryStore targetHistory = historyStore;
     HermesChatImageCache targetImages = imageCache;
+    HermesChatPrivateAttachmentCache targetPrivateAttachments = privateAttachmentCache;
     Models.HermesChatProfile targetProfile = selectedProfile;
     long generation = profileGeneration;
-    if (targetHistory == null || targetImages == null || targetProfile == null) return;
+    if (targetHistory == null || targetImages == null || targetPrivateAttachments == null
+        || targetProfile == null) return;
     String spaceId = targetProfile.id;
     showConnectionAwareStatus("正在清理本机和 Cloudflare 聊天数据…");
     sendButton.setEnabled(false);
@@ -3313,6 +3542,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         JSONObject cloud = api.purgeHermesChatCloudData(spaceId);
         HermesChatHistoryStore.Snapshot snapshot = targetHistory.clearMessages();
         targetImages.clear();
+        targetPrivateAttachments.clear();
         int cloudMessages = cloud.optInt("messagesDeleted");
         int cloudAttachments = cloud.optInt("attachmentsDeleted");
         runOnUiThread(() -> {

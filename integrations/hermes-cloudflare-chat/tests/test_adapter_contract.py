@@ -169,7 +169,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.2.0")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.0")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -717,6 +717,146 @@ class AdapterContractTests(unittest.TestCase):
                 instance._cipher.decrypt_attachment(ciphertext, descriptor),
                 document_bytes,
             )
+
+    def test_large_agent_file_uses_streaming_private_r2_upload(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.adapter,
+            "get_hermes_home",
+            return_value=Path(directory),
+        ):
+            video_path = Path(directory) / "generated.mp4"
+            video_bytes = b"v" * (10 * 1024 * 1024 + 1)
+            video_path.write_bytes(video_bytes)
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            attachment_id = "550e8400-e29b-41d4-a716-446655440099"
+            sha256 = __import__("hashlib").sha256(video_bytes).hexdigest()
+            captured = []
+
+            class Response:
+                def __init__(self, status, payload=b""):
+                    self.status = status
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self, limit=-1):
+                    return self.payload if limit < 0 else self.payload[:limit]
+
+            def open_request(request, timeout):
+                captured.append((request, timeout))
+                if request.get_method() == "PUT":
+                    self.assertNotIn("Authorization", request.headers)
+                    self.assertEqual(request.get_header("Content-length"), str(len(video_bytes)))
+                    self.assertEqual(sum(len(chunk) for chunk in request.data), len(video_bytes))
+                    return Response(200)
+                payload = json.loads(request.data.decode("utf-8"))
+                self.assertEqual(payload["plaintextBytes"], len(video_bytes))
+                if request.full_url.endswith("/complete"):
+                    return Response(200, json.dumps({
+                        "attachment": {
+                            "id": attachment_id,
+                            "storage": "r2-private-v1",
+                            "plaintextBytes": len(video_bytes),
+                            "sha256": sha256,
+                        },
+                    }).encode("utf-8"))
+                payload["attachmentId"] = attachment_id
+                return Response(201, json.dumps({
+                    "ticket": {
+                        "attachmentId": attachment_id,
+                        "storage": "r2-private-v1",
+                        "plaintextBytes": len(video_bytes),
+                        "sha256": sha256,
+                        "uploadUrl": "https://test.r2.cloudflarestorage.com/notes/object?signature=1",
+                        "requiredHeaders": {
+                            "Content-Type": "application/octet-stream",
+                            "If-None-Match": "*",
+                            "x-amz-checksum-sha256": "test-checksum",
+                        },
+                    },
+                }).encode("utf-8"))
+
+            with patch.object(self.adapter.uuid, "uuid4", return_value=attachment_id), patch.object(
+                self.adapter,
+                "urlopen",
+                side_effect=open_request,
+            ):
+                descriptor = asyncio.run(instance._encrypt_and_upload_local_file(
+                    str(video_path),
+                    file_name=None,
+                    allowed_categories={"video"},
+                ))
+
+        self.assertEqual(descriptor, {
+            "id": attachment_id,
+            "name": "generated.mp4",
+            "contentType": "video/mp4",
+            "plaintextBytes": len(video_bytes),
+            "storage": "r2-private-v1",
+            "sha256": sha256,
+        })
+        self.assertEqual([request.get_method() for request, _ in captured], ["POST", "PUT", "POST"])
+
+    def test_failed_message_publish_preserves_confirmed_private_objects(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        descriptor = {
+            "id": "550e8400-e29b-41d4-a716-446655440099",
+            "name": "generated.mp4",
+            "contentType": "video/mp4",
+            "plaintextBytes": 10 * 1024 * 1024 + 1,
+            "storage": "r2-private-v1",
+            "sha256": "ab" * 32,
+        }
+        with patch.object(
+            instance,
+            "_send_and_wait_for_ack",
+            AsyncMock(side_effect=ConnectionError("socket closed")),
+        ), patch.object(instance, "_cancel_direct_attachment") as cancel:
+            result = asyncio.run(instance._send_payload("video", [descriptor]))
+
+        self.assertFalse(result.success)
+        cancel.assert_not_called()
+
+    def test_failed_direct_upload_cancels_unconfirmed_private_object(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        attachment_id = "550e8400-e29b-41d4-a716-446655440099"
+        payload = b"generated-video"
+        sha256 = __import__("hashlib").sha256(payload).hexdigest()
+        ticket = {
+            "ticket": {
+                "attachmentId": attachment_id,
+                "storage": "r2-private-v1",
+                "plaintextBytes": len(payload),
+                "sha256": sha256,
+                "uploadUrl": "https://test.r2.cloudflarestorage.com/notes/object?signature=1",
+                "requiredHeaders": {"Content-Type": "application/octet-stream"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generated.mp4"
+            path.write_bytes(payload)
+            with patch.object(self.adapter.uuid, "uuid4", return_value=attachment_id), patch.object(
+                instance,
+                "_direct_upload_json",
+                return_value=ticket,
+            ), patch.object(
+                self.adapter,
+                "urlopen",
+                side_effect=ConnectionError("upload failed"),
+            ), patch.object(instance, "_cancel_direct_attachment") as cancel:
+                with self.assertRaisesRegex(ConnectionError, "upload failed"):
+                    instance._upload_direct_file(
+                        path,
+                        plaintext_bytes=len(payload),
+                        content_type="video/mp4",
+                        filename=path.name,
+                    )
+
+        cancel.assert_called_once_with(attachment_id)
 
     def test_voice_and_video_use_their_platform_delivery_methods(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

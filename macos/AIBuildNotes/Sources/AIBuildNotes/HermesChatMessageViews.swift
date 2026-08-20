@@ -469,7 +469,7 @@ private struct HermesChatAttachmentView: View {
   let spaceID: String
   let isClient: Bool
 
-  @State private var imageData: Data?
+  @State private var imageURL: URL?
   @State private var isLoading = false
   @State private var localError: String?
   @State private var preview: HermesAttachmentPreview?
@@ -484,7 +484,7 @@ private struct HermesChatAttachmentView: View {
   var body: some View {
     Button(action: openAttachment) {
       VStack(alignment: .leading, spacing: 8) {
-        if kind == .image, let imageData, let image = NSImage(data: imageData) {
+        if kind == .image, let imageURL, let image = NSImage(contentsOf: imageURL) {
           Image(nsImage: image)
             .resizable()
             .scaledToFit()
@@ -543,10 +543,10 @@ private struct HermesChatAttachmentView: View {
     }
     .sheet(item: $preview) { preview in
       switch preview.kind {
-      case .image(let data):
+      case .image(let url):
         HermesImagePreview(
           descriptor: descriptor,
-          data: data,
+          url: url,
           onSave: saveAttachment,
           onShare: shareAttachment
         )
@@ -611,9 +611,9 @@ private struct HermesChatAttachmentView: View {
       do {
         switch kind {
         case .image:
-          let data = try await loadData()
-          imageData = data
-          preview = HermesAttachmentPreview(kind: .image(data))
+          let url = try await materialize()
+          imageURL = url
+          preview = HermesAttachmentPreview(kind: .image(url))
         case .audio, .video:
           let url = try await materialize()
           preview = HermesAttachmentPreview(kind: .media(url, audioOnly: kind == .audio))
@@ -629,7 +629,7 @@ private struct HermesChatAttachmentView: View {
 
   private func loadImagePreview() async {
     do {
-      imageData = try await loadData()
+      imageURL = try await materialize()
     } catch {
       // Keep the file card available; an explicit open/save will surface the error.
     }
@@ -638,8 +638,8 @@ private struct HermesChatAttachmentView: View {
   private func saveAttachment() {
     Task {
       do {
-        let data = try await loadData()
-        HermesDesktopActions.saveData(data, suggestedName: descriptor.name)
+        let url = try await materialize()
+        HermesDesktopActions.saveFile(url, suggestedName: descriptor.name)
       } catch {
         localError = error.localizedDescription
       }
@@ -657,21 +657,16 @@ private struct HermesChatAttachmentView: View {
     }
   }
 
-  private func loadData() async throws -> Data {
+  private func materialize() async throws -> URL {
     isLoading = true
     defer { isLoading = false }
-    return try await store.attachmentData(descriptor, spaceID: spaceID)
-  }
-
-  private func materialize() async throws -> URL {
-    let data = try await loadData()
-    return try HermesTemporaryAttachmentFiles.write(data, descriptor: descriptor, spaceID: spaceID)
+    return try await store.attachmentFile(descriptor, spaceID: spaceID)
   }
 }
 
 private struct HermesAttachmentPreview: Identifiable {
   enum Kind {
-    case image(Data)
+    case image(URL)
     case media(URL, audioOnly: Bool)
   }
 
@@ -682,7 +677,7 @@ private struct HermesAttachmentPreview: Identifiable {
 private struct HermesImagePreview: View {
   @Environment(\.dismiss) private var dismiss
   let descriptor: HermesChatAttachmentDescriptor
-  let data: Data
+  let url: URL
   let onSave: () -> Void
   let onShare: () -> Void
   @State private var scale: CGFloat = 1
@@ -704,7 +699,7 @@ private struct HermesImagePreview: View {
       .frame(height: 52)
       Divider()
 
-      if let image = NSImage(data: data) {
+      if let image = NSImage(contentsOf: url) {
         GeometryReader { geometry in
           let viewportSize = geometry.size
           let fittedSize = fittedImageSize(imageSize: image.size, in: viewportSize)
@@ -820,7 +815,7 @@ private struct HermesMediaPreview: View {
             Image(systemName: "waveform.circle.fill")
               .font(.system(size: 92))
               .foregroundStyle(Color.accentColor)
-            Text("加密音频")
+            Text("音频")
               .font(.title2.bold())
               .foregroundStyle(.white)
           }
@@ -908,6 +903,19 @@ enum HermesDesktopActions {
       NSAlert(error: error).runModal()
     }
   }
+
+  static func saveFile(_ source: URL, suggestedName: String) {
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = URL(fileURLWithPath: suggestedName).lastPathComponent
+    panel.canCreateDirectories = true
+    guard panel.runModal() == .OK, let destination = panel.url else { return }
+    do {
+      try? FileManager.default.removeItem(at: destination)
+      try FileManager.default.copyItem(at: source, to: destination)
+    } catch {
+      NSAlert(error: error).runModal()
+    }
+  }
 }
 
 enum HermesTemporaryAttachmentFiles {
@@ -952,7 +960,7 @@ enum HermesTemporaryAttachmentFiles {
     )
     let filename = URL(fileURLWithPath: descriptor.name).lastPathComponent
     let url = base.appendingPathComponent("\(descriptor.id)-\(filename)", isDirectory: false)
-    try data.write(to: url, options: [.atomic, .completeFileProtection])
+    try data.write(to: url, options: [.atomic])
     try? FileManager.default.setAttributes(
       [.posixPermissions: 0o600],
       ofItemAtPath: url.path

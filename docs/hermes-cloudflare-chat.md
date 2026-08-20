@@ -16,10 +16,10 @@ flowchart LR
   N2["NAS Hermes profile B"] -->|"主动 WebSocket"| W
   W --> D1["Durable Object: space A"]
   W --> D2["Durable Object: space B"]
-  A -->|"加密附件"| R["Private R2"]
-  M -->|"加密附件"| R
-  N1 -->|"加密附件"| R
-  N2 -->|"加密附件"| R
+  A -->|"标准加密附件"| R["Private R2"]
+  M -->|"标准加密附件"| R
+  N1 -->|"标准密文 / 大文件短效直传"| R
+  N2 -->|"标准密文 / 大文件短效直传"| R
 ```
 
 profile 数量不写死。Worker 从 `HERMES_CHAT_PROFILES` 读取列表，两个原生客户端从 API
@@ -33,14 +33,20 @@ space id 路由，不会为每个聊天对象分别创建连接。相同账号�
 
 - 每个 profile id 确定性映射到一个 `space:<profileId>` Durable Object，聊天序号、
   离线记录和连接完全隔离。
-- 每个 profile 必须使用不同的 32 字节 `HERMES_CF_CHAT_KEY`。文字与附件均由
-  Android/macOS/NAS 使用 AES-256-GCM 加密，Cloudflare 只保存密文和路由所需元数据。
+- 每个 profile 必须使用不同的 32 字节 `HERMES_CF_CHAT_KEY`。文字、操作和 10 MiB
+  以内的标准附件由 Android/macOS/NAS 使用 AES-256-GCM 加密，Cloudflare 只保存密文
+  和路由所需元数据。
+- 只有已认证的 Hermes Agent 能输出超过 10 MiB 的大附件，默认上限 512 MiB。文件名、
+  类型、大小、SHA-256 和消息描述符仍在 AES-GCM 消息内；大文件对象本身不使用聊天密钥
+  加密，但 R2 bucket 保持私有，客户端只能通过 Worker 签发的短期对象 GET 下载。
+- R2 S3 永久凭据只保存在 Worker secret。NAS 只获得绑定随机对象 UUID、有限时长且不可
+  覆盖已有对象的 PUT URL；Android/macOS 不具备上传大附件的权限。
 - NAS profile 可以共用一个 `HERMES_CHAT_AGENT_SECRET` 做 Worker 身份认证；该
   secret 不参与消息加密。
 - 原生客户端使用现有登录会话换取 90 秒、单次使用、绑定 profile 集合的 WebSocket
   票据，长期凭据不会放进 WebSocket URL。
-- 每个附件的明文上限为 10 MiB。WebSocket 只发送加密描述符，密文二进制放入现有私有
-  R2 bucket 的 `hermes-chat/v1/<profileId>/` 前缀。
+- WebSocket 只发送加密描述符；新旧附件对象都放入现有私有 R2 bucket 的
+  `hermes-chat/v1/<profileId>/` 前缀，因此单条删除、profile 清理和 lifecycle 同时覆盖。
 - Durable Object 保存最近 30 天且最多 500 条加密消息；断线重连按序号补发，每批
   最多 100 条。每天最多一次的 DO alarm 会清理到期消息；没有消息时不运行 alarm。
 
@@ -64,7 +70,12 @@ Hermes v0.20.1 的 Gateway 会先调用平台适配器 `send()` 创建一条回�
 {
   "vars": {
     "HERMES_CHAT_PROFILES": "primary:Hermes 主助手,personal:Hermes 个人助手",
-    "HERMES_CHAT_CLOUD_RETENTION_DAYS": "30"
+    "HERMES_CHAT_CLOUD_RETENTION_DAYS": "30",
+    "HERMES_CHAT_R2_ACCOUNT_ID": "<Cloudflare Account ID>",
+    "HERMES_CHAT_R2_BUCKET_NAME": "notes",
+    "HERMES_CHAT_AGENT_ATTACHMENT_MAX_BYTES": "536870912",
+    "HERMES_CHAT_R2_UPLOAD_TICKET_TTL_SECONDS": "1800",
+    "HERMES_CHAT_R2_DOWNLOAD_TICKET_TTL_SECONDS": "900"
   }
 }
 ```
@@ -87,10 +98,30 @@ npx wrangler r2 bucket lifecycle list notes
 不要给整个 `notes` bucket 设置过期规则，否则会误删加密笔记附件。规则必须只匹配
 `hermes-chat/v1/`。
 
+### Hermes Agent 大附件的 R2 凭据
+
+在 Cloudflare Dashboard 的 R2 API Tokens 页面创建专用 Token：权限选择 Object Read &
+Write，资源只允许 `notes` bucket。不要复用全账号管理 Token。Account ID 是非敏感部署
+变量，写入 `wrangler.jsonc`；把页面生成的 Access Key ID 和 Secret Access Key 只写入
+Worker secret：
+
+```bash
+npx wrangler secret put HERMES_CHAT_R2_ACCESS_KEY_ID
+npx wrangler secret put HERMES_CHAT_R2_SECRET_ACCESS_KEY
+```
+
+Worker 使用这些值签发对象级 PUT/GET；凭据不会返回给 NAS 或客户端。Access Key ID 和
+Secret Access Key 只在创建时完整显示，应保存在密码管理器，不要写进 `.dev.vars`、
+`.env`、`wrangler.jsonc` 或 Git。官方说明：
+<https://developers.cloudflare.com/r2/api/tokens/>、
+<https://developers.cloudflare.com/r2/api/s3/presigned-urls/>。
+
 首次发布前执行：
 
 ```bash
 npx wrangler secret put HERMES_CHAT_AGENT_SECRET
+npx wrangler secret put HERMES_CHAT_R2_ACCESS_KEY_ID
+npx wrangler secret put HERMES_CHAT_R2_SECRET_ACCESS_KEY
 npm test
 npx wrangler deploy --dry-run
 npx wrangler deploy
@@ -143,6 +174,10 @@ HERMES_CF_CHAT_KEY=<Android/macOS 中 primary 对象使用的同一密钥>
 HERMES_CF_AGENT_ID=nas-primary
 HERMES_CF_ALLOWED_USERS=android-owner
 HERMES_CF_ALLOW_ALL_USERS=false
+# 可选：与 Worker 上限一致或更低，默认 512 MiB
+HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES=536870912
+# 可选：大文件 PUT 读取超时秒数，默认 900
+HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS=900
 ```
 
 新增 `personal` 的 `/root/.hermes/profiles/personal/.env`：
@@ -155,6 +190,8 @@ HERMES_CF_CHAT_KEY=<Android/macOS 中 personal 会话使用的同一独立密钥
 HERMES_CF_AGENT_ID=nas-personal
 HERMES_CF_ALLOWED_USERS=android-owner
 HERMES_CF_ALLOW_ALL_USERS=false
+HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES=536870912
+HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS=900
 ```
 
 它与其他 profile 共用 relay URL 和 agent secret，但必须使用独立的
@@ -221,6 +258,10 @@ Android Keystore 按 profile id 独立保护密钥。Android 2.14 起，全部�
   加密附件缓存。
 - 附件在应用私有目录中仍以端到端密文缓存。点击图片缩略图可打开全屏预览；只有
   点击“保存相册”后，原始图片才会通过 MediaStore 写入 `Pictures/My Notes`。
+- Android 2.16 起，Agent 大附件按需流式下载到 `noBackupFilesDir`，核对长度和 SHA-256
+  后才能播放、分享或保存；这些大文件对象未使用聊天密钥加密，本机缓存为权限隔离的
+  明文文件。标准附件仍只缓存 AES-GCM 密文。删除消息、profile 清理和保留期清理会同时
+  清理两类本机缓存及对应的 R2 对象。
 - Android 2.1 起，输入状态只在“开始/停止输入”变化时发送，避免每个字符产生一个
   Durable Object 入站事件。右上角“清理当前聊天（本机和 Cloudflare）”会二次确认，
   先通过登录会话和 CSRF 清空当前 profile 的 DO 历史及 R2 前缀，再删除本地缓存；
@@ -273,7 +314,8 @@ Android Keystore 按 profile id 独立保护密钥。Android 2.14 起，全部�
 2. 客户端从同一 Worker 动态读取 profile；进入钥匙设置，为每个 profile 粘贴 Android
    已在使用的对应聊天密钥。不要重新生成不同密钥，也不要把密钥写进源码或文档。
 3. 密钥只保存到 macOS Keychain；消息快照保存在 Application Support 并再次使用该
-   profile 的聊天密钥加密，附件缓存只保存 R2 返回的密文。
+   profile 的聊天密钥加密。标准附件缓存只保存 R2 返回的密文；Agent 大附件按需流式
+   下载，校验 SHA-256 后以权限 `0600` 保存在该 profile 的私有缓存中。
 4. 已配置的所有 profile 共用一条 macOS 进程级多路复用 WebSocket。切换笔记页面或把
    窗口放到后台不会主动断开；退出账号或进程结束时才关闭。
 5. Android 与 macOS 使用同一登录账号、同一 profile chat key 即可同时在线。任一端发送
@@ -302,6 +344,11 @@ Android、macOS、必要的 Worker/插件协议、该能力清单以及 `npm tes
 `DOCUMENT`。附件传输沿用现有通用密文 R2 端点，不需要更换环境变量或聊天密钥；
 Android 2.5 的单条/多条消息删除需要同时部署本版本 Worker，新增的登录态 API 会
 精确删除 Durable Object 消息和对应 R2 对象。
+
+插件 0.3.0、Android 2.16 与 macOS 1.8 起，Agent 输出在 10 MiB 以内继续走上述
+AES-GCM 通用端点；超过 10 MiB 时由插件先流式计算 SHA-256，再用 Worker 签发的短效
+对象 PUT 直传并完成 HEAD 校验，成功后才发送加密消息描述符。首版采用单 PUT，默认
+512 MiB 上限，不实现 Multipart。客户端仍不能上传超过 10 MiB 的文件。
 
 ## 成本边界
 

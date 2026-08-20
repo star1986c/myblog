@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 
@@ -149,4 +150,42 @@ func hermesAttachmentCacheRetentionIsProfileScoped() async throws {
   await cache.cleanup(spaceID: "primary", retentionDays: 30, now: Date())
   #expect(await cache.data(for: encrypted.descriptor, spaceID: "primary") == nil)
   #expect(await cache.data(for: encrypted.descriptor, spaceID: "personal") != nil)
+}
+
+@Test("Hermes private R2 cache verifies size and SHA-256 before reuse")
+func hermesPrivateAttachmentCacheVerifiesIntegrity() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  let payload = Data(
+    repeating: 0x5a,
+    count: HermesChatCrypto.maximumAttachmentBytes + 1
+  )
+  let digest = SHA256.hash(data: payload)
+    .map { String(format: "%02x", $0) }
+    .joined()
+  let descriptor = HermesChatAttachmentDescriptor(
+    id: "550e8400-e29b-41d4-a716-446655440099",
+    name: "generated.mp4",
+    contentType: "video/mp4",
+    plaintextBytes: payload.count,
+    storage: HermesChatCrypto.privateAttachmentStorage,
+    sha256: digest
+  )
+  let staging = root.appendingPathComponent("download.tmp")
+  try payload.write(to: staging, options: [.atomic])
+  let cache = HermesChatAttachmentCache(directory: root)
+
+  let stored = try await cache.storePrivateDownloadedFile(
+    staging,
+    for: descriptor,
+    spaceID: "primary"
+  )
+  #expect(await cache.privateFile(for: descriptor, spaceID: "primary") == stored)
+
+  let handle = try FileHandle(forWritingTo: stored)
+  try handle.write(contentsOf: Data([0]))
+  try handle.close()
+  #expect(await cache.privateFile(for: descriptor, spaceID: "primary") == nil)
 }

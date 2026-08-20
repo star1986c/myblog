@@ -7,12 +7,16 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -198,6 +202,106 @@ final class NotesApiClient {
     byte[] data = readBytes(connection.getInputStream(), Models.MAX_ATTACHMENT_BYTES + 16);
     connection.disconnect();
     return data;
+  }
+
+  Models.HermesChatDirectDownloadTicket hermesChatDirectDownloadTicket(
+    String spaceId,
+    String attachmentId
+  ) throws Exception {
+    requireFreshAuthenticatedSession();
+    return Models.HermesChatDirectDownloadTicket.fromJson(
+      request(
+        "POST",
+        "api/admin/hermes-chat/attachments/download-ticket",
+        new JSONObject()
+          .put("spaceId", spaceId)
+          .put("attachmentId", attachmentId),
+        null
+      )
+    );
+  }
+
+  File downloadHermesChatDirectAttachment(
+    Models.HermesChatDirectDownloadTicket ticket,
+    File destination
+  ) throws Exception {
+    URL url = new URL(ticket.downloadUrl);
+    String host = url.getHost() == null ? "" : url.getHost().toLowerCase(java.util.Locale.ROOT);
+    if (!"https".equals(url.getProtocol())
+        || !host.endsWith(".r2.cloudflarestorage.com")
+        || ticket.plaintextBytes <= HermesChatCrypto.MAX_ATTACHMENT_BYTES
+        || ticket.plaintextBytes > HermesChatCrypto.MAX_AGENT_ATTACHMENT_BYTES) {
+      throw new IllegalArgumentException("Hermes 大附件下载凭证无效。");
+    }
+    File parent = destination.getParentFile();
+    if (parent == null || (!parent.exists() && !parent.mkdirs())) {
+      throw new IllegalStateException("无法创建 Hermes 附件缓存目录。");
+    }
+    File temporary = new File(parent, destination.getName() + ".part");
+    Files.deleteIfExists(temporary.toPath());
+    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+    connection.setRequestMethod("GET");
+    connection.setConnectTimeout(15_000);
+    connection.setReadTimeout(60 * 60 * 1_000);
+    connection.setUseCaches(false);
+    connection.setRequestProperty("Accept", "application/octet-stream");
+    connection.setRequestProperty("Accept-Encoding", "identity");
+    try {
+      int status = connection.getResponseCode();
+      URL responseUrl = connection.getURL();
+      String responseHost = responseUrl.getHost() == null
+        ? ""
+        : responseUrl.getHost().toLowerCase(java.util.Locale.ROOT);
+      if (status < 200 || status >= 300
+          || !"https".equals(responseUrl.getProtocol())
+          || !responseHost.endsWith(".r2.cloudflarestorage.com")) {
+        throw new ApiException(status, "Hermes 大附件下载失败。");
+      }
+      long declared = connection.getContentLengthLong();
+      if (declared >= 0 && declared != ticket.plaintextBytes) {
+        throw new IllegalArgumentException("Hermes 大附件大小与凭证不一致。");
+      }
+      long total = 0;
+      byte[] buffer = new byte[1024 * 1024];
+      try (InputStream input = connection.getInputStream();
+           FileOutputStream output = new FileOutputStream(temporary)) {
+        int count;
+        while ((count = input.read(buffer)) != -1) {
+          total += count;
+          if (total > ticket.plaintextBytes
+              || total > HermesChatCrypto.MAX_AGENT_ATTACHMENT_BYTES) {
+            throw new IllegalArgumentException("Hermes 大附件超过接收上限。");
+          }
+          output.write(buffer, 0, count);
+        }
+        output.getFD().sync();
+      }
+      if (total != ticket.plaintextBytes) {
+        throw new IllegalArgumentException("Hermes 大附件下载不完整。");
+      }
+      try {
+        Files.move(
+          temporary.toPath(),
+          destination.toPath(),
+          StandardCopyOption.ATOMIC_MOVE,
+          StandardCopyOption.REPLACE_EXISTING
+        );
+      } catch (Exception atomicMoveError) {
+        Files.move(
+          temporary.toPath(),
+          destination.toPath(),
+          StandardCopyOption.REPLACE_EXISTING
+        );
+      }
+      return destination;
+    } finally {
+      connection.disconnect();
+      try {
+        Files.deleteIfExists(temporary.toPath());
+      } catch (Exception ignored) {
+        // A stale partial file is harmless and will be replaced on the next attempt.
+      }
+    }
   }
 
   private void requireFreshAuthenticatedSession() throws Exception {

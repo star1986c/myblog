@@ -1,7 +1,7 @@
 name: cloudflare_chat
 label: Cloudflare Chat
 kind: platform
-version: 0.2.0
+version: 0.3.0
 description: End-to-end encrypted Cloudflare chat with rich files and media for a private Hermes NAS.
 author: superstar1014
 requires_env:
@@ -14,7 +14,7 @@ requires_env:
     prompt: Agent relay secret
     password: true
   - name: HERMES_CF_CHAT_KEY
-    description: Base64url-encoded 32-byte end-to-end encryption key shared with Android.
+    description: Base64url-encoded 32-byte end-to-end encryption key shared with Android and macOS.
     prompt: Chat encryption key
     password: true
   - name: HERMES_CF_SPACE_ID
@@ -33,4 +33,12 @@ optional_env:
   - name: HERMES_CF_ALLOW_ALL_USERS
     description: Explicitly allow every relay user. Keep false for a private channel.
     prompt: Allow all users
+    password: false
+  - name: HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES
+    description: Optional Agent output limit above 10 MiB; defaults to 536870912 (512 MiB).
+    prompt: Agent attachment byte limit
+    password: false
+  - name: HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS
+    description: Optional R2 direct upload socket timeout; defaults to 900 seconds.
+    prompt: Direct upload timeout
     password: false
