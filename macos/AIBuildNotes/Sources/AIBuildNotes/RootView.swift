@@ -9,12 +9,18 @@ private enum WorkspaceMode: String {
   case cloudflareBilling
 }
 
+private enum SidebarDestination: Hashable {
+  case notes(NoteLocation)
+  case hermes
+  case cloudflareBilling
+}
+
 struct RootView: View {
   @EnvironmentObject private var store: NotesStore
   @EnvironmentObject private var hermesStore: HermesChatStore
   @EnvironmentObject private var cloudflareBillingStore: CloudflareBillingStore
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
-  @State private var workspaceMode: WorkspaceMode = .notes
+  @State private var sidebarDestination: SidebarDestination? = .notes(.allNotes)
 
   var body: some View {
     Group {
@@ -23,6 +29,20 @@ struct RootView: View {
       } else {
         workspace
       }
+    }
+    .onChange(of: sidebarDestination) { _, destination in
+      guard case .notes(let location) = destination, store.location != location else { return }
+      Task { @MainActor in
+        await Task.yield()
+        guard sidebarDestination == .notes(location), store.location != location else { return }
+        store.selectLocation(location)
+      }
+    }
+    .onChange(of: store.location) { _, location in
+      guard workspaceMode == .notes else { return }
+      let destination = SidebarDestination.notes(location)
+      guard sidebarDestination != destination else { return }
+      sidebarDestination = destination
     }
     .alert(
       "提示",
@@ -63,7 +83,7 @@ struct RootView: View {
   private var workspace: some View {
     if workspaceMode == .cloudflareBilling {
       NavigationSplitView(columnVisibility: $columnVisibility) {
-        SidebarView(workspaceMode: $workspaceMode)
+        SidebarView(selection: $sidebarDestination)
           .navigationSplitViewColumnWidth(min: 190, ideal: 225, max: 280)
       } detail: {
         CloudflareBillingView()
@@ -71,7 +91,7 @@ struct RootView: View {
       .navigationSplitViewStyle(.balanced)
     } else {
       NavigationSplitView(columnVisibility: $columnVisibility) {
-        SidebarView(workspaceMode: $workspaceMode)
+        SidebarView(selection: $sidebarDestination)
           .navigationSplitViewColumnWidth(min: 190, ideal: 225, max: 280)
       } content: {
         Group {
@@ -90,6 +110,17 @@ struct RootView: View {
         }
       }
       .navigationSplitViewStyle(.balanced)
+    }
+  }
+
+  private var workspaceMode: WorkspaceMode {
+    switch sidebarDestination {
+    case .hermes:
+      .hermes
+    case .cloudflareBilling:
+      .cloudflareBilling
+    case .notes, nil:
+      .notes
     }
   }
 }
@@ -173,7 +204,7 @@ private struct FolderEditorRequest: Identifiable {
 private struct SidebarView: View {
   @EnvironmentObject private var store: NotesStore
   @EnvironmentObject private var hermesStore: HermesChatStore
-  @Binding var workspaceMode: WorkspaceMode
+  @Binding var selection: SidebarDestination?
   @State private var folderEditor: FolderEditorRequest?
   @State private var folderToDelete: NoteFolder?
   @State private var showsPasswordChange = false
@@ -182,41 +213,25 @@ private struct SidebarView: View {
     VStack(spacing: 0) {
       sidebarHeader
 
-      List(selection: locationBinding) {
+      List(selection: $selection) {
         Section("工作区") {
-          Button {
-            workspaceMode = .hermes
-          } label: {
-            HStack(spacing: 8) {
-              Label("Hermes 聊天", systemImage: "message.fill")
-              Spacer(minLength: 8)
-              if hermesStore.totalUnread > 0 {
-                Text("\(min(99, hermesStore.totalUnread))")
-                  .font(.caption2.bold())
-                  .foregroundStyle(.white)
-                  .padding(.horizontal, 6)
-                  .padding(.vertical, 2)
-                  .background(Color.accentColor, in: Capsule())
-              }
+          HStack(spacing: 8) {
+            Label("Hermes 聊天", systemImage: "message.fill")
+            Spacer(minLength: 8)
+            if hermesStore.totalUnread > 0 {
+              Text("\(min(99, hermesStore.totalUnread))")
+                .font(.caption2.bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.accentColor, in: Capsule())
             }
-            .contentShape(Rectangle())
           }
-          .buttonStyle(.plain)
-          .listRowBackground(
-            workspaceMode == .hermes ? Color.accentColor.opacity(0.14) : Color.clear
-          )
+          .tag(SidebarDestination.hermes)
 
-          Button {
-            workspaceMode = .cloudflareBilling
-          } label: {
-            Label("Cloudflare 报表", systemImage: "chart.bar.xaxis")
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .listRowBackground(
-            workspaceMode == .cloudflareBilling ? Color.accentColor.opacity(0.14) : Color.clear
-          )
+          Label("Cloudflare 报表", systemImage: "chart.bar.xaxis")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .tag(SidebarDestination.cloudflareBilling)
         }
 
         Section("笔记") {
@@ -238,9 +253,7 @@ private struct SidebarView: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             }
-            .tag(NoteLocation.folder(folder.id))
-            .contentShape(Rectangle())
-            .onTapGesture { workspaceMode = .notes }
+            .tag(SidebarDestination.notes(.folder(folder.id)))
             .contextMenu {
               Button("上移", systemImage: "arrow.up") {
                 Task { await store.moveFolder(id: folder.id, offset: -1) }
@@ -340,7 +353,7 @@ private struct SidebarView: View {
       }
 
       Button {
-        workspaceMode = .notes
+        selection = .notes(store.location)
         Task { await store.createNote() }
       } label: {
         Label("新建笔记", systemImage: "square.and.pencil")
@@ -395,21 +408,7 @@ private struct SidebarView: View {
         .font(.caption)
         .foregroundStyle(.tertiary)
     }
-    .tag(location)
-    .contentShape(Rectangle())
-    .onTapGesture { workspaceMode = .notes }
-  }
-
-  private var locationBinding: Binding<NoteLocation?> {
-    Binding(
-      get: { workspaceMode == .notes ? store.location : nil },
-      set: {
-        if let location = $0 {
-          workspaceMode = .notes
-          store.selectLocation(location)
-        }
-      }
-    )
+    .tag(SidebarDestination.notes(location))
   }
 }
 
