@@ -163,8 +163,7 @@ public final class HermesChatStore: ObservableObject {
   public func stop() async {
     started = false
     configurationGeneration += 1
-    reconnectTask?.cancel()
-    reconnectTask = nil
+    cancelScheduledReconnect()
     eventTask?.cancel()
     eventTask = nil
     messageFlushTask?.cancel()
@@ -258,8 +257,7 @@ public final class HermesChatStore: ObservableObject {
   }
 
   public func reconnect() async {
-    reconnectTask?.cancel()
-    reconnectTask = nil
+    cancelScheduledReconnect()
     reconnectAttempt = 0
     await connectConfiguredProfiles()
   }
@@ -276,8 +274,7 @@ public final class HermesChatStore: ObservableObject {
     defaults.set(requestedDays, forKey: "hermes_chat_refresh_days_v1")
     recentRefreshProfileID = spaceID
     isRefreshingMessages = true
-    reconnectTask?.cancel()
-    reconnectTask = nil
+    cancelScheduledReconnect()
     reconnectAttempt = 0
     await connectConfiguredProfiles(recentSyncSinceByProfile: [spaceID: since])
   }
@@ -484,6 +481,7 @@ public final class HermesChatStore: ObservableObject {
   public func clearError() { errorMessage = nil }
 
   private func configureLocalProfilesAndConnect() async {
+    cancelScheduledReconnect()
     configurationGeneration += 1
     let generation = configurationGeneration
     var nextCryptos: [String: HermesChatCrypto] = [:]
@@ -525,8 +523,6 @@ public final class HermesChatStore: ObservableObject {
   private func connectConfiguredProfiles(
     recentSyncSinceByProfile: [String: Int64] = [:]
   ) async {
-    reconnectTask?.cancel()
-    reconnectTask = nil
     guard started, !configuredProfileIDs.isEmpty else {
       await client.disconnect()
       connectionState = .idle
@@ -701,16 +697,30 @@ public final class HermesChatStore: ObservableObject {
     connectionState = .disconnected(reason)
     recentRefreshProfileID = nil
     isRefreshingMessages = false
-    reconnectTask?.cancel()
+    cancelScheduledReconnect()
     let exponent = min(reconnectAttempt, 4)
     let base = min(45.0, 2.0 * pow(2.0, Double(exponent)))
     let jitter = Double.random(in: 0...(base / 4))
     reconnectAttempt += 1
     reconnectTask = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(base + jitter))
+      do {
+        try await Task.sleep(for: .seconds(base + jitter))
+      } catch {
+        return
+      }
       guard !Task.isCancelled else { return }
-      await self?.connectConfiguredProfiles()
+      await self?.runScheduledReconnect()
     }
+  }
+
+  private func cancelScheduledReconnect() {
+    reconnectTask?.cancel()
+    reconnectTask = nil
+  }
+
+  private func runScheduledReconnect() async {
+    reconnectTask = nil
+    await connectConfiguredProfiles()
   }
 
   private func cacheProfiles(_ profiles: [HermesChatProfile]) {
