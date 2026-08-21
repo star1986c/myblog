@@ -1,13 +1,17 @@
 package io.qzz.superstar1014.mynotes;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -37,6 +41,7 @@ import java.util.concurrent.Executors;
 /** Telegram-inspired, configuration-driven entry point for isolated Hermes chats. */
 public final class HermesConversationsActivity extends Activity
     implements HermesChatConnectionManager.UnreadListener {
+  private static final int REQUEST_NOTIFICATION_PERMISSION = 4102;
   private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern(
     "HH:mm",
     Locale.ROOT
@@ -74,6 +79,7 @@ public final class HermesConversationsActivity extends Activity
     connection = HermesChatConnectionManager.get(this);
     connection.addUnreadListener(this);
     buildScreen();
+    if (!demoMode) requestHermesNotificationPermission();
     if (demoMode) loadDemoProfiles();
     else loadCachedProfiles();
   }
@@ -96,6 +102,41 @@ public final class HermesConversationsActivity extends Activity
     if (connection != null) connection.removeUnreadListener(this);
     executor.shutdownNow();
     super.onDestroy();
+  }
+
+  @Override
+  public void onRequestPermissionsResult(
+    int requestCode,
+    String[] permissions,
+    int[] grantResults
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    if (requestCode != REQUEST_NOTIFICATION_PERMISSION) return;
+    if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) return;
+    showNotificationPermissionSettings();
+  }
+
+  private void requestHermesNotificationPermission() {
+    if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+        == PackageManager.PERMISSION_GRANTED) return;
+    requestPermissions(
+      new String[] { Manifest.permission.POST_NOTIFICATIONS },
+      REQUEST_NOTIFICATION_PERMISSION
+    );
+  }
+
+  private void showNotificationPermissionSettings() {
+    if (isFinishing() || isDestroyed()) return;
+    new AlertDialog.Builder(this)
+      .setTitle("允许 Hermes 新消息通知")
+      .setMessage("开启通知后，App 在后台收到助手消息时会立即提醒；锁屏不会显示聊天正文。")
+      .setPositiveButton("打开设置", (dialog, which) -> {
+        Intent settings = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+          .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+        startActivity(settings);
+      })
+      .setNegativeButton("暂不", null)
+      .show();
   }
 
   private void buildScreen() {

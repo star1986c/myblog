@@ -86,6 +86,26 @@ public final class CryptoTestRunner extends Instrumentation {
         finish(Activity.RESULT_OK, result);
         return;
       }
+      if ("message-notification".equals(arguments.getString("uiQa"))) {
+        showHermesMessageNotificationForQa();
+        result.putString(
+          REPORT_KEY_STREAMRESULT,
+          "Hermes private profile-routed notification QA: PASS\n"
+        );
+        Thread.sleep(30_000L);
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
+      if ("notification-permission".equals(arguments.getString("uiQa"))) {
+        showHermesNotificationPermissionForQa();
+        result.putString(
+          REPORT_KEY_STREAMRESULT,
+          "Hermes notification permission prompt QA: PASS\n"
+        );
+        Thread.sleep(30_000L);
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if ("image-preview".equals(arguments.getString("layoutPreview"))) {
         showHermesImagePreviewForQa();
         result.putString(REPORT_KEY_STREAMRESULT, "Hermes image preview QA: PASS\n");
@@ -99,6 +119,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyEncryptedAttachments();
       verifyHermesChatCrypto();
       verifyHermesChatRichMessages();
+      verifyHermesNotificationRouting();
       verifyHermesImageShareProvider();
       verifyHermesChatHistoryCache();
       verifyAttachmentRequestHints();
@@ -354,6 +375,159 @@ public final class CryptoTestRunner extends Instrumentation {
     runOnMainSync(() -> activity.moveTaskToBack(true));
     waitForIdleSync();
     Thread.sleep(2_000L);
+  }
+
+  private void showHermesMessageNotificationForQa() throws Exception {
+    Context context = getTargetContext();
+    verifyHermesNotificationRouting();
+    verifyHermesNotificationSuppressionForQa();
+    String profileId = "qa-notification";
+    String profileLabel = "Hermes 通知验证助手";
+    new SecureSessionStore(context).saveHermesChatKey(
+      profileId,
+      HermesChatCrypto.generateKey()
+    );
+    new HermesChatNotifications(context).showMessage(
+      profileId,
+      profileLabel,
+      3,
+      new HermesChatCrypto.ChatMessage(
+        "qa-private-notification",
+        "agent",
+        System.currentTimeMillis(),
+        3_001,
+        "QA_PRIVATE_TEXT_MUST_NOT_APPEAR_IN_NOTIFICATION",
+        new org.json.JSONArray()
+      )
+    );
+  }
+
+  private void showHermesNotificationPermissionForQa() {
+    Intent intent = new Intent(getTargetContext(), HermesConversationsActivity.class)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    startActivitySync(intent);
+    waitForIdleSync();
+  }
+
+  private void verifyHermesNotificationSuppressionForQa() throws Exception {
+    Context context = getTargetContext();
+    String profileId = "qa-notification-suppression";
+    String profileLabel = "Hermes 前台抑制验证";
+    HermesChatConnectionManager connection = HermesChatConnectionManager.get(context);
+    HermesChatConnectionManager.Listener listener = new HermesChatConnectionManager.Listener() {
+      @Override public void onConnecting() {}
+      @Override public void onReady() {}
+      @Override public void onMessage(HermesChatCrypto.ChatMessage message) {}
+      @Override public void onAcknowledged(String messageId, long sequence) {}
+      @Override public void onActionAcknowledged(String actionId, boolean delivered) {}
+      @Override public void onTyping(boolean active) {}
+      @Override public void onDisconnected(String reason) {}
+    };
+    Method handleMessage = HermesChatConnectionManager.class.getDeclaredMethod(
+      "handleMessage",
+      String.class,
+      HermesChatCrypto.ChatMessage.class
+    );
+    handleMessage.setAccessible(true);
+    try {
+      runOnMainSync(() -> {
+        try {
+          connection.attach(
+            profileId,
+            profileLabel,
+            HermesChatCrypto.generateKey(),
+            0,
+            listener
+          );
+          handleMessage.invoke(connection, profileId, new HermesChatCrypto.ChatMessage(
+            "qa-visible-notification",
+            "agent",
+            System.currentTimeMillis(),
+            4_001,
+            "Visible chat must suppress this notification",
+            new org.json.JSONArray()
+          ));
+        } catch (Exception error) {
+          throw new RuntimeException(error);
+        }
+      });
+      waitForIdleSync();
+      require(
+        !hasNotificationTitle(context, profileLabel),
+        "Visible Hermes profile posted a duplicate system notification"
+      );
+
+      runOnMainSync(() -> {
+        try {
+          connection.setProfileVisible(profileId, listener, false);
+          handleMessage.invoke(connection, profileId, new HermesChatCrypto.ChatMessage(
+            "qa-background-notification",
+            "agent",
+            System.currentTimeMillis() + 1,
+            4_002,
+            "Background message text must remain private",
+            new org.json.JSONArray()
+          ));
+        } catch (Exception error) {
+          throw new RuntimeException(error);
+        }
+      });
+      waitForIdleSync();
+      require(
+        hasNotificationTitle(context, profileLabel),
+        "Background Hermes profile did not post a system notification"
+      );
+
+      runOnMainSync(() -> connection.setProfileVisible(profileId, listener, true));
+      waitForIdleSync();
+      require(
+        !hasNotificationTitle(context, profileLabel),
+        "Opening the Hermes profile did not clear its notification"
+      );
+    } finally {
+      runOnMainSync(() -> {
+        connection.detach(listener);
+        connection.shutdown();
+      });
+    }
+  }
+
+  private static boolean hasNotificationTitle(Context context, String expectedTitle) {
+    android.app.NotificationManager manager = context.getSystemService(
+      android.app.NotificationManager.class
+    );
+    if (manager == null) return false;
+    for (android.service.notification.StatusBarNotification item : manager.getActiveNotifications()) {
+      CharSequence title = item.getNotification().extras.getCharSequence(
+        android.app.Notification.EXTRA_TITLE
+      );
+      if (title != null && expectedTitle.contentEquals(title)) return true;
+    }
+    return false;
+  }
+
+  private void verifyHermesNotificationRouting() {
+    Context context = getTargetContext();
+    Intent route = HermesChatNotifications.openConversationIntent(
+      context,
+      "personal",
+      "Hermes 个人助手"
+    );
+    require(route.getComponent() != null, "Hermes notification route has no component");
+    require(
+      HermesChatActivity.class.getName().equals(route.getComponent().getClassName()),
+      "Hermes notification did not target the chat activity"
+    );
+    require(
+      "personal".equals(route.getStringExtra(HermesChatActivity.EXTRA_PROFILE_ID)),
+      "Hermes notification lost its profile id"
+    );
+    require(
+      "Hermes 个人助手".equals(
+        route.getStringExtra(HermesChatActivity.EXTRA_PROFILE_LABEL)
+      ),
+      "Hermes notification lost its profile label"
+    );
   }
 
   private static org.json.JSONObject qaAttachment(

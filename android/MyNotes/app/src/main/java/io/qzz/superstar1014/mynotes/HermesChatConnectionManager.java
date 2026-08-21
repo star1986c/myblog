@@ -66,6 +66,7 @@ final class HermesChatConnectionManager {
   private final NotesApiClient api;
   private final SecureSessionStore secureStore;
   private final HermesChatUnreadStore unreadStore;
+  private final HermesChatNotifications notifications;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
   private final Map<String, ProfileSession> sessions = new LinkedHashMap<>();
@@ -86,6 +87,7 @@ final class HermesChatConnectionManager {
     api = new NotesApiClient(applicationContext);
     secureStore = new SecureSessionStore(applicationContext);
     unreadStore = new HermesChatUnreadStore(applicationContext);
+    notifications = new HermesChatNotifications(applicationContext);
     ensureClient();
     List<Models.HermesChatProfile> cachedProfiles = new HermesChatProfileStore(
       applicationContext
@@ -111,6 +113,7 @@ final class HermesChatConnectionManager {
           );
           configs.add(new ProfileConfig(
             profile.id,
+            profile.label,
             fingerprint(encodedKey),
             crypto,
             history,
@@ -127,6 +130,7 @@ final class HermesChatConnectionManager {
 
   void attach(
     String profileId,
+    String profileLabel,
     String encodedKey,
     long initialSequence,
     Listener requestedListener
@@ -139,6 +143,7 @@ final class HermesChatConnectionManager {
       HermesChatCrypto crypto = new HermesChatCrypto(encodedKey);
       session = new ProfileSession(
         profileId,
+        profileLabel,
         requestedFingerprint,
         crypto,
         new HermesChatHistoryStore(context, profileId, crypto),
@@ -146,6 +151,7 @@ final class HermesChatConnectionManager {
       );
       sessions.put(profileId, session);
     } else {
+      session.profileLabel = profileLabel;
       session.lastSequence = Math.max(session.lastSequence, initialSequence);
     }
     session.listener = requestedListener;
@@ -206,6 +212,7 @@ final class HermesChatConnectionManager {
   void shutdown() {
     cancelReconnect();
     for (ProfileSession session : sessions.values()) {
+      notifications.cancel(session.profileId);
       cancelAwaiting(session);
       flushMessagePersistence(session);
     }
@@ -272,6 +279,7 @@ final class HermesChatConnectionManager {
     for (String profileId : removedProfileIds) {
       ProfileSession removed = sessions.remove(profileId);
       if (removed != null) {
+        notifications.cancel(profileId);
         cancelAwaiting(removed);
         flushMessagePersistence(removed);
         changed = true;
@@ -280,6 +288,7 @@ final class HermesChatConnectionManager {
     for (ProfileConfig config : configs) {
       ProfileSession existing = sessions.get(config.profileId);
       if (existing != null && existing.keyFingerprint.equals(config.keyFingerprint)) {
+        existing.profileLabel = config.profileLabel;
         existing.lastSequence = Math.max(existing.lastSequence, config.lastSequence);
         configureClientProfile(existing);
         continue;
@@ -287,6 +296,7 @@ final class HermesChatConnectionManager {
       if (existing != null) discardMessagePersistence(existing);
       sessions.put(config.profileId, new ProfileSession(
         config.profileId,
+        config.profileLabel,
         config.keyFingerprint,
         config.crypto,
         config.history,
@@ -411,7 +421,9 @@ final class HermesChatConnectionManager {
     if ("agent".equals(message.sender)) {
       cancelAwaiting(session);
       if (!session.visible && message.replaceSequence == 0) {
-        notifyUnread(profileId, unreadStore.increment(profileId));
+        int unreadCount = unreadStore.increment(profileId);
+        notifications.showMessage(profileId, session.profileLabel, unreadCount, message);
+        notifyUnread(profileId, unreadCount);
       }
     }
     if (session.listener != null && session.visible) session.listener.onMessage(message);
@@ -550,6 +562,7 @@ final class HermesChatConnectionManager {
   }
 
   private void clearUnread(String profileId) {
+    notifications.cancel(profileId);
     if (unreadStore.get(profileId) == 0) return;
     unreadStore.clear(profileId);
     notifyUnread(profileId, 0);
@@ -596,6 +609,7 @@ final class HermesChatConnectionManager {
 
   private static final class ProfileConfig {
     final String profileId;
+    final String profileLabel;
     final String keyFingerprint;
     final HermesChatCrypto crypto;
     final HermesChatHistoryStore history;
@@ -603,12 +617,14 @@ final class HermesChatConnectionManager {
 
     ProfileConfig(
       String profileId,
+      String profileLabel,
       String keyFingerprint,
       HermesChatCrypto crypto,
       HermesChatHistoryStore history,
       long lastSequence
     ) {
       this.profileId = profileId;
+      this.profileLabel = profileLabel;
       this.keyFingerprint = keyFingerprint;
       this.crypto = crypto;
       this.history = history;
@@ -618,6 +634,7 @@ final class HermesChatConnectionManager {
 
   private static final class ProfileSession {
     final String profileId;
+    String profileLabel;
     final String keyFingerprint;
     final HermesChatCrypto crypto;
     final HermesChatHistoryStore history;
@@ -633,12 +650,14 @@ final class HermesChatConnectionManager {
 
     ProfileSession(
       String profileId,
+      String profileLabel,
       String keyFingerprint,
       HermesChatCrypto crypto,
       HermesChatHistoryStore history,
       long lastSequence
     ) {
       this.profileId = profileId;
+      this.profileLabel = profileLabel;
       this.keyFingerprint = keyFingerprint;
       this.crypto = crypto;
       this.history = history;

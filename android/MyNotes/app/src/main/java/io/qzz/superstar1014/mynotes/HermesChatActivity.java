@@ -875,6 +875,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           try {
             connection.attach(
               spaceId,
+              selectedProfile.label,
               encodedKey,
               snapshot.lastSequence,
               connectionListener
