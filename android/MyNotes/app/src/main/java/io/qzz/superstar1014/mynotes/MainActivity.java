@@ -476,7 +476,7 @@ public final class MainActivity extends Activity {
       }, error -> {
         loginButton.setEnabled(true);
         loginButton.setText(getString(R.string.login));
-        showError(error);
+        showLoginFailure(error);
       });
     });
     passwordField.setOnEditorActionListener((view, actionId, event) -> {
@@ -2629,10 +2629,46 @@ public final class MainActivity extends Activity {
     runAsync(() -> {
       api.logout();
       return true;
-    }, ignored -> {
-      clearState();
-      showLogin();
-    });
+    }, ignored -> finishLocalLogout(null), error -> finishLocalLogout(error));
+  }
+
+  private void showLoginFailure(Exception error) {
+    toast(loginFailureMessage(error));
+  }
+
+  static String loginFailureMessage(Exception error) {
+    if (error instanceof NotesApiClient.ApiException) {
+      String message = error.getMessage();
+      return message == null || message.trim().isEmpty()
+        ? "登录失败，请稍后重试；账号和密码已保留。"
+        : message;
+    }
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof java.io.IOException) {
+        return "登录连接被网络中断，请检查网络后重试；账号和密码已保留。";
+      }
+      String message = current.getMessage();
+      if (message != null) {
+        String normalized = message.toLowerCase(Locale.ROOT);
+        if (normalized.contains("connection closed")
+            || normalized.contains("unexpected end of stream")
+            || normalized.contains("connection reset")
+            || normalized.contains("network is unreachable")) {
+          return "登录连接被网络中断，请检查网络后重试；账号和密码已保留。";
+        }
+      }
+      current = current.getCause();
+    }
+    return "登录失败，请稍后重试；账号和密码已保留。";
+  }
+
+  private void finishLocalLogout(Exception remoteError) {
+    clearState();
+    showLogin();
+    if (remoteError != null) {
+      toast("已退出本机，但服务器注销请求未完成；请检查网络后再登录。");
+    }
   }
 
   private void clearState() {

@@ -104,6 +104,7 @@ public final class CryptoTestRunner extends Instrumentation {
       verifyAttachmentRequestHints();
       verifyAttachmentDiskCache();
       verifySecureSessionStorage();
+      verifyLoginFailureMessages();
       verifyBiometricProtectionEnvelope();
       result.putString(REPORT_KEY_STREAMRESULT, "My Notes crypto and biometric storage: PASS\n");
       finish(Activity.RESULT_OK, result);
@@ -114,6 +115,21 @@ public final class CryptoTestRunner extends Instrumentation {
       );
       finish(Activity.RESULT_CANCELED, result);
     }
+  }
+
+  private void verifyLoginFailureMessages() {
+    require(
+      "登录连接被网络中断，请检查网络后重试；账号和密码已保留。".equals(
+        MainActivity.loginFailureMessage(new java.io.IOException("connection closed"))
+      ),
+      "Transient login close must be explained without clearing the form"
+    );
+    require(
+      "Invalid username or password.".equals(MainActivity.loginFailureMessage(
+        new NotesApiClient.ApiException(401, "Invalid username or password.")
+      )),
+      "Server authentication errors must remain actionable"
+    );
   }
 
   private void showHermesImagePreviewForQa() throws Exception {

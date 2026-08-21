@@ -524,16 +524,10 @@ final class NotesApiClient {
 
   private JSONObject request(String method, String path, JSONObject body, Integer revision)
     throws Exception {
-    HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path)
-      .openConnection();
-    connection.setRequestMethod(method);
-    connection.setConnectTimeout(15_000);
+    HttpURLConnection connection = open(method, path);
     connection.setReadTimeout(25_000);
-    connection.setUseCaches(false);
     connection.setRequestProperty("Accept", "application/json");
     connection.setRequestProperty("X-Attachment-Support", "1");
-    String cookie = sessionStore.load();
-    if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
     if (!"GET".equals(method) && !"HEAD".equals(method) && !csrfToken.isEmpty()) {
       connection.setRequestProperty("X-CSRF-Token", csrfToken);
     }
@@ -542,30 +536,33 @@ final class NotesApiClient {
       if (!token.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + token);
     }
     if (revision != null) connection.setRequestProperty("If-Match", "\"" + revision + "\"");
-    if (body != null) {
-      byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
-      connection.setDoOutput(true);
-      connection.setFixedLengthStreamingMode(data.length);
-      connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-      try (OutputStream output = connection.getOutputStream()) {
-        output.write(data);
+    try {
+      if (body != null) {
+        byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
+        connection.setDoOutput(true);
+        connection.setFixedLengthStreamingMode(data.length);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        try (OutputStream output = connection.getOutputStream()) {
+          output.write(data);
+        }
       }
-    }
 
-    int status = connection.getResponseCode();
-    storeSessionCookie(connection.getHeaderFields());
-    InputStream stream = status >= 200 && status < 300
-      ? connection.getInputStream()
-      : connection.getErrorStream();
-    String responseBody = readBody(stream);
-    connection.disconnect();
+      int status = connection.getResponseCode();
+      storeSessionCookie(connection.getHeaderFields());
+      InputStream stream = status >= 200 && status < 300
+        ? connection.getInputStream()
+        : connection.getErrorStream();
+      String responseBody = readBody(stream);
 
-    JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
-    if (status < 200 || status >= 300) {
-      if (status == 401) csrfToken = "";
-      throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
+      JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
+      if (status < 200 || status >= 300) {
+        if (status == 401) csrfToken = "";
+        throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
+      }
+      return response;
+    } finally {
+      connection.disconnect();
     }
-    return response;
   }
 
   private HttpURLConnection open(String method, String path) throws Exception {
@@ -574,25 +571,35 @@ final class NotesApiClient {
     connection.setConnectTimeout(15_000);
     connection.setReadTimeout(60_000);
     connection.setUseCaches(false);
+    if (isAuthenticationPath(path)) {
+      connection.setRequestProperty("Connection", "close");
+    }
     String cookie = sessionStore.load();
     if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
     return connection;
   }
 
+  private static boolean isAuthenticationPath(String path) {
+    return path != null && path.startsWith("api/auth/");
+  }
+
   private JSONObject readJsonResponse(HttpURLConnection connection) throws Exception {
-    int status = connection.getResponseCode();
-    storeSessionCookie(connection.getHeaderFields());
-    InputStream stream = status >= 200 && status < 300
-      ? connection.getInputStream()
-      : connection.getErrorStream();
-    String responseBody = readBody(stream);
-    connection.disconnect();
-    JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
-    if (status < 200 || status >= 300) {
-      if (status == 401) csrfToken = "";
-      throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
+    try {
+      int status = connection.getResponseCode();
+      storeSessionCookie(connection.getHeaderFields());
+      InputStream stream = status >= 200 && status < 300
+        ? connection.getInputStream()
+        : connection.getErrorStream();
+      String responseBody = readBody(stream);
+      JSONObject response = responseBody.isEmpty() ? new JSONObject() : new JSONObject(responseBody);
+      if (status < 200 || status >= 300) {
+        if (status == 401) csrfToken = "";
+        throw new ApiException(status, response.optString("error", "请求失败，请稍后重试。"));
+      }
+      return response;
+    } finally {
+      connection.disconnect();
     }
-    return response;
   }
 
   private void storeSessionCookie(Map<String, List<String>> headers) {
