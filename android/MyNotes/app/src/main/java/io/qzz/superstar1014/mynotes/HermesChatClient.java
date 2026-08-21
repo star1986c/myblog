@@ -1,5 +1,8 @@
 package io.qzz.superstar1014.mynotes;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -19,6 +22,7 @@ import okhttp3.WebSocketListener;
 /** One process-wide WebSocket that multiplexes all configured Hermes profiles by spaceId. */
 final class HermesChatClient {
   static final String RELAY_URL = "wss://h.superstar1014.qzz.io/api/hermes-chat/ws";
+  private static final long HANDSHAKE_TIMEOUT_MS = 20_000L;
 
   interface Listener {
     void onReady();
@@ -32,9 +36,13 @@ final class HermesChatClient {
 
   private final Listener listener;
   private final OkHttpClient http;
+  private final Handler handler = new Handler(Looper.getMainLooper());
+  private final Object socketStateLock = new Object();
   private final Map<String, ProfileState> profiles = new ConcurrentHashMap<>();
   private volatile WebSocket socket;
   private volatile boolean closing;
+  private Runnable handshakeTimeoutTask;
+  private boolean handshakePending;
 
   HermesChatClient(Listener listener) {
     this.listener = listener;
@@ -64,7 +72,14 @@ final class HermesChatClient {
       .header("X-Hermes-Role", "client")
       .header("X-Hermes-Mode", "multiplex")
       .build();
-    socket = http.newWebSocket(request, new SocketListener(List.copyOf(ticket.spaceIds)));
+    WebSocket nextSocket = http.newWebSocket(
+      request,
+      new SocketListener(List.copyOf(ticket.spaceIds))
+    );
+    synchronized (socketStateLock) {
+      socket = nextSocket;
+      scheduleHandshakeTimeoutLocked(nextSocket);
+    }
   }
 
   HermesChatCrypto.ChatMessage sendMessage(
@@ -136,8 +151,12 @@ final class HermesChatClient {
   void close() {
     closing = true;
     for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
-    WebSocket current = socket;
-    socket = null;
+    WebSocket current;
+    synchronized (socketStateLock) {
+      cancelHandshakeTimeoutLocked();
+      current = socket;
+      socket = null;
+    }
     if (current != null) current.close(1000, "Android chat closed");
   }
 
@@ -158,6 +177,40 @@ final class HermesChatClient {
     if (current == null) return false;
     frame.put("spaceId", spaceId);
     return current.send(frame.toString());
+  }
+
+  private void scheduleHandshakeTimeoutLocked(WebSocket expectedSocket) {
+    cancelHandshakeTimeoutLocked();
+    handshakePending = true;
+    handshakeTimeoutTask = () -> failHandshakeIfPending(expectedSocket);
+    handler.postDelayed(handshakeTimeoutTask, HANDSHAKE_TIMEOUT_MS);
+  }
+
+  private boolean cancelHandshakeTimeout(WebSocket expectedSocket) {
+    synchronized (socketStateLock) {
+      if (socket != expectedSocket || closing || !handshakePending) return false;
+      cancelHandshakeTimeoutLocked();
+      return true;
+    }
+  }
+
+  private void cancelHandshakeTimeoutLocked() {
+    handshakePending = false;
+    if (handshakeTimeoutTask == null) return;
+    handler.removeCallbacks(handshakeTimeoutTask);
+    handshakeTimeoutTask = null;
+  }
+
+  private void failHandshakeIfPending(WebSocket expectedSocket) {
+    synchronized (socketStateLock) {
+      if (socket != expectedSocket || closing || !handshakePending) return;
+      handshakePending = false;
+      handshakeTimeoutTask = null;
+      socket = null;
+    }
+    for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
+    expectedSocket.cancel();
+    listener.onDisconnected("WebSocket 握手超时，正在自动重试。");
   }
 
   private final class SocketListener extends WebSocketListener {
@@ -187,6 +240,7 @@ final class HermesChatClient {
           if (!frame.optBoolean("multiplex")) {
             throw new IllegalArgumentException("服务器未启用多会话连接。");
           }
+          if (!cancelHandshakeTimeout(webSocket)) return;
           for (String ticketSpace : ticketSpaces) sendResume(ticketSpace);
           listener.onReady();
           return;
@@ -268,16 +322,22 @@ final class HermesChatClient {
 
     @Override
     public void onClosed(WebSocket webSocket, int code, String reason) {
-      if (webSocket != socket) return;
-      socket = null;
+      synchronized (socketStateLock) {
+        if (webSocket != socket) return;
+        cancelHandshakeTimeoutLocked();
+        socket = null;
+      }
       for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
       if (!closing) listener.onDisconnected(reason.isEmpty() ? "聊天连接已断开。" : reason);
     }
 
     @Override
     public void onFailure(WebSocket webSocket, Throwable error, Response response) {
-      if (webSocket != socket) return;
-      socket = null;
+      synchronized (socketStateLock) {
+        if (webSocket != socket) return;
+        cancelHandshakeTimeoutLocked();
+        socket = null;
+      }
       for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
       if (!closing) {
         String message = error.getMessage();

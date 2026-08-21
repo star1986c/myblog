@@ -59,6 +59,54 @@ test("Hermes keeps one routed socket for all cached profiles for the Android pro
   );
 });
 
+test("Android abandons a WebSocket handshake that never reaches relay ready", async () => {
+  const client = await source("HermesChatClient.java");
+
+  assert.match(client, /HANDSHAKE_TIMEOUT_MS = 20_000L/);
+  assert.match(client, /handler\.postDelayed\(handshakeTimeoutTask, HANDSHAKE_TIMEOUT_MS\)/);
+  assert.match(
+    client,
+    /if \(socket != expectedSocket \|\| closing \|\| !handshakePending\) return;[\s\S]*socket = null;[\s\S]*expectedSocket\.cancel\(\);[\s\S]*WebSocket 握手超时，正在自动重试/,
+  );
+  assert.match(
+    client,
+    /if \("ready"\.equals\(type\)\) \{[\s\S]*cancelHandshakeTimeout\(webSocket\)[\s\S]*listener\.onReady\(\)/,
+  );
+  assert.match(client, /void close\(\) \{[\s\S]*cancelHandshakeTimeoutLocked\(\)/);
+});
+
+test("Android serializes remembered-device refresh without deleting Hermes keys", async () => {
+  const [api, sessionStore] = await Promise.all([
+    source("NotesApiClient.java"),
+    source("SecureSessionStore.java"),
+  ]);
+
+  assert.match(api, /private static final Object SESSION_REFRESH_LOCK/);
+  assert.match(
+    api,
+    /private JSONObject refreshDeviceToken\(\) throws Exception \{\s*synchronized \(SESSION_REFRESH_LOCK\) \{[\s\S]*request\("GET", "api\/auth\/me", null, null\)/,
+  );
+  assert.match(
+    api,
+    /if \(token\.equals\(sessionStore\.loadDeviceToken\(\)\)\) \{\s*sessionStore\.clearAuthentication\(\);/,
+  );
+  assert.match(
+    api,
+    /firstPart\.equals\("site_admin_session="\)[\s\S]*sessionStore\.clearSessionCookie\(\)/,
+  );
+  assert.doesNotMatch(api, /sessionStore\.clear\(\)/);
+
+  assert.match(
+    sessionStore,
+    /void clearSessionCookie\(\) \{\s*preferences\.edit\(\)\.remove\(COOKIE_KEY\)\.apply\(\);/,
+  );
+  assert.match(
+    sessionStore,
+    /void clearAuthentication\(\) \{[\s\S]*remove\(COOKIE_KEY\)[\s\S]*remove\(TOKEN_KEY\)[\s\S]*apply\(\)/,
+  );
+  assert.doesNotMatch(sessionStore, /preferences\.edit\(\)\.clear\(\)/);
+});
+
 test("Hermes keeps the routed socket in a non-sticky remote-messaging foreground service", async () => {
   const [service, manifest, main, activity, conversations] = await Promise.all([
     source("HermesChatConnectionService.java"),

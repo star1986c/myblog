@@ -1098,7 +1098,9 @@ public final class CryptoTestRunner extends Instrumentation {
       "my_notes_secure_session_test",
       "my-notes-session-cookie-test-v1"
     );
-    store.clear();
+    store.clearAuthentication();
+    store.clearHermesChatKey("primary");
+    store.clearHermesChatKey("secondary");
     store.save("site_admin_session=test-token");
     store.saveDeviceToken("device-id.device-secret");
     store.saveHermesChatKey("primary", "primary-chat-key");
@@ -1131,9 +1133,26 @@ public final class CryptoTestRunner extends Instrumentation {
       "site_admin_session=test-token".equals(store.load()),
       "Clearing a revoked device token also cleared the active session"
     );
-    store.clear();
-    require(store.load().isEmpty(), "Secure session clear failed");
-    require(store.loadDeviceToken().isEmpty(), "Secure device token clear failed");
+    store.saveDeviceToken("replacement-device-token");
+    store.clearSessionCookie();
+    require(store.load().isEmpty(), "Secure session Cookie clear failed");
+    require(
+      "replacement-device-token".equals(store.loadDeviceToken()),
+      "Clearing a session Cookie also cleared the remembered device"
+    );
+    require(
+      "secondary-chat-key".equals(store.loadHermesChatKey("secondary")),
+      "Clearing a session Cookie also cleared a Hermes key"
+    );
+    store.save("site_admin_session=replacement-token");
+    store.clearAuthentication();
+    require(store.load().isEmpty(), "Secure authentication Cookie clear failed");
+    require(store.loadDeviceToken().isEmpty(), "Secure authentication token clear failed");
+    require(
+      "secondary-chat-key".equals(store.loadHermesChatKey("secondary")),
+      "Clearing authentication also cleared a Hermes key"
+    );
+    store.clearHermesChatKey("secondary");
   }
 
   private static void verifyBiometricProtectionEnvelope() {

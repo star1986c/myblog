@@ -10,8 +10,8 @@ android {
     applicationId "io.qzz.superstar1014.mynotes"
     minSdk 36
     targetSdk 36
-    versionCode 28
-    versionName "2.17"
+    versionCode 29
+    versionName "2.18"
     testInstrumentationRunner "io.qzz.superstar1014.mynotes.CryptoTestRunner"
   }
 

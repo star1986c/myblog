@@ -24,6 +24,7 @@ import java.util.Set;
 
 final class NotesApiClient {
   static final String PRODUCTION_BASE_URL = "https://superstar1014.qzz.io/";
+  private static final Object SESSION_REFRESH_LOCK = new Object();
 
   private final SecureSessionStore sessionStore;
   private final String baseUrl;
@@ -71,7 +72,7 @@ final class NotesApiClient {
       request("POST", "api/auth/logout", new JSONObject(), null);
     } finally {
       csrfToken = "";
-      sessionStore.clear();
+      sessionStore.clearAuthentication();
     }
   }
 
@@ -312,7 +313,19 @@ final class NotesApiClient {
   }
 
   private JSONObject refreshDeviceToken() throws Exception {
-    String token = sessionStore.loadDeviceToken();
+    synchronized (SESSION_REFRESH_LOCK) {
+      // Another Activity or the background Hermes service may have refreshed while this
+      // caller waited. Re-check the shared Cookie before consuming a one-time token.
+      JSONObject currentSession = request("GET", "api/auth/me", null, null);
+      if (currentSession.optBoolean("authenticated")) return currentSession;
+
+      String token = sessionStore.loadDeviceToken();
+      if (token.isEmpty()) return currentSession;
+      return exchangeDeviceToken(token);
+    }
+  }
+
+  private JSONObject exchangeDeviceToken(String token) throws Exception {
     HttpURLConnection connection = open("POST", "api/auth/token");
     connection.setRequestProperty("Accept", "application/json");
     connection.setRequestProperty("Authorization", "Bearer " + token);
@@ -327,7 +340,11 @@ final class NotesApiClient {
       return new JSONObject(json.toString()).put("authenticated", true);
     } catch (Exception error) {
       if (error instanceof ApiException && ((ApiException) error).status == 401) {
-        sessionStore.clear();
+        // A concurrent login may already have replaced this token. Never erase newer
+        // credentials, and never erase the independently stored Hermes chat keys.
+        if (token.equals(sessionStore.loadDeviceToken())) {
+          sessionStore.clearAuthentication();
+        }
       }
       throw error;
     }
@@ -585,7 +602,8 @@ final class NotesApiClient {
         String firstPart = header.split(";", 2)[0];
         if (!firstPart.startsWith("site_admin_session=")) continue;
         if (firstPart.equals("site_admin_session=")) {
-          sessionStore.clear();
+          // An expired Cookie must not revoke the remembered-device token or chat keys.
+          sessionStore.clearSessionCookie();
         } else {
           sessionStore.save(firstPart);
         }

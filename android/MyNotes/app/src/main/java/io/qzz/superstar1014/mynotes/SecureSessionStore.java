@@ -83,6 +83,17 @@ final class SecureSessionStore {
     preferences.edit().remove(TOKEN_KEY).apply();
   }
 
+  void clearSessionCookie() {
+    preferences.edit().remove(COOKIE_KEY).apply();
+  }
+
+  void clearAuthentication() {
+    preferences.edit()
+      .remove(COOKIE_KEY)
+      .remove(TOKEN_KEY)
+      .apply();
+  }
+
   void saveHermesChatKey(String spaceId, String key) {
     saveEncrypted(
       chatPreferenceKey(spaceId),
@@ -125,10 +136,6 @@ final class SecureSessionStore {
     } catch (Exception error) {
       throw new IllegalStateException("无法安全保存登录状态。", error);
     }
-  }
-
-  void clear() {
-    preferences.edit().clear().apply();
   }
 
   private static String chatPreferenceKey(String spaceId) {
