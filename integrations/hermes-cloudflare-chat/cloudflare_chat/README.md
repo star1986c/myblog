@@ -27,6 +27,15 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.3.2 reads the dangerous-command authorization deadline from the
+current Hermes profile's `approvals.timeout` setting each time it creates an
+approval prompt. Missing, malformed, or unreadable configuration falls back to
+Hermes' 300-second default. This keeps the encrypted button `expiresAt`, the
+plugin's proactive expiry update, and Hermes' fail-closed wait aligned for both
+the default and named profiles. No environment variables, Worker deployment,
+or Android/macOS client upgrade are required. Replace the plugin for every
+Hermes profile and restart each Gateway.
+
 Version 0.3.1 keeps Hermes' fail-closed 300-second authorization window and
 actively finalizes unanswered interactive prompts as expired when that window
 ends. Android already rejects expired actions locally; macOS now refreshes the

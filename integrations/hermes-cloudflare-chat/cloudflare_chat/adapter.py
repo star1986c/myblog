@@ -54,7 +54,7 @@ MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
 APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.1"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.2"
 DIRECT_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024
 DIRECT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
@@ -182,6 +182,25 @@ def _direct_upload_timeout_seconds() -> int:
     except ValueError:
         configured = 0
     return configured if 60 <= configured <= 3600 else 900
+
+
+def _approval_timeout_seconds() -> int:
+    """Mirror Hermes' current-profile approvals.timeout lookup."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        approvals = config.get("approvals", {}) if isinstance(config, dict) else {}
+        if not isinstance(approvals, dict):
+            return INTERACTION_TIMEOUT_SECONDS
+        return int(approvals.get("timeout", INTERACTION_TIMEOUT_SECONDS))
+    except Exception as error:
+        logger.debug(
+            "Cloudflare Chat could not read approvals.timeout; using %ss: %s",
+            INTERACTION_TIMEOUT_SECONDS,
+            error,
+        )
+        return INTERACTION_TIMEOUT_SECONDS
 
 
 def _sha256_file(path: Path, expected_size: int) -> str:
@@ -568,7 +587,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             text=text,
             options=options,
             option_values=values,
-            timeout_seconds=INTERACTION_TIMEOUT_SECONDS,
+            timeout_seconds=_approval_timeout_seconds(),
             session_key=session_key,
         )
 

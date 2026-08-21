@@ -175,7 +175,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.1")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.2")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -630,6 +630,49 @@ class AdapterContractTests(unittest.TestCase):
         )
         self.assertEqual(final_payload["interaction"]["state"], "resolved")
         self.assertEqual(final_payload["interaction"]["status"], "已批准：仅本次")
+
+    def test_approval_timeout_reads_live_current_profile_config(self):
+        values = {"approvals": {"timeout": "720"}}
+        hermes_cli = types.ModuleType("hermes_cli")
+        hermes_cli.__path__ = []
+        config_module = types.ModuleType("hermes_cli.config")
+        config_module.load_config_readonly = lambda: values
+        hermes_cli.config = config_module
+
+        with patch.dict(sys.modules, {
+            "hermes_cli": hermes_cli,
+            "hermes_cli.config": config_module,
+        }):
+            self.assertEqual(self.adapter._approval_timeout_seconds(), 720)
+            values["approvals"]["timeout"] = 840
+            self.assertEqual(self.adapter._approval_timeout_seconds(), 840)
+            values["approvals"]["timeout"] = "invalid"
+            self.assertEqual(
+                self.adapter._approval_timeout_seconds(),
+                self.adapter.INTERACTION_TIMEOUT_SECONDS,
+            )
+
+    def test_exec_approval_uses_configured_approval_timeout(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        async def scenario():
+            send_prompt = AsyncMock(
+                return_value=self.adapter.SendResult(success=True, message_id="73")
+            )
+            with patch.object(
+                self.adapter,
+                "_approval_timeout_seconds",
+                return_value=720,
+            ), patch.object(instance, "_send_interaction_prompt", send_prompt):
+                result = await instance.send_exec_approval(
+                    chat_id="primary",
+                    command="touch /tmp/approved",
+                    session_key="approval-session",
+                )
+            self.assertTrue(result.success)
+            self.assertEqual(send_prompt.await_args.kwargs["timeout_seconds"], 720)
+
+        asyncio.run(scenario())
 
     def test_interaction_expiry_is_scheduled_after_prompt_is_persisted(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
