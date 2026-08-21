@@ -118,13 +118,12 @@ struct HermesMessageRow: View {
 
 private struct HermesInteractionView: View {
   @EnvironmentObject private var store: HermesChatStore
+  @State private var currentMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
   let message: HermesChatMessage
   let interaction: HermesChatInteraction
 
   private var pending: Bool {
-    interaction.state == "pending"
-      && (interaction.expiresAt <= 0
-        || interaction.expiresAt > Int64(Date().timeIntervalSince1970 * 1_000))
+    interaction.isPending(at: currentMilliseconds)
   }
 
   var body: some View {
@@ -158,7 +157,7 @@ private struct HermesInteractionView: View {
         }
       }
       if !pending {
-        Text(interaction.status ?? "此操作已经完成或过期")
+        Text(statusText)
           .font(.caption2)
           .foregroundStyle(.secondary)
       } else if let pageInfo = interaction.pageInfo, !pageInfo.isEmpty {
@@ -168,6 +167,30 @@ private struct HermesInteractionView: View {
       }
     }
     .padding(.top, 2)
+    .task(id: interaction) {
+      await refreshAtExpiry()
+    }
+  }
+
+  private var statusText: String {
+    if let status = interaction.status, !status.isEmpty { return status }
+    if interaction.isExpired(at: currentMilliseconds) { return "此操作已过期，请重新发送指令。" }
+    return "此操作已经完成"
+  }
+
+  @MainActor
+  private func refreshAtExpiry() async {
+    currentMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+    guard interaction.state == "pending", interaction.expiresAt > currentMilliseconds else {
+      return
+    }
+    let delay = interaction.expiresAt - currentMilliseconds
+    do {
+      try await Task.sleep(for: .milliseconds(delay))
+    } catch {
+      return
+    }
+    currentMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
   }
 
   private var optionRows: [[HermesChatInteractionOption]] {

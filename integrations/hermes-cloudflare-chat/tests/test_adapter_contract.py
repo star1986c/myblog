@@ -39,6 +39,12 @@ def install_hermes_stubs():
             self.platform = platform
             self.resumed_typing_chats = []
 
+        def _mark_connected(self):
+            return None
+
+        def _mark_disconnected(self):
+            return None
+
         async def handle_message(self, event):
             return None
 
@@ -169,7 +175,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.0")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.1")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -233,6 +239,109 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-hermes-space"), "primary")
         self.assertEqual(captured["timeout"], 30)
         self.assertEqual(ack["seq"], 70)
+
+    def test_message_send_confirms_same_envelope_over_https_when_ws_ack_is_lost(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        websocket_envelopes = []
+        published_envelopes = []
+
+        async def lose_ack(envelope, acknowledgement_id):
+            websocket_envelopes.append(envelope)
+            self.assertEqual(acknowledgement_id, envelope["id"])
+            raise ConnectionError(
+                f"Cloudflare Chat application ACK timed out after 15 seconds "
+                f"for message {acknowledgement_id}"
+            )
+
+        def publish(envelope):
+            published_envelopes.append(envelope)
+            return {
+                "v": 1,
+                "type": "ack",
+                "id": envelope["id"],
+                "seq": 72,
+                "duplicate": True,
+            }
+
+        with patch.object(
+            instance,
+            "_send_and_wait_for_ack",
+            side_effect=lose_ack,
+        ), patch.object(instance, "_publish_message", side_effect=publish):
+            result = asyncio.run(instance._send_payload("approval prompt", []))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "72")
+        self.assertEqual(len(websocket_envelopes), 1)
+        self.assertEqual(len(published_envelopes), 1)
+        self.assertIs(published_envelopes[0], websocket_envelopes[0])
+        payload = instance._cipher.decrypt_message(
+            published_envelopes[0],
+            expected_sender="agent",
+        )
+        self.assertEqual(payload["text"], "approval prompt")
+
+    def test_message_send_reports_both_ws_and_https_failures(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        with patch.object(
+            instance,
+            "_send_and_wait_for_ack",
+            AsyncMock(side_effect=ConnectionError("application ACK timeout")),
+        ), patch.object(
+            instance,
+            "_publish_message",
+            side_effect=ConnectionError("message publish returned HTTP 503"),
+        ) as publish:
+            result = asyncio.run(instance._send_payload("result", []))
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.retryable)
+        self.assertIn("application ACK timeout", result.error)
+        self.assertIn("message publish returned HTTP 503", result.error)
+        publish.assert_called_once()
+
+    def test_application_ack_timeout_retires_socket_and_has_explicit_error(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        class Socket:
+            def __init__(self):
+                self.sent = []
+                self.closed = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            async def close(self, *, code, reason):
+                self.closed.append((code, reason))
+
+        socket = Socket()
+
+        async def scenario():
+            instance._socket = socket
+            instance._ready.set()
+            with patch.object(
+                self.adapter.asyncio,
+                "wait_for",
+                AsyncMock(side_effect=asyncio.TimeoutError()),
+            ):
+                with self.assertRaises(ConnectionError) as raised:
+                    await instance._send_and_wait_for_ack(
+                        {"v": 1, "type": "message", "id": "message-timeout"},
+                        "message-timeout",
+                    )
+            transport_tasks = list(instance._transport_tasks)
+            if transport_tasks:
+                await asyncio.gather(*transport_tasks)
+            return str(raised.exception)
+
+        error = asyncio.run(scenario())
+
+        self.assertIn("application ACK timed out after 15 seconds", error)
+        self.assertIn("message-timeout", error)
+        self.assertIsNone(instance._socket)
+        self.assertFalse(instance._ready.is_set())
+        self.assertEqual(socket.closed, [(1011, "Application ACK timeout")])
 
     def test_standalone_cron_send_publishes_to_the_matching_profile_without_websocket(self):
         published = []
@@ -521,6 +630,66 @@ class AdapterContractTests(unittest.TestCase):
         )
         self.assertEqual(final_payload["interaction"]["state"], "resolved")
         self.assertEqual(final_payload["interaction"]["status"], "已批准：仅本次")
+
+    def test_interaction_expiry_is_scheduled_after_prompt_is_persisted(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        async def scenario():
+            with patch.object(
+                instance,
+                "_send_payload",
+                AsyncMock(return_value=self.adapter.SendResult(success=True, message_id="73")),
+            ):
+                result = await instance._send_interaction_prompt(
+                    chat_id="primary",
+                    kind="approval",
+                    text="请授权",
+                    options=[{"id": "once", "label": "仅本次"}],
+                    option_values={"once": "once"},
+                    timeout_seconds=300,
+                    session_key="approval-session",
+                )
+                self.assertTrue(result.success)
+                prompt_id = next(iter(instance._pending_interactions))
+                expiry_task = instance._interaction_expiry_tasks[prompt_id]
+                self.assertFalse(expiry_task.done())
+                expiry_task.cancel()
+                await asyncio.gather(expiry_task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+    def test_interaction_expires_without_a_client_action(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        prompt_id = "550e8400-e29b-41d4-a716-446655440050"
+        expires_at = int(self.adapter.time.time() * 1000) - 1
+        state = {
+            "id": prompt_id,
+            "chat_id": "primary",
+            "kind": "approval",
+            "text": "请授权",
+            "options": [],
+            "option_values": {},
+            "expires_at": expires_at,
+            "stage": "",
+            "page_info": "",
+            "message_seq": 73,
+            "busy": False,
+        }
+        instance._pending_interactions[prompt_id] = state
+
+        async def scenario():
+            with patch.object(instance, "_finish_interaction", AsyncMock()) as finish:
+                await instance._expire_interaction(prompt_id, expires_at)
+                finish.assert_awaited_once_with(
+                    state,
+                    "此操作已过期，请重新发送指令。",
+                    status="已过期",
+                    interaction_state="expired",
+                    already_removed=True,
+                )
+
+        asyncio.run(scenario())
+        self.assertNotIn(prompt_id, instance._pending_interactions)
 
     def test_interaction_callback_does_not_block_the_websocket_receive_loop(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))

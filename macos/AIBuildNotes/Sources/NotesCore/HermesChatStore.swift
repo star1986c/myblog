@@ -360,6 +360,11 @@ public final class HermesChatStore: ObservableObject {
     guard let spaceID = selectedProfileID, let interaction = message.interaction,
       interaction.state == "pending", !option.disabled
     else { return }
+    let now = Int64(Date().timeIntervalSince1970 * 1_000)
+    guard interaction.isPending(at: now) else {
+      errorMessage = "此操作已过期，请重新发送指令。"
+      return
+    }
     do {
       _ = try await client.sendInteractionAction(
         spaceID: spaceID,

@@ -350,6 +350,12 @@ AES-GCM 通用端点；超过 10 MiB 时由插件先流式计算 SHA-256，再�
 对象 PUT 直传并完成 HEAD 校验，成功后才发送加密消息描述符。首版采用单 PUT，默认
 512 MiB 上限，不实现 Multipart。客户端仍不能上传超过 10 MiB 的文件。
 
+插件 0.3.1 保持 Hermes 默认 300 秒的 fail-closed 授权期限。无人操作时，插件会在
+到期点主动将原交互消息更新为“已过期”；macOS 也会按 `expiresAt` 自动禁用按钮，
+并在发送 action 前再校验一次。普通出站消息如果丢失 WebSocket 应用层 ACK，插件会
+淘汰旧连接，再用完全相同的加密消息 ID 走已有 HTTPS 端点幂等确认，不会产生
+第二条可见消息。该版本不需要修改环境变量、密钥或重新部署 Worker。
+
 ## 成本边界
 
 - Worker WebSocket 仅初始 Upgrade 计一次 Worker request，后续 WebSocket 消息不计

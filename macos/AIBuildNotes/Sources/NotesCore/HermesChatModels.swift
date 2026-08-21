@@ -141,6 +141,14 @@ public struct HermesChatInteraction: Codable, Equatable, Hashable, Identifiable,
     self.status = status
     self.pageInfo = pageInfo
   }
+
+  public func isExpired(at milliseconds: Int64) -> Bool {
+    state == "pending" && expiresAt > 0 && expiresAt <= milliseconds
+  }
+
+  public func isPending(at milliseconds: Int64) -> Bool {
+    state == "pending" && !isExpired(at: milliseconds)
+  }
 }
 
 public struct HermesChatMessage: Codable, Equatable, Identifiable, Sendable {

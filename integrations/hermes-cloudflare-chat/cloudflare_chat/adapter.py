@@ -53,7 +53,8 @@ MAX_MESSAGE_ATTACHMENTS = 8
 MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.0"
+APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.1"
 DIRECT_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024
 DIRECT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
@@ -248,6 +249,8 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         self._pending_acks: dict[str, asyncio.Future] = {}
         self._pending_interactions: dict[str, dict[str, Any]] = {}
         self._interaction_tasks: set[asyncio.Task] = set()
+        self._interaction_expiry_tasks: dict[str, asyncio.Task] = {}
+        self._transport_tasks: set[asyncio.Task] = set()
         self._interaction_lock = asyncio.Lock()
         self._lock_key: str | None = None
         self._media_directory = Path(
@@ -312,6 +315,18 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             interaction_task.cancel()
         if interaction_tasks:
             await asyncio.gather(*interaction_tasks, return_exceptions=True)
+        expiry_tasks = list(self._interaction_expiry_tasks.values())
+        self._interaction_expiry_tasks.clear()
+        for expiry_task in expiry_tasks:
+            expiry_task.cancel()
+        if expiry_tasks:
+            await asyncio.gather(*expiry_tasks, return_exceptions=True)
+        transport_tasks = list(self._transport_tasks)
+        self._transport_tasks.clear()
+        for transport_task in transport_tasks:
+            transport_task.cancel()
+        if transport_tasks:
+            await asyncio.gather(*transport_tasks, return_exceptions=True)
         self._socket = None
         for future in self._pending_acks.values():
             if not future.done():
@@ -782,6 +797,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             while len(self._pending_interactions) >= MAX_PENDING_INTERACTIONS:
                 oldest = next(iter(self._pending_interactions))
                 self._pending_interactions.pop(oldest, None)
+                self._cancel_interaction_expiry_task(oldest)
             self._pending_interactions[prompt_id] = state
         result = await self._send_payload(text, [], interaction=interaction)
         if not result.success:
@@ -794,7 +810,60 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             async with self._interaction_lock:
                 self._pending_interactions.pop(prompt_id, None)
             return SendResult(success=False, error="Interaction relay sequence is invalid")
+        self._schedule_interaction_expiry(state)
         return result
+
+    def _schedule_interaction_expiry(self, state: dict[str, Any]) -> None:
+        prompt_id = str(state.get("id") or "")
+        expires_at = int(state.get("expires_at") or 0)
+        if not prompt_id or expires_at <= 0:
+            return
+        self._cancel_interaction_expiry_task(prompt_id)
+        task = asyncio.create_task(self._expire_interaction(prompt_id, expires_at))
+        self._interaction_expiry_tasks[prompt_id] = task
+        task.add_done_callback(
+            lambda completed, current_prompt_id=prompt_id: self._forget_interaction_expiry_task(
+                current_prompt_id,
+                completed,
+            )
+        )
+
+    def _forget_interaction_expiry_task(
+        self,
+        prompt_id: str,
+        task: asyncio.Task,
+    ) -> None:
+        if self._interaction_expiry_tasks.get(prompt_id) is task:
+            self._interaction_expiry_tasks.pop(prompt_id, None)
+
+    def _cancel_interaction_expiry_task(self, prompt_id: str) -> None:
+        task = self._interaction_expiry_tasks.pop(prompt_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _expire_interaction(self, prompt_id: str, expires_at: int) -> None:
+        while True:
+            delay = max(0.0, (expires_at - int(time.time() * 1000)) / 1000.0)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            async with self._interaction_lock:
+                state = self._pending_interactions.get(prompt_id)
+                if state is None or int(state.get("expires_at") or 0) != expires_at:
+                    return
+                if int(time.time() * 1000) < expires_at:
+                    continue
+                # An action accepted before the deadline is allowed to finish.
+                if state.get("busy"):
+                    return
+                self._pending_interactions.pop(prompt_id, None)
+            await self._finish_interaction(
+                state,
+                "此操作已过期，请重新发送指令。",
+                status="已过期",
+                interaction_state="expired",
+                already_removed=True,
+            )
+            return
 
     async def _handle_interaction_response(
         self,
@@ -1119,6 +1188,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         interaction_state: str = "resolved",
         already_removed: bool = False,
     ) -> None:
+        self._cancel_interaction_expiry_task(str(state.get("id") or ""))
         if not already_removed:
             async with self._interaction_lock:
                 self._pending_interactions.pop(str(state.get("id") or ""), None)
@@ -1268,6 +1338,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             prompt_id
             for prompt_id, state in self._pending_interactions.items()
             if int(state.get("expires_at") or 0) <= now
+            and prompt_id not in self._interaction_expiry_tasks
         ]
         for prompt_id in expired:
             self._pending_interactions.pop(prompt_id, None)
@@ -1485,11 +1556,29 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         try:
             ack = await self._send_and_wait_for_ack(envelope, envelope["id"])
             return SendResult(success=True, message_id=str(ack.get("seq") or envelope["id"]))
-        except Exception as error:
+        except Exception as websocket_error:
             # The relay may have persisted the message even when its ACK was lost.
-            # Keep confirmed objects in that ambiguous case; lifecycle expiration is
-            # safer than deleting a file referenced by an already durable message.
-            return SendResult(success=False, error=str(error), retryable=True)
+            # Publish the exact same encrypted envelope over HTTPS. The relay's
+            # unique message id makes this an idempotent confirmation rather than
+            # a second user-visible message.
+            try:
+                ack = await asyncio.to_thread(self._publish_message, envelope)
+                return SendResult(
+                    success=True,
+                    message_id=str(ack.get("seq") or envelope["id"]),
+                )
+            except Exception as https_error:
+                # Keep confirmed objects in this ambiguous case; lifecycle
+                # expiration is safer than deleting a file referenced by a
+                # message that may already be durable.
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"WebSocket delivery failed: {_exception_text(websocket_error)}; "
+                        f"HTTPS confirmation failed: {_exception_text(https_error)}"
+                    ),
+                    retryable=True,
+                )
 
     async def _send_and_wait_for_ack(
         self,
@@ -1499,11 +1588,40 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self._pending_acks[acknowledgement_id] = future
+        socket = self._socket
         try:
             await self._send_frame(frame)
-            return await asyncio.wait_for(future, timeout=15.0)
+            return await asyncio.wait_for(
+                future,
+                timeout=APPLICATION_ACK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as error:
+            self._retire_unhealthy_socket(socket, "Application ACK timeout")
+            raise ConnectionError(
+                "Cloudflare Chat application ACK timed out after "
+                f"{APPLICATION_ACK_TIMEOUT_SECONDS:g} seconds for message "
+                f"{acknowledgement_id}"
+            ) from error
         finally:
             self._pending_acks.pop(acknowledgement_id, None)
+            if not future.done():
+                future.cancel()
+
+    def _retire_unhealthy_socket(self, socket: Any, reason: str) -> None:
+        if socket is None or self._socket is not socket:
+            return
+        self._socket = None
+        self._ready.clear()
+        self._mark_disconnected()
+        task = asyncio.create_task(self._close_unhealthy_socket(socket, reason))
+        self._transport_tasks.add(task)
+        task.add_done_callback(self._transport_tasks.discard)
+
+    async def _close_unhealthy_socket(self, socket: Any, reason: str) -> None:
+        try:
+            await socket.close(code=1011, reason=reason)
+        except Exception:
+            logger.debug("Cloudflare Chat stale socket close failed", exc_info=True)
 
     async def _send_frame(self, frame: dict[str, Any]) -> None:
         socket = self._socket
@@ -2216,6 +2334,11 @@ def _relay_http_error(action: str, error: HTTPError) -> ConnectionError:
     if ray_id:
         message += f" (CF-Ray {ray_id})"
     return ConnectionError(message)
+
+
+def _exception_text(error: Exception) -> str:
+    message = str(error).strip()
+    return message or type(error).__name__
 
 
 def _valid_configuration(relay_url: str, secret: str, agent_id: str, space_id: str) -> bool:

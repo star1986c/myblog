@@ -117,7 +117,7 @@ public actor HermesChatClient {
     request.setValue("Bearer \(ticket.ticket)", forHTTPHeaderField: "Authorization")
     request.setValue("client", forHTTPHeaderField: "X-Hermes-Role")
     request.setValue("multiplex", forHTTPHeaderField: "X-Hermes-Mode")
-    request.setValue("My-Notes-macOS/1.12", forHTTPHeaderField: "User-Agent")
+    request.setValue("My-Notes-macOS/1.13", forHTTPHeaderField: "User-Agent")
     let task = session.webSocketTask(with: request)
     socket = task
     task.resume()

@@ -27,6 +27,17 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.3.1 keeps Hermes' fail-closed 300-second authorization window and
+actively finalizes unanswered interactive prompts as expired when that window
+ends. Android already rejects expired actions locally; macOS now refreshes the
+button state at the deadline and checks it again before sending. If a normal
+outbound message loses its WebSocket application ACK, the adapter retires the
+stale socket and confirms the exact same encrypted message id through the
+existing authenticated HTTPS endpoint. The relay's idempotency prevents a
+second visible message. No environment variables, chat keys, or Worker upgrade
+are required for this release. Replace the plugin for every Hermes profile and
+restart each Gateway; install the matching macOS client for the local expiry UI.
+
 Version 0.3.0 keeps Android/macOS uploads and all inbound files on the existing
 10 MiB end-to-end encrypted path, while allowing this trusted NAS Agent to
 deliver larger generated files directly to the private R2 bucket. Files above

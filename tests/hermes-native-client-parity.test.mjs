@@ -109,7 +109,7 @@ const markers = {
   },
   interactive_actions: {
     android: [/sendInteractionAction/, /optJSONArray\("options"\)/],
-    macos: [/sendInteractionAction/, /HermesInteractionView/],
+    macos: [/sendInteractionAction/, /HermesInteractionView/, /interaction\.isPending\(at:/],
   },
   attachment_types: {
     android: [/Category\.IMAGE/, /Category\.AUDIO/, /Category\.VIDEO/, /Category\.ARCHIVE/],
