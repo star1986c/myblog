@@ -20,5 +20,9 @@ let package = Package(
       name: "NotesCoreTests",
       dependencies: ["NotesCore"]
     ),
+    .testTarget(
+      name: "AIBuildNotesTests",
+      dependencies: ["AIBuildNotes"]
+    ),
   ]
 )

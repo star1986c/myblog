@@ -321,6 +321,8 @@ Android Keystore 按 profile id 独立保护密钥。Android 2.14 起，全部�
 5. Android 与 macOS 使用同一登录账号、同一 profile chat key 即可同时在线。任一端发送
    的消息先持久化到对应 Room DO，再由用户级 Hub 同步到同账号的其他在线终端；断线端
    之后按 durable sequence 增量补发，不会重新下载全部历史。
+6. Mac 的 Hermes 消息输入框使用回车发送、`Shift+回车` 换行，也保留 `⌘+回车` 发送。
+   中文输入法选词时，回车只确认候选词，不会发送消息。
 
 macOS 与 Android 的当前能力基线记录在
 `docs/hermes-native-client-capabilities.json`。后续新增 Hermes 聊天能力时必须同时更新

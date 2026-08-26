@@ -239,7 +239,7 @@ struct HermesChatView: View {
   @State private var pendingDelete: [HermesChatMessage] = []
   @State private var visibleMessageLimit = 160
   @State private var visibleSearchResultLimit = 160
-  @FocusState private var composerFocused: Bool
+  @State private var composerFocused = false
 
   private var profile: HermesChatProfile? { store.selectedProfile }
   private var messages: [HermesChatMessage] { store.selectedMessages }
@@ -622,10 +622,8 @@ struct HermesChatView: View {
               .padding(.vertical, 8)
               .allowsHitTesting(false)
           }
-          TextEditor(text: $draft)
-            .font(.body)
-            .scrollContentBackground(.hidden)
-            .focused($composerFocused)
+          HermesMessageEditor(text: $draft, isFocused: $composerFocused, onSubmit: send)
+            .id(profile.id)
             .padding(.horizontal, 2)
             .frame(height: composerHeight)
             .onChange(of: draft) { _, value in
@@ -656,13 +654,9 @@ struct HermesChatView: View {
         }
         .buttonStyle(.borderedProminent)
         .buttonBorderShape(.roundedRectangle(radius: 10))
-        .disabled(
-          store.isSending
-            || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-              && selectedFiles.isEmpty)
-        )
+        .disabled(!canSend)
         .keyboardShortcut(.return, modifiers: .command)
-        .help("发送（⌘↩）")
+        .help("回车发送，Shift+回车换行（也支持 ⌘↩）")
       }
     }
     .padding(.horizontal, 14)
@@ -713,6 +707,12 @@ struct HermesChatView: View {
     return min(96, max(36, CGFloat(explicitLines + wrappedLines) * 20 + 12))
   }
 
+  private var canSend: Bool {
+    !store.isSending
+      && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !selectedFiles.isEmpty)
+  }
+
   private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
     let action = { proxy.scrollTo("hermes-bottom", anchor: .bottom) }
     if animated {
@@ -746,6 +746,7 @@ struct HermesChatView: View {
   }
 
   private func send() {
+    guard canSend else { return }
     let text = draft
     let files = selectedFiles
     Task {
