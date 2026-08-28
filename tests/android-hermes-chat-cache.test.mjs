@@ -16,7 +16,10 @@ test("Hermes chat resumes from the encrypted per-profile local checkpoint", asyn
   assert.match(history, /getNoBackupFilesDir\(\)/);
   assert.match(history, /encryptLocalSnapshot/);
   assert.match(history, /lastSequence/);
-  assert.match(client, /ProfileState\(HermesChatCrypto crypto, long initialSequence\)/);
+  assert.match(
+    client,
+    /ProfileState\([\s\S]*HermesChatCrypto crypto,[\s\S]*String keyFingerprint,[\s\S]*long initialSequence/,
+  );
   assert.match(client, /this\.lastSequence = initialSequence/);
   assert.match(manager, /configureClientProfile\(session\)/);
   assert.match(manager, /session\.lastSequence/);
@@ -148,6 +151,224 @@ test("inactive routed profiles persist messages and unread counts locally", asyn
   assert.match(profiles, /SharedPreferences/);
   assert.match(profiles, /List<Models\.HermesChatProfile> load\(\)/);
   assert.match(unread, /int increment\(String spaceId\)/);
+});
+
+test("late Agent typing self-heals in 6 seconds without reopening 120-second awaiting", async () => {
+  const manager = await source("HermesChatConnectionManager.java");
+  const handleTyping = manager.slice(
+    manager.indexOf("private void handleTyping"),
+    manager.indexOf("private void handleProfileError"),
+  );
+  const markAwaiting = manager.slice(
+    manager.indexOf("private void markAwaitingAgentResponse"),
+    manager.indexOf("private void cancelAwaiting"),
+  );
+  const markTyping = manager.slice(
+    manager.indexOf("private void markAgentTyping"),
+    manager.indexOf("private void cancelAgentTyping"),
+  );
+
+  assert.match(manager, /AWAITING_RESPONSE_TIMEOUT_MS = 120_000L/);
+  assert.match(manager, /AGENT_TYPING_TIMEOUT_MS = 6_000L/);
+  assert.match(handleTyping, /if \(active\) \{\s*markAgentTyping\(session\)/);
+  assert.doesNotMatch(handleTyping, /if \(active\)[\s\S]*markAwaitingAgentResponse/);
+  assert.match(
+    markAwaiting,
+    /session\.awaitingAgentResponse = true[\s\S]*handler\.postDelayed\(session\.expireAwaiting, AWAITING_RESPONSE_TIMEOUT_MS\)/,
+  );
+  assert.doesNotMatch(markTyping, /awaitingAgentResponse|expireAwaiting/);
+  assert.match(
+    markTyping,
+    /typingGeneration[\s\S]*agentTypingActive = true[\s\S]*removeCallbacks\(session\.expireTyping\)[\s\S]*typingGeneration != generation[\s\S]*agentTypingActive = false[\s\S]*postDelayed\(session\.expireTyping, AGENT_TYPING_TIMEOUT_MS\)/,
+  );
+  assert.match(manager, /return awaitingAgentResponse \|\| agentTypingActive/);
+});
+
+test("Hermes stop and Agent messages clear both states while disconnect preserves awaiting", async () => {
+  const manager = await source("HermesChatConnectionManager.java");
+  const handleMessage = manager.slice(
+    manager.indexOf("private void handleMessage"),
+    manager.indexOf("private void handleAcknowledged"),
+  );
+  const handleTyping = manager.slice(
+    manager.indexOf("private void handleTyping"),
+    manager.indexOf("private void handleProfileError"),
+  );
+  const disconnect = manager.slice(
+    manager.indexOf("private void handleDisconnected"),
+    manager.indexOf("private void publishAllStates"),
+  );
+
+  assert.match(
+    handleMessage,
+    /"agent"\.equals\(message\.sender\)[\s\S]*cancelAwaiting\(session\)[\s\S]*cancelAgentTyping\(session\)[\s\S]*publishBusyState\(session\)/,
+  );
+  assert.match(
+    handleTyping,
+    /else \{\s*cancelAgentTyping\(session\);\s*if \(terminal\) cancelAwaiting\(session\);\s*publishBusyState\(session\)/,
+  );
+  assert.match(disconnect, /cancelAgentTyping\(session\)[\s\S]*publishBusyState\(session\)/);
+  assert.doesNotMatch(disconnect, /cancelAwaiting\(session\)/);
+});
+
+test("Android distinguishes a typing fence from a terminal stop", async () => {
+  const [client, manager] = await Promise.all([
+    source("HermesChatClient.java"),
+    source("HermesChatConnectionManager.java"),
+  ]);
+  const typingParser = client.slice(
+    client.indexOf('if ("typing".equals(type)'),
+    client.indexOf('if ("error".equals(type)'),
+  );
+  const handleTyping = manager.slice(
+    manager.indexOf("private void handleTyping"),
+    manager.indexOf("private void handleProfileError"),
+  );
+
+  assert.match(
+    typingParser,
+    /!active[\s\S]*!frame\.has\("terminal"\)[\s\S]*frame\.optBoolean\("terminal"\)/,
+  );
+  assert.match(handleTyping, /cancelAgentTyping\(session\)/);
+  assert.match(handleTyping, /if \(terminal\) cancelAwaiting\(session\)/);
+});
+
+test("Hermes visibility restore publishes false and replaced sessions cannot fire stale timers", async () => {
+  const manager = await source("HermesChatConnectionManager.java");
+  const attach = manager.slice(
+    manager.indexOf("void attach("),
+    manager.indexOf("void detach("),
+  );
+  const visibility = manager.slice(
+    manager.indexOf("void setProfileVisible"),
+    manager.indexOf("void addUnreadListener"),
+  );
+  const applySync = manager.slice(
+    manager.indexOf("private void applyProfileSync"),
+    manager.indexOf("private void authenticateAndConnect"),
+  );
+  const retire = manager.slice(
+    manager.indexOf("private void retireReplacedSession"),
+    manager.indexOf("private void clearUnread"),
+  );
+
+  assert.match(attach, /publishBusyState\(session\);\s*publishState\(session\);\s*drainPendingEvents\(session\)/);
+  assert.match(visibility, /publishBusyState\(session\);\s*publishState\(session\);\s*drainPendingEvents\(session\)/);
+  assert.doesNotMatch(attach, /if \(session\.awaitingAgentResponse\)/);
+  assert.doesNotMatch(visibility, /if \(session\.awaitingAgentResponse\)/);
+  assert.match(
+    retire,
+    /session\.listener = null;\s*session\.visible = false;\s*cancelAwaiting\(session\);\s*cancelAgentTyping\(session\);\s*discardMessagePersistence\(session\)/,
+  );
+  assert.match(
+    applySync,
+    /config\.profileRevision != currentRevision\) continue;[\s\S]*if \(existing != null\) retireReplacedSession\(existing\)/,
+  );
+  assert.doesNotMatch(applySync, /transferredListener|transferredVisibility/);
+  assert.match(
+    attach,
+    /profileRevisions\.put\(profileId, profileRevisionIds\.incrementAndGet\(\)\)/,
+  );
+});
+
+test("outbound awaiting is ordered before network send so fast final or stop stays cleared", async () => {
+  const manager = await source("HermesChatConnectionManager.java");
+  const sendMessage = manager.slice(
+    manager.indexOf("HermesChatCrypto.ChatMessage sendMessage"),
+    manager.indexOf("String sendInteractionAction"),
+  );
+  const sendAction = manager.slice(
+    manager.indexOf("String sendInteractionAction"),
+    manager.indexOf("void sendTyping"),
+  );
+  const clientCallbacks = manager.slice(
+    manager.indexOf("private void ensureClient"),
+    manager.indexOf("private void configureClientProfile"),
+  );
+  const beginAwaiting = manager.slice(
+    manager.indexOf("private long beginAwaitingAgentResponse"),
+    manager.indexOf("private void markAwaitingAgentResponse"),
+  );
+  const rollbackAwaiting = manager.slice(
+    manager.indexOf("private void rollbackAwaitingAgentResponse"),
+    manager.indexOf("private void markAgentTyping"),
+  );
+
+  const messageBegin = sendMessage.indexOf("beginAwaitingAgentResponse(session)");
+  const messageNetworkSend = sendMessage.indexOf("client.sendMessage");
+  const actionBegin = sendAction.indexOf("beginAwaitingAgentResponse(session)");
+  const actionNetworkSend = sendAction.indexOf("client.sendInteractionAction");
+
+  assert.ok(messageBegin >= 0 && messageBegin < messageNetworkSend);
+  assert.ok(actionBegin >= 0 && actionBegin < actionNetworkSend);
+  assert.match(sendMessage, /catch \(Exception error\) \{\s*rollbackAwaitingAgentResponse\(session, awaitingRequestId\)/);
+  assert.match(
+    sendAction,
+    /actionAwaitingRequestIds\.put\(actionId, awaitingRequestId\)[\s\S]*client\.sendInteractionAction\(profileId, promptId, optionId, actionId\)[\s\S]*catch \(Exception error\) \{\s*session\.actionAwaitingRequestIds\.remove\(actionId\);\s*rollbackAwaitingAgentResponse/,
+  );
+  assert.match(
+    beginAwaiting,
+    /handler\.post\(\(\) -> \{[\s\S]*markAwaitingAgentResponse\(session, requestId\)/,
+  );
+  assert.match(clientCallbacks, /onMessage[\s\S]*handler\.post\(\(\) -> handleMessage/);
+  assert.match(clientCallbacks, /onTyping[\s\S]*handler\.post\(\(\) -> handleTyping/);
+  assert.match(
+    rollbackAwaiting,
+    /session\.awaitingRequestId != requestId[\s\S]*cancelAwaiting\(session\)[\s\S]*publishBusyState\(session\)/,
+  );
+  assert.match(manager, /session\.awaitingRequestId = 0;[\s\S]*session\.awaitingAgentResponse = false/);
+});
+
+test("late negative action ACKs are scoped to their original awaiting request", async () => {
+  const manager = await source("HermesChatConnectionManager.java");
+  const handleAction = manager.slice(
+    manager.indexOf("private void handleActionAcknowledged"),
+    manager.indexOf("private void handleTyping"),
+  );
+
+  assert.match(
+    handleAction,
+    /actionAwaitingRequestIds\.remove\(actionId\)[\s\S]*session\.awaitingRequestId == awaitingRequestId[\s\S]*rollbackAwaitingAgentResponse\(session, awaitingRequestId\)/,
+  );
+  assert.doesNotMatch(handleAction, /cancelAwaiting\(session\)/);
+});
+
+test("stale profile sync and attachment uploads cannot cross a replacement key", async () => {
+  const [client, manager] = await Promise.all([
+    source("HermesChatClient.java"),
+    source("HermesChatConnectionManager.java"),
+  ]);
+  const sync = manager.slice(
+    manager.indexOf("void syncProfiles"),
+    manager.indexOf("void attach("),
+  );
+  const applySync = manager.slice(
+    manager.indexOf("private void applyProfileSync"),
+    manager.indexOf("private void authenticateAndConnect"),
+  );
+
+  assert.match(sync, /requestedRevisions[\s\S]*requestedIds/);
+  assert.match(
+    applySync,
+    /missingKeyAtCapturedRevision[\s\S]*removedRemotelyAtCapturedRevision \|\| missingKeyAtCapturedRevision/,
+  );
+  assert.match(applySync, /config\.profileRevision != currentRevision\) continue/);
+  assert.match(
+    client,
+    /expectedSessionToken[\s\S]*profile\.keyFingerprint\.equals\(expectedSessionToken\)[\s\S]*profile\.crypto\.encryptMessage/,
+  );
+  assert.match(
+    client,
+    /synchronized \(profileStateLock\)[\s\S]*expectedSessionToken[\s\S]*profile\.crypto\.encryptMessage[\s\S]*send\(spaceId, envelope\)/,
+  );
+  assert.match(
+    client,
+    /sessionTokens\.get\(spaceId\)[\s\S]*profile\.keyFingerprint\.equals\(sessionToken\)[\s\S]*decryptMessage[\s\S]*listener\.onMessage\(spaceId, message, sessionToken\)/,
+  );
+  assert.match(
+    manager,
+    /handleMessage\(profileId, message, sessionToken\)[\s\S]*currentSession\(profileId, sessionToken\)/,
+  );
 });
 
 test("Hermes chat schedules retention cleanup without resetting the relay checkpoint", async () => {

@@ -5,12 +5,14 @@ public struct HermesChatClientProfile: Sendable {
   public let crypto: HermesChatCrypto
   public let lastSequence: Int64
   public let resumeSinceMilliseconds: Int64?
+  public let configurationGeneration: Int
 
   public init(
     spaceID: String,
     crypto: HermesChatCrypto,
     lastSequence: Int64,
-    resumeSinceMilliseconds: Int64? = nil
+    resumeSinceMilliseconds: Int64? = nil,
+    configurationGeneration: Int
   ) {
     self.spaceID = spaceID
     self.crypto = crypto
@@ -20,18 +22,46 @@ public struct HermesChatClientProfile: Sendable {
     } else {
       self.resumeSinceMilliseconds = nil
     }
+    self.configurationGeneration = configurationGeneration
   }
 }
 
 public enum HermesChatClientEvent: Sendable {
-  case ready
-  case message(spaceID: String, message: HermesChatMessage)
-  case acknowledged(spaceID: String, messageID: String, sequence: Int64)
-  case resumed(spaceID: String, latestSequence: Int64)
-  case actionAcknowledged(spaceID: String, actionID: String, delivered: Bool)
-  case typing(spaceID: String, active: Bool)
-  case profileError(spaceID: String, reason: String)
-  case disconnected(reason: String)
+  case ready(configurationGeneration: Int)
+  case message(
+    spaceID: String,
+    message: HermesChatMessage,
+    configurationGeneration: Int
+  )
+  case acknowledged(
+    spaceID: String,
+    messageID: String,
+    sequence: Int64,
+    configurationGeneration: Int
+  )
+  case resumed(
+    spaceID: String,
+    latestSequence: Int64,
+    configurationGeneration: Int
+  )
+  case actionAcknowledged(
+    spaceID: String,
+    actionID: String,
+    delivered: Bool,
+    configurationGeneration: Int
+  )
+  case typing(
+    spaceID: String,
+    active: Bool,
+    terminal: Bool,
+    configurationGeneration: Int
+  )
+  case profileError(
+    spaceID: String,
+    reason: String,
+    configurationGeneration: Int
+  )
+  case disconnected(reason: String, configurationGeneration: Int)
 }
 
 public actor HermesChatClient {
@@ -52,6 +82,8 @@ public actor HermesChatClient {
   private var pingTask: Task<Void, Never>?
   private var handshakeTask: Task<Void, Never>?
   private var generation = 0
+  private var nextTypingOperation: UInt64 = 0
+  private var typingOperations: [String: PendingTypingOperation] = [:]
   private var closing = false
   private var ready = false
 
@@ -88,7 +120,10 @@ public actor HermesChatClient {
     ticket: HermesChatMultiplexTicket,
     profileConfigurations: [HermesChatClientProfile]
   ) {
+    generation += 1
+    let currentGeneration = generation
     closeCurrentSocket(reason: "macOS chat reconnecting")
+    typingOperations = [:]
     let configured = Dictionary(
       uniqueKeysWithValues: profileConfigurations.map {
         (
@@ -96,28 +131,34 @@ public actor HermesChatClient {
           ProfileState(
             crypto: $0.crypto,
             lastSequence: $0.lastSequence,
-            resumeSinceMilliseconds: $0.resumeSinceMilliseconds
+            resumeSinceMilliseconds: $0.resumeSinceMilliseconds,
+            configurationGeneration: $0.configurationGeneration
           )
         )
       }
     )
     let ticketSpaces = Set(ticket.spaceIds)
     guard !configured.isEmpty, Set(configured.keys) == ticketSpaces else {
-      continuation.yield(.disconnected(reason: "Hermes profile ticket 与本机密钥不匹配。"))
+      profiles = [:]
+      closing = true
+      continuation.yield(
+        .disconnected(
+          reason: "Hermes profile ticket 与本机密钥不匹配。",
+          configurationGeneration: profileConfigurations.first?.configurationGeneration ?? -1
+        )
+      )
       return
     }
 
     profiles = configured
     closing = false
     ready = false
-    generation += 1
-    let currentGeneration = generation
     var request = URLRequest(url: relayURL)
     request.timeoutInterval = 30
     request.setValue("Bearer \(ticket.ticket)", forHTTPHeaderField: "Authorization")
     request.setValue("client", forHTTPHeaderField: "X-Hermes-Role")
     request.setValue("multiplex", forHTTPHeaderField: "X-Hermes-Mode")
-    request.setValue("My-Notes-macOS/1.13", forHTTPHeaderField: "User-Agent")
+    request.setValue("My-Notes-macOS/1.15", forHTTPHeaderField: "User-Agent")
     let task = session.webSocketTask(with: request)
     socket = task
     task.resume()
@@ -136,6 +177,7 @@ public actor HermesChatClient {
     closing = true
     generation += 1
     closeCurrentSocket(reason: "macOS chat closed")
+    typingOperations = [:]
     profiles = [:]
   }
 
@@ -144,9 +186,13 @@ public actor HermesChatClient {
   public func sendMessage(
     spaceID: String,
     text: String,
-    attachments: [HermesChatAttachmentDescriptor]
+    attachments: [HermesChatAttachmentDescriptor],
+    expectedConfigurationGeneration: Int
   ) async throws -> HermesChatMessage {
     let profile = try requireReadyProfile(spaceID)
+    guard profile.configurationGeneration == expectedConfigurationGeneration else {
+      throw HermesChatCryptoError.invalidKey
+    }
     let id = UUID().uuidString.lowercased()
     let sentAt = Int64(Date().timeIntervalSince1970 * 1_000)
     let envelope = try profile.crypto.encryptMessageEnvelope(
@@ -173,10 +219,15 @@ public actor HermesChatClient {
   public func sendInteractionAction(
     spaceID: String,
     promptID: String,
-    optionID: String
+    optionID: String,
+    messageID: String,
+    expectedConfigurationGeneration: Int
   ) async throws -> String {
     let profile = try requireReadyProfile(spaceID)
-    let id = UUID().uuidString.lowercased()
+    guard profile.configurationGeneration == expectedConfigurationGeneration else {
+      throw HermesChatCryptoError.invalidKey
+    }
+    let id = messageID
     let envelope = try profile.crypto.encryptInteractionEnvelope(
       promptID: promptID,
       optionID: optionID,
@@ -192,16 +243,40 @@ public actor HermesChatClient {
   }
 
   public func sendTyping(spaceID: String, active: Bool) async {
-    guard ready, var profile = profiles[spaceID], profile.lastTypingActive != active else { return }
+    guard ready, let profile = profiles[spaceID] else { return }
+    if let pending = typingOperations[spaceID] {
+      guard pending.active != active else { return }
+    } else if profile.lastTypingActive == active {
+      return
+    }
+    let sendGeneration = generation
+    let configurationGeneration = profile.configurationGeneration
+    nextTypingOperation &+= 1
+    let typingOperation = nextTypingOperation
+    typingOperations[spaceID] = PendingTypingOperation(id: typingOperation, active: active)
     do {
       try await sendRouted(spaceID: spaceID, frame: [
         "v": 1,
         "type": "typing",
         "active": active,
       ])
-      profile.lastTypingActive = active
-      profiles[spaceID] = profile
+      guard sendGeneration == generation,
+        typingOperations[spaceID]?.id == typingOperation,
+        var current = profiles[spaceID],
+        current.configurationGeneration == configurationGeneration
+      else { return }
+      typingOperations.removeValue(forKey: spaceID)
+      current.lastTypingActive = active
+      profiles[spaceID] = current
     } catch {
+      guard sendGeneration == generation,
+        typingOperations[spaceID]?.id == typingOperation,
+        var current = profiles[spaceID],
+        current.configurationGeneration == configurationGeneration
+      else { return }
+      typingOperations.removeValue(forKey: spaceID)
+      current.lastTypingActive = nil
+      profiles[spaceID] = current
       // Typing state is best-effort and must not interrupt message entry.
     }
   }
@@ -226,7 +301,12 @@ public actor HermesChatClient {
       pingTask = nil
       ready = false
       self.socket = nil
-      continuation.yield(.disconnected(reason: Self.errorMessage(error)))
+      continuation.yield(
+        .disconnected(
+          reason: Self.errorMessage(error),
+          configurationGeneration: profiles.values.first?.configurationGeneration ?? -1
+        )
+      )
     }
   }
 
@@ -255,11 +335,17 @@ public actor HermesChatClient {
       guard frame["multiplex"] as? Bool == true else {
         throw HermesChatCryptoError.invalidMessage
       }
-      for spaceID in profiles.keys.sorted() { try await sendResume(spaceID: spaceID) }
+      for spaceID in profiles.keys.sorted() {
+        guard generation == self.generation, !closing else { return }
+        try await sendResume(spaceID: spaceID)
+        guard generation == self.generation, !closing else { return }
+      }
       handshakeTask?.cancel()
       handshakeTask = nil
       ready = true
-      continuation.yield(.ready)
+      continuation.yield(
+        .ready(configurationGeneration: profiles.values.first?.configurationGeneration ?? -1)
+      )
       return
     }
     if type == "pong" { return }
@@ -288,18 +374,31 @@ public actor HermesChatClient {
         profile.lastSequence = max(profile.lastSequence, sequence)
         profiles[spaceID] = profile
       }
-      continuation.yield(.message(spaceID: spaceID, message: message))
+      continuation.yield(
+        .message(
+          spaceID: spaceID,
+          message: message,
+          configurationGeneration: profile.configurationGeneration
+        )
+      )
     case "resume_complete":
       if frame["hasMore"] as? Bool == true {
         try await sendResume(spaceID: spaceID)
       } else {
         let latestSequence = max(0, Self.int64(frame["latestSeq"]) ?? 0)
+        let configurationGeneration = profiles[spaceID]?.configurationGeneration ?? -1
         if var profile = profiles[spaceID] {
           profile.lastSequence = max(profile.lastSequence, latestSequence)
           profile.resumeSinceMilliseconds = nil
           profiles[spaceID] = profile
         }
-        continuation.yield(.resumed(spaceID: spaceID, latestSequence: latestSequence))
+        continuation.yield(
+          .resumed(
+            spaceID: spaceID,
+            latestSequence: latestSequence,
+            configurationGeneration: configurationGeneration
+          )
+        )
       }
     case "ack":
       let durable = frame["durable"] as? Bool ?? true
@@ -311,28 +410,42 @@ public actor HermesChatClient {
           profiles[spaceID] = profile
         }
         continuation.yield(
-          .acknowledged(spaceID: spaceID, messageID: id, sequence: sequence)
+          .acknowledged(
+            spaceID: spaceID,
+            messageID: id,
+            sequence: sequence,
+            configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1
+          )
         )
       } else {
         continuation.yield(
           .actionAcknowledged(
             spaceID: spaceID,
             actionID: id,
-            delivered: frame["delivered"] as? Bool ?? false
+            delivered: frame["delivered"] as? Bool ?? false,
+            configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1
           )
         )
       }
     case "typing":
       if frame["sender"] as? String == "agent" {
+        let active = frame["active"] as? Bool ?? false
+        let terminal = !active && (frame["terminal"] as? Bool ?? true)
         continuation.yield(
-          .typing(spaceID: spaceID, active: frame["active"] as? Bool ?? false)
+          .typing(
+            spaceID: spaceID,
+            active: active,
+            terminal: terminal,
+            configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1
+          )
         )
       }
     case "error":
       continuation.yield(
         .profileError(
           spaceID: spaceID,
-          reason: frame["message"] as? String ?? "Cloudflare 拒绝了聊天消息。"
+          reason: frame["message"] as? String ?? "Cloudflare 拒绝了聊天消息。",
+          configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1
         )
       )
     default:
@@ -419,7 +532,12 @@ public actor HermesChatClient {
       with: .goingAway,
       reason: Data("macOS chat handshake timed out".utf8)
     )
-    continuation.yield(.disconnected(reason: Self.handshakeTimeoutMessage))
+    continuation.yield(
+      .disconnected(
+        reason: Self.handshakeTimeoutMessage,
+        configurationGeneration: profiles.values.first?.configurationGeneration ?? -1
+      )
+    )
   }
 
   private static func jsonObject<T: Encodable>(_ value: T) throws -> Any {
@@ -489,6 +607,7 @@ public actor HermesChatClient {
 
   private struct ProfileState: Sendable {
     let crypto: HermesChatCrypto
+    let configurationGeneration: Int
     var lastSequence: Int64
     var lastTypingActive: Bool?
     var resumeSinceMilliseconds: Int64?
@@ -496,12 +615,19 @@ public actor HermesChatClient {
     init(
       crypto: HermesChatCrypto,
       lastSequence: Int64,
-      resumeSinceMilliseconds: Int64?
+      resumeSinceMilliseconds: Int64?,
+      configurationGeneration: Int
     ) {
       self.crypto = crypto
+      self.configurationGeneration = configurationGeneration
       self.lastSequence = max(0, lastSequence)
       self.resumeSinceMilliseconds = resumeSinceMilliseconds
     }
+  }
+
+  private struct PendingTypingOperation: Sendable {
+    let id: UInt64
+    let active: Bool
   }
 
   private final class PingCompletionGate: @unchecked Sendable {

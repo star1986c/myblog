@@ -12,6 +12,7 @@ import os
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -54,7 +55,8 @@ MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
 APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.2"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.3"
+TYPING_EPOCH_METADATA_KEY = "_cloudflare_chat_typing_epoch"
 DIRECT_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024
 DIRECT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
@@ -271,6 +273,17 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         self._interaction_expiry_tasks: dict[str, asyncio.Task] = {}
         self._transport_tasks: set[asyncio.Task] = set()
         self._interaction_lock = asyncio.Lock()
+        self._typing_epoch = 0
+        self._typing_closed_epoch: int | None = None
+        self._typing_turn_context: ContextVar[int | None] = ContextVar(
+            f"cloudflare_chat_typing_epoch_{id(self)}",
+            default=None,
+        )
+        self._typing_task_epochs: dict[asyncio.Task, int] = {}
+        self._typing_task_chats: dict[asyncio.Task, str] = {}
+        self._typing_owner_epochs: dict[asyncio.Task, int] = {}
+        self._typing_owner_chats: dict[asyncio.Task, str] = {}
+        self._typing_unbound_stop_epochs: dict[asyncio.Task, int] = {}
         self._lock_key: str | None = None
         self._media_directory = Path(
             os.getenv("HERMES_CF_MEDIA_DIR")
@@ -409,11 +422,281 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(error), retryable=True)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        await self._send_frame({
+        caller_epoch = self._current_typing_task_epoch()
+        if (
+            caller_epoch is None
+            or caller_epoch != self._typing_epoch
+            or caller_epoch == self._typing_closed_epoch
+        ):
+            return
+        await self._send_typing_frame(active=True)
+
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
+        """Bind Hermes' refresh loop to the inbound turn that created it."""
+        task = asyncio.current_task()
+        epoch = self._typing_turn_context.get()
+        if epoch is None:
+            epoch = self._typing_epoch
+        if task is not None:
+            self._typing_task_epochs[task] = epoch
+            self._typing_task_chats[task] = str(chat_id)
+        try:
+            if epoch != self._typing_epoch or epoch == self._typing_closed_epoch:
+                return
+            await super()._keep_typing(
+                chat_id,
+                interval=interval,
+                metadata=metadata,
+                stop_event=stop_event,
+            )
+        finally:
+            if task is not None:
+                self._typing_task_epochs.pop(task, None)
+                self._typing_task_chats.pop(task, None)
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        # Hermes resumes the existing refresh task for approval/clarify
+        # replies. Bind that continuing task to the newest inbound epoch
+        # before the base class removes its pause flag.
+        self._retag_latest_live_typing_task(str(chat_id), self._typing_epoch)
+        super().resume_typing_for_chat(chat_id)
+
+    def _retag_latest_live_typing_task(self, chat_id: str, epoch: int) -> None:
+        if epoch != self._typing_epoch or epoch == self._typing_closed_epoch:
+            return
+        heartbeat_candidates = [
+            (task, self._typing_task_epochs.get(task))
+            for task, task_chat_id in list(self._typing_task_chats.items())
+            if task_chat_id == chat_id and not task.done()
+        ]
+        owner_candidates = [
+            (task, self._typing_owner_epochs.get(task))
+            for task, task_chat_id in list(self._typing_owner_chats.items())
+            if task_chat_id == chat_id and not task.done()
+        ]
+        candidates = heartbeat_candidates + owner_candidates
+        previous_epochs = [value for _, value in candidates if value is not None]
+        if not previous_epochs:
+            return
+        latest_previous_epoch = max(previous_epochs)
+        for task, task_epoch in candidates:
+            if task_epoch == latest_previous_epoch:
+                if task in self._typing_task_epochs:
+                    self._typing_task_epochs[task] = epoch
+                if task in self._typing_owner_epochs:
+                    self._typing_owner_epochs[task] = epoch
+
+    @staticmethod
+    def _is_continuing_active_session_command(event: MessageEvent) -> bool:
+        try:
+            command = event.get_command()
+        except Exception:
+            return False
+        if not command:
+            return False
+        try:
+            from hermes_cli.commands import (
+                is_interrupt_then_dispatch,
+                should_bypass_active_session,
+            )
+            return (
+                should_bypass_active_session(command)
+                and not is_interrupt_then_dispatch(command)
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_interrupting_active_session_command(event: MessageEvent) -> bool:
+        try:
+            command = event.get_command()
+        except Exception:
+            return False
+        if not command:
+            return False
+        try:
+            from hermes_cli.commands import is_interrupt_then_dispatch
+
+            return bool(is_interrupt_then_dispatch(command))
+        except Exception:
+            return False
+
+    async def _process_message_background(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> None:
+        """Restore the inbound epoch when Hermes cascades a queued turn."""
+        epoch = self._event_typing_epoch(event)
+        if epoch is None:
+            # Hermes also creates internal synthetic turns without platform
+            # metadata. Snapshot ownership now so their late outer cleanup
+            # cannot be mistaken for a newer Cloudflare inbound turn.
+            epoch = self._typing_epoch
+            self._set_event_typing_epoch(event, epoch)
+        task = asyncio.current_task()
+        source = getattr(event, "source", None)
+        if isinstance(source, dict):
+            chat_id = source.get("chat_id")
+        else:
+            chat_id = getattr(source, "chat_id", None)
+        if task is not None:
+            self._typing_owner_epochs[task] = epoch
+            self._typing_owner_chats[task] = str(chat_id or self.space_id)
+        typing_context = self._typing_turn_context.set(epoch)
+        try:
+            await super()._process_message_background(event, session_key)
+        finally:
+            self._typing_turn_context.reset(typing_context)
+            if task is not None:
+                self._typing_owner_epochs.pop(task, None)
+                self._typing_owner_chats.pop(task, None)
+
+    async def _send_typing_frame(
+        self,
+        *,
+        active: bool,
+        terminal: bool | None = None,
+    ) -> None:
+        frame = {
             "v": 1,
             "type": "typing",
-            "active": True,
-        })
+            "active": active,
+        }
+        if terminal is not None:
+            frame["terminal"] = terminal
+        await self._send_frame(frame)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        caller_epoch = self._current_typing_task_epoch()
+        if caller_epoch is None:
+            caller_epoch = self._unbound_stop_epoch()
+        if caller_epoch != self._typing_epoch:
+            return
+        # Close before the await so no refresh tick can revive this turn. Keep
+        # the same epoch id: BasePlatformAdapter retries stop_typing, and those
+        # retries remain valid until a new inbound advances the epoch.
+        self._typing_closed_epoch = caller_epoch
+        try:
+            await self._send_typing_frame(active=False, terminal=True)
+        except Exception:
+            logger.debug(
+                "Cloudflare Chat could not clear the typing indicator",
+                exc_info=True,
+            )
+
+    def _advance_typing_epoch(self) -> int:
+        self._typing_epoch += 1
+        self._typing_closed_epoch = None
+        return self._typing_epoch
+
+    def _current_typing_task_epoch(self) -> int | None:
+        task = asyncio.current_task()
+        if task is not None:
+            bound_epoch = self._typing_task_epochs.get(task)
+            if bound_epoch is not None:
+                return bound_epoch
+            owner_epoch = self._typing_owner_epochs.get(task)
+            if owner_epoch is not None:
+                return owner_epoch
+        return self._typing_turn_context.get()
+
+    def _unbound_stop_epoch(self) -> int:
+        """Bind explicit stop retries in one task without granting a new turn."""
+        task = asyncio.current_task()
+        if task is None:
+            return self._typing_epoch
+        epoch = self._typing_unbound_stop_epochs.get(task)
+        if epoch is not None:
+            return epoch
+        epoch = self._typing_epoch
+        self._typing_unbound_stop_epochs[task] = epoch
+
+        def release(completed_task: asyncio.Task) -> None:
+            self._typing_unbound_stop_epochs.pop(completed_task, None)
+
+        task.add_done_callback(release)
+        return epoch
+
+    @staticmethod
+    def _set_event_typing_epoch(event: MessageEvent, epoch: int) -> None:
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            event.metadata = metadata
+        metadata[TYPING_EPOCH_METADATA_KEY] = epoch
+
+    @staticmethod
+    def _event_typing_epoch(event: MessageEvent) -> int | None:
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+        epoch = metadata.get(TYPING_EPOCH_METADATA_KEY)
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            return None
+        return epoch
+
+    def _retag_pending_typing_epoch(self, epoch: int) -> None:
+        """Move in-place merged queue/debounce events to the latest epoch."""
+        if epoch != self._typing_epoch:
+            return
+        pending_events = []
+        pending_messages = getattr(self, "_pending_messages", None)
+        if isinstance(pending_messages, dict):
+            pending_events.extend(pending_messages.values())
+        # Read the backing dict directly. Calling Hermes' helper would create
+        # a debounce store as a side effect on versions where none exists.
+        debounce_states = getattr(self, "_text_debounce", None)
+        if isinstance(debounce_states, dict):
+            pending_events.extend(
+                state.event
+                for state in debounce_states.values()
+                if getattr(state, "event", None) is not None
+            )
+        for pending_event in pending_events:
+            source = getattr(pending_event, "source", None)
+            if isinstance(source, dict):
+                chat_id = source.get("chat_id")
+            else:
+                chat_id = getattr(source, "chat_id", None)
+            # This adapter produces one fixed DM source per profile. Retagging
+            # that queued object is required because Hermes merges follow-up
+            # text/media in place and deliberately keeps the existing event.
+            if str(chat_id or "") == self.space_id:
+                self._set_event_typing_epoch(pending_event, epoch)
+
+    def get_pending_message(self, session_key: str) -> MessageEvent | None:
+        """Adopt an in-band queued turn in the runner's existing owner task."""
+        event = super().get_pending_message(session_key)
+        if event is None:
+            return None
+        epoch = self._event_typing_epoch(event)
+        if epoch is None:
+            epoch = self._typing_epoch
+            self._set_event_typing_epoch(event, epoch)
+        if epoch != self._typing_epoch or epoch == self._typing_closed_epoch:
+            return event
+        source = getattr(event, "source", None)
+        if isinstance(source, dict):
+            chat_id = source.get("chat_id")
+        else:
+            chat_id = getattr(source, "chat_id", None)
+        normalized_chat_id = str(chat_id or self.space_id)
+        # Retag before updating the owner mapping so the heartbeat and owner
+        # still share the same previous maximum epoch and move together.
+        self._retag_latest_live_typing_task(normalized_chat_id, epoch)
+        task = asyncio.current_task()
+        if task is not None:
+            self._typing_owner_epochs[task] = epoch
+            self._typing_owner_chats[task] = normalized_chat_id
+        self._typing_turn_context.set(epoch)
+        return event
 
     async def send_image(
         self,
@@ -1008,6 +1291,8 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                 status="已回答" if resolved else "问题已过期",
                 interaction_state="resolved" if resolved else "expired",
             )
+            if resolved:
+                self.resume_typing_for_chat(str(state.get("chat_id") or self.space_id))
             return
         if kind == "choice":
             if selected == "cancel":
@@ -1434,8 +1719,15 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                     self._last_sequence,
                 )
                 return
+            # Every accepted inbound frame owns a fresh typing epoch. This is
+            # intentionally before command dispatch so /new and /reset also
+            # fence off an orphaned refresh task from the previous turn.
+            had_active_session = bool(getattr(self, "_active_sessions", {}))
+            typing_epoch = self._advance_typing_epoch()
             envelope = frame.get("message") or {}
             event = await self._prepare_inbound_message(envelope)
+            self._set_event_typing_epoch(event, typing_epoch)
+            self._retag_pending_typing_epoch(typing_epoch)
             self._last_sequence = sequence
             try:
                 await asyncio.to_thread(self._save_last_sequence)
@@ -1446,13 +1738,45 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
             try:
-                await self.send_typing(self.space_id)
+                if typing_epoch == self._typing_epoch:
+                    # Clear any platform state left by the previous turn.
+                    # The new turn's gated _keep_typing task is the only code
+                    # allowed to light the indicator again. Reset-like bypass
+                    # commands create no such task and therefore stay clear.
+                    await self._send_typing_frame(active=False, terminal=False)
             except Exception:
                 logger.debug(
-                    "Cloudflare Chat could not announce inbound processing",
+                    "Cloudflare Chat could not clear prior inbound typing state",
                     exc_info=True,
                 )
-            await self.handle_message(event)
+            typing_context = self._typing_turn_context.set(typing_epoch)
+            try:
+                await self.handle_message(event)
+            finally:
+                self._typing_turn_context.reset(typing_context)
+            if (
+                had_active_session
+                and typing_epoch == self._typing_epoch
+                and self._is_continuing_active_session_command(event)
+            ):
+                # Inline busy-session commands such as /status and /approve
+                # do not create a new background task. Keep the running
+                # turn's newest refresh task alive; /stop and /new(/reset)
+                # are excluded because they intentionally interrupt it.
+                self._retag_latest_live_typing_task(self.space_id, typing_epoch)
+            elif (
+                had_active_session
+                and typing_epoch == self._typing_epoch
+                and self._is_interrupting_active_session_command(event)
+            ):
+                # Active /new and /reset bypass normal background ownership.
+                # End their newly-created client wait explicitly after the
+                # interrupted owner has been fenced off.
+                stop_context = self._typing_turn_context.set(typing_epoch)
+                try:
+                    await self.stop_typing(self.space_id)
+                finally:
+                    self._typing_turn_context.reset(stop_context)
             try:
                 await self._send_frame({
                     "v": 1,

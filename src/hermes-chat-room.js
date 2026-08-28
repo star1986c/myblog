@@ -25,6 +25,8 @@ const CLIENT_HUB_REGISTRATION_GRACE_MS = 30_000;
 class HermesChatRoom extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
+    this.clientHubStubs = new Map();
+    this.clientHubDeliveryTails = new Map();
     this.ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS _sql_schema_migrations (
@@ -190,12 +192,14 @@ class HermesChatRoom extends DurableObject {
         return;
       }
       if (frame.type === "typing") {
-        this.broadcastToOtherRole(attachment.role, {
+        const typing = {
           v: CHAT_PROTOCOL_VERSION,
           type: "typing",
           sender: attachment.role,
           active: frame.active === true,
-        }, attachment.spaceId);
+        };
+        if (typeof frame.terminal === "boolean") typing.terminal = frame.terminal;
+        this.broadcastToOtherRole(attachment.role, typing, attachment.spaceId);
         return;
       }
       if (frame.type === "edit") {
@@ -370,12 +374,14 @@ class HermesChatRoom extends DurableObject {
       return this.replayFrames(receiver, frame.afterSeq, frame.since);
     }
     if (frame.type === "typing") {
-      this.broadcastToOtherRole("client", {
+      const typing = {
         v: CHAT_PROTOCOL_VERSION,
         type: "typing",
         sender: "client",
         active: frame.active === true,
-      }, spaceId);
+      };
+      if (typeof frame.terminal === "boolean") typing.terminal = frame.terminal;
+      this.broadcastToOtherRole("client", typing, spaceId);
       return [];
     }
     if (frame.type === "action") {
@@ -640,32 +646,83 @@ class HermesChatRoom extends DurableObject {
     const hubs = this.ctx.storage.sql
       .exec("SELECT hub_key, space_id, updated_at FROM client_hubs")
       .toArray();
-    await Promise.all(hubs.map(async (hub) => {
-      try {
-        const routedSpace = String(hub.space_id || spaceId || "");
-        const stub = this.env.HERMES_CHAT_HUBS.getByName(`user:${hub.hub_key}`, {
-          locationHint: "apac",
-        });
-        const delivered = await stub.deliver(routedSpace, frame);
-        if (
-          Number(delivered || 0) === 0
-          && Number(hub.updated_at) <= Date.now() - CLIENT_HUB_REGISTRATION_GRACE_MS
-        ) {
-          this.ctx.storage.sql.exec(
-            "DELETE FROM client_hubs WHERE hub_key = ? AND updated_at = ?",
-            hub.hub_key,
-            hub.updated_at,
-          );
-        }
-      } catch (error) {
-        console.warn(JSON.stringify({
-          level: "warn",
-          event: "hermes_chat_hub_broadcast_failed",
-          spaceId,
-          message: error instanceof Error ? error.message : "Unknown hub delivery error",
-        }));
+    await Promise.all(hubs.map((hub) => this.enqueueClientHubDelivery(hub, spaceId, frame)));
+  }
+
+  async enqueueClientHubDelivery(hub, spaceId, frame) {
+    const hubKey = String(hub.hub_key || "");
+    const previous = this.clientHubDeliveryTails.get(hubKey) || Promise.resolve();
+    const queued = previous.then(() => this.deliverToClientHub(hub, spaceId, frame));
+    this.clientHubDeliveryTails.set(hubKey, queued);
+    try {
+      await queued;
+    } finally {
+      if (this.clientHubDeliveryTails.get(hubKey) === queued) {
+        this.clientHubDeliveryTails.delete(hubKey);
       }
-    }));
+    }
+  }
+
+  async deliverToClientHub(hub, spaceId, frame) {
+    const hubKey = String(hub.hub_key || "");
+    const routedSpace = String(hub.space_id || spaceId || "");
+    let stub;
+    let delivered;
+    try {
+      stub = this.clientHubStub(hubKey);
+      delivered = await stub.deliver(routedSpace, frame);
+    } catch (error) {
+      if (stub && this.clientHubStubs.get(hubKey) === stub) {
+        this.clientHubStubs.delete(hubKey);
+      }
+      console.warn(JSON.stringify({
+        level: "warn",
+        event: "hermes_chat_hub_broadcast_failed",
+        spaceId,
+        message: error instanceof Error ? error.message : "Unknown hub delivery error",
+      }));
+      return;
+    }
+    if (
+      Number(delivered || 0) !== 0
+      || Number(hub.updated_at) > Date.now() - CLIENT_HUB_REGISTRATION_GRACE_MS
+    ) return;
+    try {
+      const deletion = this.ctx.storage.sql.exec(
+        "DELETE FROM client_hubs WHERE hub_key = ? AND updated_at = ?",
+        hubKey,
+        hub.updated_at,
+      );
+      const registrationStillExists = Number(deletion.rowsWritten || 0) === 0
+        && this.ctx.storage.sql.exec(
+          "SELECT 1 AS registered FROM client_hubs WHERE hub_key = ? LIMIT 1",
+          hubKey,
+        ).toArray().length > 0;
+      if (
+        !registrationStillExists
+        && this.clientHubStubs.get(hubKey) === stub
+      ) {
+        this.clientHubStubs.delete(hubKey);
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({
+        level: "warn",
+        event: "hermes_chat_hub_registration_cleanup_failed",
+        spaceId,
+        message: error instanceof Error ? error.message : "Unknown hub cleanup error",
+      }));
+    }
+  }
+
+  clientHubStub(hubKey) {
+    let stub = this.clientHubStubs.get(hubKey);
+    if (!stub) {
+      stub = this.env.HERMES_CHAT_HUBS.getByName(`user:${hubKey}`, {
+        locationHint: "apac",
+      });
+      this.clientHubStubs.set(hubKey, stub);
+    }
+    return stub;
   }
 }
 

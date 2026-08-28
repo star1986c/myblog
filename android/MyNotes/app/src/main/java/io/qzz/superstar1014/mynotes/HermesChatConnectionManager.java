@@ -16,10 +16,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Keeps one routed WebSocket alive for every locally configured Hermes profile. */
 final class HermesChatConnectionManager {
@@ -47,6 +49,7 @@ final class HermesChatConnectionManager {
   private static final int MAX_PENDING_EVENTS = 500;
   private static final long PERSISTENCE_BATCH_DELAY_MS = 40L;
   private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
+  private static final long AGENT_TYPING_TIMEOUT_MS = 6_000L;
   private static volatile HermesChatConnectionManager instance;
 
   static HermesChatConnectionManager get(Context context) {
@@ -71,6 +74,9 @@ final class HermesChatConnectionManager {
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
   private final Map<String, ProfileSession> sessions = new LinkedHashMap<>();
   private final Set<UnreadListener> unreadListeners = new CopyOnWriteArraySet<>();
+  private final AtomicLong awaitingRequestIds = new AtomicLong();
+  private final AtomicLong profileRevisionIds = new AtomicLong();
+  private final Map<String, Long> profileRevisions = new LinkedHashMap<>();
 
   private HermesChatClient client;
   private State state = State.IDLE;
@@ -98,6 +104,13 @@ final class HermesChatConnectionManager {
   void syncProfiles(List<Models.HermesChatProfile> profiles) {
     List<Models.HermesChatProfile> requested = List.copyOf(profiles);
     long syncAttempt = ++profileSyncAttempt;
+    Map<String, Long> baselineRevisions = new LinkedHashMap<>(profileRevisions);
+    Map<String, Long> requestedRevisions = new LinkedHashMap<>();
+    Set<String> requestedIds = new HashSet<>();
+    for (Models.HermesChatProfile profile : requested) {
+      requestedIds.add(profile.id);
+      requestedRevisions.put(profile.id, profileRevisions.getOrDefault(profile.id, 0L));
+    }
     executor.submit(() -> {
       List<ProfileConfig> configs = new ArrayList<>();
       Set<String> allowedIds = new HashSet<>();
@@ -117,14 +130,22 @@ final class HermesChatConnectionManager {
             fingerprint(encodedKey),
             crypto,
             history,
-            snapshot.lastSequence
+            snapshot.lastSequence,
+            requestedRevisions.getOrDefault(profile.id, 0L)
           ));
           allowedIds.add(profile.id);
         } catch (Exception ignored) {
           // A malformed local key stays isolated to its profile and can be replaced in chat settings.
         }
       }
-      handler.post(() -> applyProfileSync(syncAttempt, allowedIds, configs));
+      handler.post(() -> applyProfileSync(
+        syncAttempt,
+        baselineRevisions,
+        requestedIds,
+        requestedRevisions,
+        allowedIds,
+        configs
+      ));
     });
   }
 
@@ -140,6 +161,8 @@ final class HermesChatConnectionManager {
     ProfileSession session = sessions.get(profileId);
     boolean changed = session == null || !requestedFingerprint.equals(session.keyFingerprint);
     if (changed) {
+      profileRevisions.put(profileId, profileRevisionIds.incrementAndGet());
+      if (session != null) retireReplacedSession(session);
       HermesChatCrypto crypto = new HermesChatCrypto(encodedKey);
       session = new ProfileSession(
         profileId,
@@ -158,9 +181,9 @@ final class HermesChatConnectionManager {
     session.visible = true;
     configureClientProfile(session);
     clearUnread(profileId);
+    publishBusyState(session);
     publishState(session);
     drainPendingEvents(session);
-    if (session.awaitingAgentResponse) requestedListener.onTyping(true);
     if (changed || state == State.IDLE || state == State.DISCONNECTED) {
       profileGeneration += 1;
       authenticateAndConnect(profileGeneration);
@@ -181,9 +204,9 @@ final class HermesChatConnectionManager {
     session.visible = visible;
     if (visible) {
       clearUnread(profileId);
+      publishBusyState(session);
       publishState(session);
       drainPendingEvents(session);
-      if (session.awaitingAgentResponse) candidate.onTyping(true);
     }
   }
 
@@ -213,7 +236,10 @@ final class HermesChatConnectionManager {
     cancelReconnect();
     for (ProfileSession session : sessions.values()) {
       notifications.cancel(session.profileId);
+      session.listener = null;
+      session.visible = false;
       cancelAwaiting(session);
+      cancelAgentTyping(session);
       flushMessagePersistence(session);
     }
     sessions.clear();
@@ -239,16 +265,45 @@ final class HermesChatConnectionManager {
     return profileId != null && sessions.containsKey(profileId);
   }
 
+  boolean isCurrentProfile(String profileId, String sessionToken) {
+    ProfileSession session = sessions.get(profileId);
+    return session != null && session.keyFingerprint.equals(sessionToken);
+  }
+
+  String profileSessionToken(String profileId) {
+    ProfileSession session = sessions.get(profileId);
+    return session == null ? null : session.keyFingerprint;
+  }
+
   HermesChatCrypto.ChatMessage sendMessage(
     String profileId,
     String text,
     JSONArray attachments
   ) throws Exception {
+    return sendMessage(profileId, text, attachments, null);
+  }
+
+  HermesChatCrypto.ChatMessage sendMessage(
+    String profileId,
+    String text,
+    JSONArray attachments,
+    String expectedSessionToken
+  ) throws Exception {
     if (!isReady(profileId)) throw new IllegalStateException("聊天连接尚未就绪。");
     ProfileSession session = sessions.get(profileId);
-    HermesChatCrypto.ChatMessage message = client.sendMessage(profileId, text, attachments);
+    if (expectedSessionToken != null
+        && !session.keyFingerprint.equals(expectedSessionToken)) {
+      throw new IllegalStateException("Hermes 聊天密钥已更改，请重新发送附件。");
+    }
+    long awaitingRequestId = beginAwaitingAgentResponse(session);
+    HermesChatCrypto.ChatMessage message;
+    try {
+      message = client.sendMessage(profileId, text, attachments, expectedSessionToken);
+    } catch (Exception error) {
+      rollbackAwaitingAgentResponse(session, awaitingRequestId);
+      throw error;
+    }
     persistMessage(session, message);
-    markAwaitingAgentResponse(session);
     return message;
   }
 
@@ -258,7 +313,17 @@ final class HermesChatConnectionManager {
     String optionId
   ) throws Exception {
     if (!isReady(profileId)) throw new IllegalStateException("聊天连接尚未就绪。");
-    return client.sendInteractionAction(profileId, promptId, optionId);
+    ProfileSession session = sessions.get(profileId);
+    long awaitingRequestId = beginAwaitingAgentResponse(session);
+    String actionId = UUID.randomUUID().toString();
+    session.actionAwaitingRequestIds.put(actionId, awaitingRequestId);
+    try {
+      return client.sendInteractionAction(profileId, promptId, optionId, actionId);
+    } catch (Exception error) {
+      session.actionAwaitingRequestIds.remove(actionId);
+      rollbackAwaitingAgentResponse(session, awaitingRequestId);
+      throw error;
+    }
   }
 
   void sendTyping(String profileId, boolean active) {
@@ -267,6 +332,9 @@ final class HermesChatConnectionManager {
 
   private void applyProfileSync(
     long syncAttempt,
+    Map<String, Long> baselineRevisions,
+    Set<String> requestedIds,
+    Map<String, Long> requestedRevisions,
     Set<String> allowedIds,
     List<ProfileConfig> configs
   ) {
@@ -274,18 +342,33 @@ final class HermesChatConnectionManager {
     boolean changed = false;
     List<String> removedProfileIds = new ArrayList<>();
     for (String profileId : sessions.keySet()) {
-      if (!allowedIds.contains(profileId)) removedProfileIds.add(profileId);
+      long currentRevision = profileRevisions.getOrDefault(profileId, 0L);
+      Long baselineRevision = baselineRevisions.get(profileId);
+      boolean removedRemotelyAtCapturedRevision = !requestedIds.contains(profileId)
+        && baselineRevision != null
+        && baselineRevision == currentRevision;
+      boolean missingKeyAtCapturedRevision = !allowedIds.contains(profileId)
+        && requestedRevisions.getOrDefault(profileId, 0L) == currentRevision;
+      if (removedRemotelyAtCapturedRevision || missingKeyAtCapturedRevision) {
+        removedProfileIds.add(profileId);
+      }
     }
     for (String profileId : removedProfileIds) {
       ProfileSession removed = sessions.remove(profileId);
       if (removed != null) {
+        profileRevisions.remove(profileId);
         notifications.cancel(profileId);
+        removed.listener = null;
+        removed.visible = false;
         cancelAwaiting(removed);
+        cancelAgentTyping(removed);
         flushMessagePersistence(removed);
         changed = true;
       }
     }
     for (ProfileConfig config : configs) {
+      long currentRevision = profileRevisions.getOrDefault(config.profileId, 0L);
+      if (config.profileRevision != currentRevision) continue;
       ProfileSession existing = sessions.get(config.profileId);
       if (existing != null && existing.keyFingerprint.equals(config.keyFingerprint)) {
         existing.profileLabel = config.profileLabel;
@@ -293,20 +376,23 @@ final class HermesChatConnectionManager {
         configureClientProfile(existing);
         continue;
       }
-      if (existing != null) discardMessagePersistence(existing);
-      sessions.put(config.profileId, new ProfileSession(
+      if (existing != null) retireReplacedSession(existing);
+      profileRevisions.put(config.profileId, profileRevisionIds.incrementAndGet());
+      ProfileSession replacement = new ProfileSession(
         config.profileId,
         config.profileLabel,
         config.keyFingerprint,
         config.crypto,
         config.history,
         config.lastSequence
-      ));
+      );
+      sessions.put(config.profileId, replacement);
       changed = true;
     }
     ensureClient();
     client.retainProfiles(new HashSet<>(sessions.keySet()));
     for (ProfileSession session : sessions.values()) configureClientProfile(session);
+    publishAllBusyStates();
     if (sessions.isEmpty()) {
       client.close();
       state = State.IDLE;
@@ -361,33 +447,47 @@ final class HermesChatConnectionManager {
 
       @Override public void onMessage(
         String profileId,
-        HermesChatCrypto.ChatMessage message
+        HermesChatCrypto.ChatMessage message,
+        String sessionToken
       ) {
-        handler.post(() -> handleMessage(profileId, message));
+        handler.post(() -> handleMessage(profileId, message, sessionToken));
       }
 
       @Override public void onAcknowledged(
         String profileId,
         String messageId,
-        long sequence
+        long sequence,
+        String sessionToken
       ) {
-        handler.post(() -> handleAcknowledged(profileId, messageId, sequence));
+        handler.post(() -> handleAcknowledged(profileId, messageId, sequence, sessionToken));
       }
 
       @Override public void onActionAcknowledged(
         String profileId,
         String actionId,
-        boolean delivered
+        boolean delivered,
+        String sessionToken
       ) {
-        handler.post(() -> handleActionAcknowledged(profileId, actionId, delivered));
+        handler.post(
+          () -> handleActionAcknowledged(profileId, actionId, delivered, sessionToken)
+        );
       }
 
-      @Override public void onTyping(String profileId, boolean active) {
-        handler.post(() -> handleTyping(profileId, active));
+      @Override public void onTyping(
+        String profileId,
+        boolean active,
+        boolean terminal,
+        String sessionToken
+      ) {
+        handler.post(() -> handleTyping(profileId, active, terminal, sessionToken));
       }
 
-      @Override public void onProfileError(String profileId, String reason) {
-        handler.post(() -> handleProfileError(profileId, reason));
+      @Override public void onProfileError(
+        String profileId,
+        String reason,
+        String sessionToken
+      ) {
+        handler.post(() -> handleProfileError(profileId, reason, sessionToken));
       }
 
       @Override public void onDisconnected(String reason) {
@@ -401,6 +501,7 @@ final class HermesChatConnectionManager {
     client.configureProfile(
       session.profileId,
       session.crypto,
+      session.keyFingerprint,
       session.lastSequence
     );
   }
@@ -410,16 +511,23 @@ final class HermesChatConnectionManager {
     state = State.READY;
     cancelReconnect();
     reconnectAttempt = 0;
+    publishAllBusyStates();
     publishAllStates();
   }
 
-  private void handleMessage(String profileId, HermesChatCrypto.ChatMessage message) {
-    ProfileSession session = sessions.get(profileId);
+  private void handleMessage(
+    String profileId,
+    HermesChatCrypto.ChatMessage message,
+    String sessionToken
+  ) {
+    ProfileSession session = currentSession(profileId, sessionToken);
     if (session == null) return;
     session.lastSequence = Math.max(session.lastSequence, message.sequence);
     queueMessagePersistence(session, message);
     if ("agent".equals(message.sender)) {
       cancelAwaiting(session);
+      cancelAgentTyping(session);
+      publishBusyState(session);
       if (!session.visible && message.replaceSequence == 0) {
         int unreadCount = unreadStore.increment(profileId);
         notifications.showMessage(profileId, session.profileLabel, unreadCount, message);
@@ -430,8 +538,13 @@ final class HermesChatConnectionManager {
     else appendBounded(session.pendingMessages, message);
   }
 
-  private void handleAcknowledged(String profileId, String messageId, long sequence) {
-    ProfileSession session = sessions.get(profileId);
+  private void handleAcknowledged(
+    String profileId,
+    String messageId,
+    long sequence,
+    String sessionToken
+  ) {
+    ProfileSession session = currentSession(profileId, sessionToken);
     if (session == null) return;
     session.lastSequence = Math.max(session.lastSequence, sequence);
     if (sequence > 0) executor.submit(() -> session.history.acknowledge(messageId, sequence));
@@ -445,22 +558,41 @@ final class HermesChatConnectionManager {
   private void handleActionAcknowledged(
     String profileId,
     String actionId,
-    boolean delivered
+    boolean delivered,
+    String sessionToken
   ) {
-    ProfileSession session = sessions.get(profileId);
-    if (session == null || session.listener == null || !session.visible) return;
-    session.listener.onActionAcknowledged(actionId, delivered);
+    ProfileSession session = currentSession(profileId, sessionToken);
+    if (session == null) return;
+    Long awaitingRequestId = session.actionAwaitingRequestIds.remove(actionId);
+    if (!delivered && awaitingRequestId != null
+        && session.awaitingRequestId == awaitingRequestId) {
+      cancelAgentTyping(session);
+      rollbackAwaitingAgentResponse(session, awaitingRequestId);
+    }
+    if (session.listener != null && session.visible) {
+      session.listener.onActionAcknowledged(actionId, delivered);
+    }
   }
 
-  private void handleTyping(String profileId, boolean active) {
-    ProfileSession session = sessions.get(profileId);
-    if (session == null || !active) return;
-    markAwaitingAgentResponse(session);
-    if (session.listener != null && session.visible) session.listener.onTyping(true);
+  private void handleTyping(
+    String profileId,
+    boolean active,
+    boolean terminal,
+    String sessionToken
+  ) {
+    ProfileSession session = currentSession(profileId, sessionToken);
+    if (session == null) return;
+    if (active) {
+      markAgentTyping(session);
+    } else {
+      cancelAgentTyping(session);
+      if (terminal) cancelAwaiting(session);
+      publishBusyState(session);
+    }
   }
 
-  private void handleProfileError(String profileId, String reason) {
-    ProfileSession session = sessions.get(profileId);
+  private void handleProfileError(String profileId, String reason, String sessionToken) {
+    ProfileSession session = currentSession(profileId, sessionToken);
     if (session == null || session.listener == null || !session.visible) return;
     session.listener.onDisconnected(reason);
     if (state == State.READY) handler.postDelayed(() -> {
@@ -473,6 +605,10 @@ final class HermesChatConnectionManager {
   private void handleDisconnected(long generation, String reason) {
     if (generation != profileGeneration || client == null) return;
     if (state == State.DISCONNECTED && reconnectTask != null) return;
+    for (ProfileSession session : sessions.values()) {
+      cancelAgentTyping(session);
+      publishBusyState(session);
+    }
     state = State.DISCONNECTED;
     disconnectReason = reason == null || reason.trim().isEmpty()
       ? "聊天连接已断开。"
@@ -490,8 +626,17 @@ final class HermesChatConnectionManager {
     handler.postDelayed(reconnectTask, baseDelay + jitter);
   }
 
+  private ProfileSession currentSession(String profileId, String sessionToken) {
+    ProfileSession session = sessions.get(profileId);
+    return session != null && session.keyFingerprint.equals(sessionToken) ? session : null;
+  }
+
   private void publishAllStates() {
     for (ProfileSession session : sessions.values()) publishState(session);
+  }
+
+  private void publishAllBusyStates() {
+    for (ProfileSession session : sessions.values()) publishBusyState(session);
   }
 
   private void publishState(ProfileSession session) {
@@ -500,6 +645,11 @@ final class HermesChatConnectionManager {
     if (state == State.READY) target.onReady();
     else if (state == State.CONNECTING) target.onConnecting();
     else if (state == State.DISCONNECTED) target.onDisconnected(disconnectReason);
+  }
+
+  private void publishBusyState(ProfileSession session) {
+    Listener target = session.listener;
+    if (target != null && session.visible) target.onTyping(session.isBusy());
   }
 
   private void drainPendingEvents(ProfileSession session) {
@@ -545,20 +695,88 @@ final class HermesChatConnectionManager {
     session.pendingPersistence.clear();
   }
 
-  private void markAwaitingAgentResponse(ProfileSession session) {
+  private long beginAwaitingAgentResponse(ProfileSession session) {
+    long requestId = awaitingRequestIds.incrementAndGet();
+    if (session == null) return requestId;
+    if (Looper.myLooper() == handler.getLooper()) {
+      if (sessions.get(session.profileId) == session) {
+        markAwaitingAgentResponse(session, requestId);
+      }
+      return requestId;
+    }
+    handler.post(() -> {
+      if (sessions.get(session.profileId) == session) {
+        markAwaitingAgentResponse(session, requestId);
+      }
+    });
+    return requestId;
+  }
+
+  private void markAwaitingAgentResponse(ProfileSession session, long requestId) {
+    long generation = ++session.awaitingGeneration;
+    session.awaitingRequestId = requestId;
     session.awaitingAgentResponse = true;
     if (session.expireAwaiting != null) handler.removeCallbacks(session.expireAwaiting);
     session.expireAwaiting = () -> {
+      if (session.awaitingGeneration != generation) return;
+      session.awaitingRequestId = 0;
       session.awaitingAgentResponse = false;
+      session.actionAwaitingRequestIds.clear();
       session.expireAwaiting = null;
+      publishBusyState(session);
     };
     handler.postDelayed(session.expireAwaiting, AWAITING_RESPONSE_TIMEOUT_MS);
+    publishBusyState(session);
   }
 
   private void cancelAwaiting(ProfileSession session) {
+    session.awaitingGeneration += 1;
+    session.awaitingRequestId = 0;
     session.awaitingAgentResponse = false;
+    session.actionAwaitingRequestIds.clear();
     if (session.expireAwaiting != null) handler.removeCallbacks(session.expireAwaiting);
     session.expireAwaiting = null;
+  }
+
+  private void rollbackAwaitingAgentResponse(ProfileSession session, long requestId) {
+    if (session == null) return;
+    Runnable rollback = () -> {
+      if (sessions.get(session.profileId) != session
+          || session.awaitingRequestId != requestId) return;
+      cancelAwaiting(session);
+      publishBusyState(session);
+    };
+    if (Looper.myLooper() == handler.getLooper()) rollback.run();
+    else handler.post(rollback);
+  }
+
+  private void markAgentTyping(ProfileSession session) {
+    long generation = ++session.typingGeneration;
+    session.agentTypingActive = true;
+    if (session.expireTyping != null) handler.removeCallbacks(session.expireTyping);
+    session.expireTyping = () -> {
+      if (session.typingGeneration != generation) return;
+      session.agentTypingActive = false;
+      session.expireTyping = null;
+      publishBusyState(session);
+    };
+    handler.postDelayed(session.expireTyping, AGENT_TYPING_TIMEOUT_MS);
+    publishBusyState(session);
+  }
+
+  private void cancelAgentTyping(ProfileSession session) {
+    session.typingGeneration += 1;
+    session.agentTypingActive = false;
+    if (session.expireTyping != null) handler.removeCallbacks(session.expireTyping);
+    session.expireTyping = null;
+  }
+
+  private void retireReplacedSession(ProfileSession session) {
+    session.listener = null;
+    session.visible = false;
+    cancelAwaiting(session);
+    cancelAgentTyping(session);
+    discardMessagePersistence(session);
   }
 
   private void clearUnread(String profileId) {
@@ -614,6 +832,7 @@ final class HermesChatConnectionManager {
     final HermesChatCrypto crypto;
     final HermesChatHistoryStore history;
     final long lastSequence;
+    final long profileRevision;
 
     ProfileConfig(
       String profileId,
@@ -621,7 +840,8 @@ final class HermesChatConnectionManager {
       String keyFingerprint,
       HermesChatCrypto crypto,
       HermesChatHistoryStore history,
-      long lastSequence
+      long lastSequence,
+      long profileRevision
     ) {
       this.profileId = profileId;
       this.profileLabel = profileLabel;
@@ -629,6 +849,7 @@ final class HermesChatConnectionManager {
       this.crypto = crypto;
       this.history = history;
       this.lastSequence = lastSequence;
+      this.profileRevision = profileRevision;
     }
   }
 
@@ -641,11 +862,17 @@ final class HermesChatConnectionManager {
     final ArrayDeque<HermesChatCrypto.ChatMessage> pendingMessages = new ArrayDeque<>();
     final ArrayDeque<Acknowledgement> pendingAcknowledgements = new ArrayDeque<>();
     final List<HermesChatCrypto.ChatMessage> pendingPersistence = new ArrayList<>();
+    final Map<String, Long> actionAwaitingRequestIds = new LinkedHashMap<>();
     long lastSequence;
     Listener listener;
     boolean visible;
     boolean awaitingAgentResponse;
+    boolean agentTypingActive;
+    long awaitingRequestId;
+    long awaitingGeneration;
+    long typingGeneration;
     Runnable expireAwaiting;
+    Runnable expireTyping;
     Runnable flushPersistence;
 
     ProfileSession(
@@ -662,6 +889,10 @@ final class HermesChatConnectionManager {
       this.crypto = crypto;
       this.history = history;
       this.lastSequence = Math.max(0, lastSequence);
+    }
+
+    boolean isBusy() {
+      return awaitingAgentResponse || agentTypingActive;
     }
   }
 

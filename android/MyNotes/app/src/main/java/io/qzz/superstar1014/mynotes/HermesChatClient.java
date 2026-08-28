@@ -26,11 +26,30 @@ final class HermesChatClient {
 
   interface Listener {
     void onReady();
-    void onMessage(String spaceId, HermesChatCrypto.ChatMessage message);
-    void onAcknowledged(String spaceId, String messageId, long sequence);
-    void onActionAcknowledged(String spaceId, String actionId, boolean delivered);
-    void onTyping(String spaceId, boolean active);
-    void onProfileError(String spaceId, String reason);
+    void onMessage(
+      String spaceId,
+      HermesChatCrypto.ChatMessage message,
+      String sessionToken
+    );
+    void onAcknowledged(
+      String spaceId,
+      String messageId,
+      long sequence,
+      String sessionToken
+    );
+    void onActionAcknowledged(
+      String spaceId,
+      String actionId,
+      boolean delivered,
+      String sessionToken
+    );
+    void onTyping(
+      String spaceId,
+      boolean active,
+      boolean terminal,
+      String sessionToken
+    );
+    void onProfileError(String spaceId, String reason, String sessionToken);
     void onDisconnected(String reason);
   }
 
@@ -38,6 +57,7 @@ final class HermesChatClient {
   private final OkHttpClient http;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Object socketStateLock = new Object();
+  private final Object profileStateLock = new Object();
   private final Map<String, ProfileState> profiles = new ConcurrentHashMap<>();
   private volatile WebSocket socket;
   private volatile boolean closing;
@@ -54,13 +74,22 @@ final class HermesChatClient {
       .build();
   }
 
-  void configureProfile(String spaceId, HermesChatCrypto crypto, long initialSequence) {
+  void configureProfile(
+    String spaceId,
+    HermesChatCrypto crypto,
+    String keyFingerprint,
+    long initialSequence
+  ) {
     if (initialSequence < 0) throw new IllegalArgumentException("聊天恢复序号无效。");
-    profiles.put(spaceId, new ProfileState(crypto, initialSequence));
+    synchronized (profileStateLock) {
+      profiles.put(spaceId, new ProfileState(crypto, keyFingerprint, initialSequence));
+    }
   }
 
   void retainProfiles(Set<String> spaceIds) {
-    profiles.keySet().removeIf(spaceId -> !spaceIds.contains(spaceId));
+    synchronized (profileStateLock) {
+      profiles.keySet().removeIf(spaceId -> !spaceIds.contains(spaceId));
+    }
   }
 
   void connect(Models.HermesChatMultiplexTicket ticket) {
@@ -72,9 +101,16 @@ final class HermesChatClient {
       .header("X-Hermes-Role", "client")
       .header("X-Hermes-Mode", "multiplex")
       .build();
+    Map<String, String> sessionTokens = new ConcurrentHashMap<>();
+    synchronized (profileStateLock) {
+      for (String spaceId : ticket.spaceIds) {
+        ProfileState profile = profiles.get(spaceId);
+        if (profile != null) sessionTokens.put(spaceId, profile.keyFingerprint);
+      }
+    }
     WebSocket nextSocket = http.newWebSocket(
       request,
-      new SocketListener(List.copyOf(ticket.spaceIds))
+      new SocketListener(List.copyOf(ticket.spaceIds), Map.copyOf(sessionTokens))
     );
     synchronized (socketStateLock) {
       socket = nextSocket;
@@ -85,48 +121,57 @@ final class HermesChatClient {
   HermesChatCrypto.ChatMessage sendMessage(
     String spaceId,
     String text,
-    JSONArray attachments
+    JSONArray attachments,
+    String expectedSessionToken
   ) throws Exception {
-    ProfileState profile = requireProfile(spaceId);
-    String id = UUID.randomUUID().toString();
-    long sentAt = System.currentTimeMillis();
-    JSONObject envelope = profile.crypto.encryptMessage(
-      "client",
-      text,
-      attachments,
-      id,
-      sentAt
-    );
-    if (!send(spaceId, envelope)) throw new IllegalStateException("聊天连接尚未就绪。");
-    return new HermesChatCrypto.ChatMessage(
-      id,
-      "client",
-      sentAt,
-      0,
-      text == null ? "" : text,
-      attachments == null ? new JSONArray() : attachments
-    );
+    synchronized (profileStateLock) {
+      ProfileState profile = requireProfile(spaceId);
+      if (expectedSessionToken != null
+          && !profile.keyFingerprint.equals(expectedSessionToken)) {
+        throw new IllegalStateException("Hermes 聊天密钥已更改，请重新发送附件。");
+      }
+      String id = UUID.randomUUID().toString();
+      long sentAt = System.currentTimeMillis();
+      JSONObject envelope = profile.crypto.encryptMessage(
+        "client",
+        text,
+        attachments,
+        id,
+        sentAt
+      );
+      if (!send(spaceId, envelope)) throw new IllegalStateException("聊天连接尚未就绪。");
+      return new HermesChatCrypto.ChatMessage(
+        id,
+        "client",
+        sentAt,
+        0,
+        text == null ? "" : text,
+        attachments == null ? new JSONArray() : attachments
+      );
+    }
   }
 
   String sendInteractionAction(
     String spaceId,
     String promptId,
-    String optionId
+    String optionId,
+    String actionId
   ) throws Exception {
-    ProfileState profile = requireProfile(spaceId);
-    String actionId = UUID.randomUUID().toString();
-    JSONObject message = profile.crypto.encryptInteractionResponse(
-      promptId,
-      optionId,
-      actionId,
-      System.currentTimeMillis()
-    );
-    JSONObject frame = new JSONObject()
-      .put("v", 1)
-      .put("type", "action")
-      .put("message", message);
-    if (!send(spaceId, frame)) throw new IllegalStateException("聊天连接尚未就绪。");
-    return actionId;
+    synchronized (profileStateLock) {
+      ProfileState profile = requireProfile(spaceId);
+      JSONObject message = profile.crypto.encryptInteractionResponse(
+        promptId,
+        optionId,
+        actionId,
+        System.currentTimeMillis()
+      );
+      JSONObject frame = new JSONObject()
+        .put("v", 1)
+        .put("type", "action")
+        .put("message", message);
+      if (!send(spaceId, frame)) throw new IllegalStateException("聊天连接尚未就绪。");
+      return actionId;
+    }
   }
 
   void sendTyping(String spaceId, boolean active) {
@@ -215,9 +260,11 @@ final class HermesChatClient {
 
   private final class SocketListener extends WebSocketListener {
     private final List<String> ticketSpaces;
+    private final Map<String, String> sessionTokens;
 
-    SocketListener(List<String> ticketSpaces) {
+    SocketListener(List<String> ticketSpaces, Map<String, String> sessionTokens) {
       this.ticketSpaces = ticketSpaces;
+      this.sessionTokens = sessionTokens;
     }
 
     @Override
@@ -233,6 +280,7 @@ final class HermesChatClient {
     public void onMessage(WebSocket webSocket, String text) {
       if (webSocket != socket) return;
       String spaceId = "";
+      String sessionToken = "";
       try {
         JSONObject frame = new JSONObject(text);
         String type = frame.optString("type");
@@ -247,7 +295,10 @@ final class HermesChatClient {
         }
         if ("pong".equals(type)) return;
         spaceId = frame.getString("spaceId");
+        sessionToken = sessionTokens.get(spaceId);
+        if (sessionToken == null) return;
         ProfileState profile = requireProfile(spaceId);
+        if (!profile.keyFingerprint.equals(sessionToken)) return;
         if ("message".equals(type)) {
           long sequence = frame.optLong("seq");
           HermesChatCrypto.ChatMessage message = profile.crypto.decryptMessage(
@@ -255,7 +306,7 @@ final class HermesChatClient {
             sequence
           );
           profile.lastSequence = Math.max(profile.lastSequence, sequence);
-          listener.onMessage(spaceId, message);
+          listener.onMessage(spaceId, message, sessionToken);
           return;
         }
         if ("edit".equals(type)) {
@@ -269,7 +320,7 @@ final class HermesChatClient {
             throw new IllegalArgumentException("流式消息替换元数据校验失败。");
           }
           if (sequence > 0) profile.lastSequence = Math.max(profile.lastSequence, sequence);
-          listener.onMessage(spaceId, message);
+          listener.onMessage(spaceId, message, sessionToken);
           return;
         }
         if ("resume_complete".equals(type)) {
@@ -281,29 +332,39 @@ final class HermesChatClient {
             listener.onActionAcknowledged(
               spaceId,
               frame.optString("id"),
-              frame.optBoolean("delivered")
+              frame.optBoolean("delivered"),
+              sessionToken
             );
             return;
           }
           long sequence = frame.optLong("seq");
           if (sequence > 0) profile.lastSequence = Math.max(profile.lastSequence, sequence);
-          listener.onAcknowledged(spaceId, frame.optString("id"), sequence);
+          listener.onAcknowledged(
+            spaceId,
+            frame.optString("id"),
+            sequence,
+            sessionToken
+          );
           return;
         }
         if ("typing".equals(type) && "agent".equals(frame.optString("sender"))) {
-          listener.onTyping(spaceId, frame.optBoolean("active"));
+          boolean active = frame.optBoolean("active");
+          boolean terminal = !active
+            && (!frame.has("terminal") || frame.optBoolean("terminal"));
+          listener.onTyping(spaceId, active, terminal, sessionToken);
           return;
         }
         if ("error".equals(type)) {
           listener.onProfileError(
             spaceId,
-            frame.optString("message", "Cloudflare 拒绝了聊天消息。")
+            frame.optString("message", "Cloudflare 拒绝了聊天消息。"),
+            sessionToken
           );
         }
       } catch (Exception error) {
         String reason = "无法解析加密聊天消息：" + error.getMessage();
         if (spaceId.isEmpty()) listener.onDisconnected(reason);
-        else listener.onProfileError(spaceId, reason);
+        else listener.onProfileError(spaceId, reason, sessionToken);
       }
     }
 
@@ -348,11 +409,17 @@ final class HermesChatClient {
 
   private static final class ProfileState {
     final HermesChatCrypto crypto;
+    final String keyFingerprint;
     volatile long lastSequence;
     volatile Boolean lastTypingActive;
 
-    ProfileState(HermesChatCrypto crypto, long initialSequence) {
+    ProfileState(
+      HermesChatCrypto crypto,
+      String keyFingerprint,
+      long initialSequence
+    ) {
       this.crypto = crypto;
+      this.keyFingerprint = keyFingerprint;
       this.lastSequence = initialSequence;
     }
   }

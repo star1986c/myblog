@@ -14,6 +14,10 @@ const gateway = await readFile(
   new URL("../src/hermes-chat-gateway.js", import.meta.url),
   "utf8",
 );
+const hubBroadcastStart = room.indexOf("  async broadcastToClientHubs(spaceId, frame) {");
+const hubStubStart = room.indexOf("  clientHubStub(hubKey) {", hubBroadcastStart);
+const hubBroadcast = room.slice(hubBroadcastStart, hubStubStart);
+const hubStubCache = room.slice(hubStubStart);
 
 test("multiplex hub keeps concurrent native-client sockets with durable route metadata", () => {
   assert.match(hub, /class HermesChatHub extends DurableObject/);
@@ -31,6 +35,37 @@ test("profile rooms retain old client sockets and forward durable events to regi
   assert.match(room, /async registerClientHub\(/);
   assert.match(room, /this\.ctx\.waitUntil\(this\.broadcastToClientHubs/);
   assert.match(room, /await stub\.deliver\(routedSpace, frame\)/);
+  assert.match(room, /this\.clientHubStubs = new Map\(\)/);
+  assert.match(room, /this\.clientHubDeliveryTails = new Map\(\)/);
+  assert.match(hubBroadcast, /enqueueClientHubDelivery\(hub, spaceId, frame\)/);
+  assert.match(
+    hubBroadcast,
+    /previous\.then\(\(\) => this\.deliverToClientHub\(hub, spaceId, frame\)\)/,
+  );
+  assert.match(hubBroadcast, /stub = this\.clientHubStub\(hubKey\)/);
+  assert.match(
+    hubStubCache,
+    /this\.clientHubStubs\.get\(hubKey\)[\s\S]*this\.clientHubStubs\.set\(hubKey, stub\)/,
+  );
+  assert.match(
+    hubBroadcast,
+    /catch \(error\)[\s\S]*this\.clientHubStubs\.get\(hubKey\) === stub[\s\S]*this\.clientHubStubs\.delete\(hubKey\)/,
+  );
+  assert.match(
+    hubBroadcast,
+    /Number\(deletion\.rowsWritten \|\| 0\) === 0[\s\S]*SELECT 1 AS registered FROM client_hubs WHERE hub_key = \? LIMIT 1/,
+  );
+  assert.match(
+    hubBroadcast,
+    /!registrationStillExists[\s\S]*this\.clientHubStubs\.get\(hubKey\) === stub[\s\S]*this\.clientHubStubs\.delete\(hubKey\)/,
+  );
+  assert.match(
+    hubBroadcast,
+    /let stub;[\s\S]*try \{[\s\S]*stub = this\.clientHubStub\(hubKey\)[\s\S]*await stub\.deliver/,
+  );
+  assert.match(hubBroadcast, /hermes_chat_hub_registration_cleanup_failed/);
+  assert.doesNotMatch(hubBroadcast, /HERMES_CHAT_HUBS\.getByName/);
+  assert.match(hubStubCache, /HERMES_CHAT_HUBS\.getByName/);
   assert.match(room, /CLIENT_HUB_REGISTRATION_GRACE_MS/);
   assert.match(room, /this\.ctx\.getWebSockets\(`role:\$\{receiverRole\}`\)/);
   assert.match(room, /async publishAgentMessage\(spaceId, rawFrame\)/);
@@ -43,6 +78,11 @@ test("profile rooms retain old client sockets and forward durable events to regi
   assert.match(room, /frame\.type === "action"/);
   assert.match(room, /validateHermesChatAction\(frame, "client"\)/);
   assert.match(room, /durable: false/);
+  assert.equal(
+    (room.match(/typeof frame\.terminal === "boolean"/g) || []).length,
+    2,
+    "legacy and multiplex typing routes must preserve the optional terminal marker",
+  );
   assert.doesNotMatch(room, /storeMessage\(action/);
   assert.match(
     room,

@@ -26,6 +26,7 @@ public final class HermesChatStore: ObservableObject {
   private let attachmentCache: HermesChatAttachmentCache
   private let defaults: UserDefaults
   private let previewsOnly: Bool
+  private let typingTimeout: Duration
   private var cryptos: [String: HermesChatCrypto] = [:]
   private var histories: [String: HermesChatHistoryStore] = [:]
   private var lastSequences: [String: Int64] = [:]
@@ -35,6 +36,12 @@ public final class HermesChatStore: ObservableObject {
   private var reconnectTask: Task<Void, Never>?
   private var messageFlushTask: Task<Void, Never>?
   private var awaitingTasks: [String: Task<Void, Never>] = [:]
+  private var awaitingGenerations: [String: UInt64] = [:]
+  private var nextAwaitingGeneration: UInt64 = 0
+  private var actionAwaitingGenerations: [String: PendingActionAwaiting] = [:]
+  private var typingTasks: [String: Task<Void, Never>] = [:]
+  private var typingGenerations: [String: UInt64] = [:]
+  private var nextTypingGeneration: UInt64 = 0
   private var started = false
   private var applicationActive = true
   private var reconnectAttempt = 0
@@ -47,7 +54,8 @@ public final class HermesChatStore: ObservableObject {
     client: HermesChatClient = HermesChatClient(),
     attachmentCache: HermesChatAttachmentCache = HermesChatAttachmentCache(),
     defaults: UserDefaults = .standard,
-    previewsOnly: Bool = false
+    previewsOnly: Bool = false,
+    typingTimeout: Duration = .seconds(6)
   ) {
     self.api = api
     self.keyStore = keyStore
@@ -55,6 +63,7 @@ public final class HermesChatStore: ObservableObject {
     self.attachmentCache = attachmentCache
     self.defaults = defaults
     self.previewsOnly = previewsOnly
+    self.typingTimeout = typingTimeout
     let stored = defaults.object(forKey: "hermes_chat_retention_days_v1") as? Int ?? 30
     retentionDays = [0, 7, 30, 90].contains(stored) ? stored : 30
     let storedLookback = defaults.object(forKey: "hermes_chat_refresh_days_v1") as? Int ?? 2
@@ -113,6 +122,7 @@ public final class HermesChatStore: ObservableObject {
     eventTask?.cancel()
     reconnectTask?.cancel()
     for task in awaitingTasks.values { task.cancel() }
+    for task in typingTasks.values { task.cancel() }
   }
 
   public var selectedProfile: HermesChatProfile? {
@@ -163,6 +173,7 @@ public final class HermesChatStore: ObservableObject {
   public func stop() async {
     started = false
     configurationGeneration += 1
+    clearTyping()
     cancelScheduledReconnect()
     eventTask?.cancel()
     eventTask = nil
@@ -171,11 +182,12 @@ public final class HermesChatStore: ObservableObject {
     await flushPendingMessages()
     for task in awaitingTasks.values { task.cancel() }
     awaitingTasks = [:]
+    awaitingGenerations = [:]
+    actionAwaitingGenerations = [:]
     await client.disconnect()
     connectionState = .idle
     messagesByProfile = [:]
     unreadByProfile = [:]
-    typingProfiles = []
     awaitingProfiles = []
     configuredProfileIDs = []
     cryptos = [:]
@@ -220,6 +232,7 @@ public final class HermesChatStore: ObservableObject {
         encodedKey.trimmingCharacters(in: .whitespacesAndNewlines),
         spaceID: spaceID
       )
+      cancelAwaiting(spaceID)
       errorMessage = nil
       await configureLocalProfilesAndConnect()
       return true
@@ -234,6 +247,7 @@ public final class HermesChatStore: ObservableObject {
       if let history = histories[spaceID] { await history.removeLocalSnapshot() }
       await attachmentCache.clear(spaceID: spaceID)
       try keyStore.removeKey(spaceID: spaceID)
+      cancelAwaiting(spaceID)
       configuredProfileIDs.remove(spaceID)
       cryptos.removeValue(forKey: spaceID)
       histories.removeValue(forKey: spaceID)
@@ -299,6 +313,8 @@ public final class HermesChatStore: ObservableObject {
 
     isSending = true
     defer { isSending = false }
+    let sendConfigurationGeneration = configurationGeneration
+    var awaitingGeneration: UInt64?
     do {
       var descriptors: [HermesChatAttachmentDescriptor] = []
       for url in fileURLs {
@@ -330,19 +346,29 @@ public final class HermesChatStore: ObservableObject {
         descriptors.append(encrypted.descriptor)
       }
 
+      guard sendConfigurationGeneration == configurationGeneration else {
+        throw HermesChatStoreError.configurationChanged
+      }
+      awaitingGeneration = markAwaiting(spaceID)
       let message = try await client.sendMessage(
         spaceID: spaceID,
         text: normalized,
-        attachments: descriptors
+        attachments: descriptors,
+        expectedConfigurationGeneration: sendConfigurationGeneration
       )
+      guard sendConfigurationGeneration == configurationGeneration else {
+        throw HermesChatStoreError.configurationChanged
+      }
       apply(message, spaceID: spaceID, countUnread: false)
       if let history = histories[spaceID] {
         _ = await history.record(message)
       }
-      markAwaiting(spaceID)
       await client.sendTyping(spaceID: spaceID, active: false)
       return true
     } catch {
+      if let awaitingGeneration {
+        cancelAwaiting(spaceID, generation: awaitingGeneration)
+      }
       errorMessage = Self.message(error)
       return false
     }
@@ -365,14 +391,26 @@ public final class HermesChatStore: ObservableObject {
       errorMessage = "此操作已过期，请重新发送指令。"
       return
     }
+    let actionID = UUID().uuidString.lowercased()
+    let actionConfigurationGeneration = configurationGeneration
+    let awaitingGeneration = markAwaiting(spaceID)
+    registerAwaitingAction(actionID, spaceID: spaceID, generation: awaitingGeneration)
     do {
       _ = try await client.sendInteractionAction(
         spaceID: spaceID,
         promptID: interaction.id,
-        optionID: option.id
+        optionID: option.id,
+        messageID: actionID,
+        expectedConfigurationGeneration: actionConfigurationGeneration
       )
-      markAwaiting(spaceID)
+      guard actionConfigurationGeneration == configurationGeneration else {
+        actionAwaitingGenerations.removeValue(forKey: actionID)
+        cancelAwaiting(spaceID, generation: awaitingGeneration)
+        return
+      }
     } catch {
+      actionAwaitingGenerations.removeValue(forKey: actionID)
+      cancelAwaiting(spaceID, generation: awaitingGeneration)
       errorMessage = Self.message(error)
     }
   }
@@ -486,9 +524,12 @@ public final class HermesChatStore: ObservableObject {
   public func clearError() { errorMessage = nil }
 
   private func configureLocalProfilesAndConnect() async {
+    clearTyping()
     cancelScheduledReconnect()
     configurationGeneration += 1
     let generation = configurationGeneration
+    await client.disconnect()
+    guard generation == configurationGeneration else { return }
     var nextCryptos: [String: HermesChatCrypto] = [:]
     var nextHistories: [String: HermesChatHistoryStore] = [:]
     var nextMessages = messagesByProfile
@@ -528,6 +569,8 @@ public final class HermesChatStore: ObservableObject {
   private func connectConfiguredProfiles(
     recentSyncSinceByProfile: [String: Int64] = [:]
   ) async {
+    clearTyping()
+    let generation = configurationGeneration
     guard started, !configuredProfileIDs.isEmpty else {
       await client.disconnect()
       connectionState = .idle
@@ -537,6 +580,7 @@ public final class HermesChatStore: ObservableObject {
     do {
       let ids = profiles.map(\.id).filter(configuredProfileIDs.contains)
       let ticket = try await api.hermesChatMultiplexTicket(spaceIDs: ids)
+      guard generation == configurationGeneration else { return }
       let configurations = try ids.map { id in
         guard let crypto = cryptos[id] else { throw HermesChatCryptoError.invalidKey }
         let recentSince = recentSyncSinceByProfile[id]
@@ -544,7 +588,8 @@ public final class HermesChatStore: ObservableObject {
           spaceID: id,
           crypto: crypto,
           lastSequence: recentSince == nil ? (lastSequences[id] ?? 0) : 0,
-          resumeSinceMilliseconds: recentSince
+          resumeSinceMilliseconds: recentSince,
+          configurationGeneration: generation
         )
       }
       await client.connect(ticket: ticket, profileConfigurations: configurations)
@@ -553,22 +598,30 @@ public final class HermesChatStore: ObservableObject {
     }
   }
 
-  private func handle(_ event: HermesChatClientEvent) async {
+  func handle(_ event: HermesChatClientEvent) async {
     guard started else { return }
     switch event {
-    case .ready:
+    case .ready(let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
       reconnectAttempt = 0
       connectionState = .connected
-    case .message(let spaceID, let message):
+    case .message(let spaceID, let message, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
       lastSequences[spaceID] = max(lastSequences[spaceID] ?? 0, message.sequence)
       let countUnread = message.isAgent && message.replaceSequence == 0
         && (!applicationActive || selectedProfileID != spaceID)
-      queue(message, spaceID: spaceID, countUnread: countUnread)
+      queue(
+        message,
+        spaceID: spaceID,
+        countUnread: countUnread,
+        configurationGeneration: eventGeneration
+      )
       if message.isAgent {
         cancelAwaiting(spaceID)
-        typingProfiles.remove(spaceID)
+        cancelTyping(spaceID)
       }
-    case .acknowledged(let spaceID, let messageID, let sequence):
+    case .acknowledged(let spaceID, let messageID, let sequence, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
       if let index = messagesByProfile[spaceID]?.firstIndex(where: { $0.id == messageID }) {
         messagesByProfile[spaceID]?[index].sequence = sequence
       }
@@ -576,10 +629,12 @@ public final class HermesChatStore: ObservableObject {
       if let history = histories[spaceID] {
         _ = await history.acknowledge(messageID: messageID, sequence: sequence)
       }
-    case .resumed(let spaceID, let latestSequence):
+    case .resumed(let spaceID, let latestSequence, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
       messageFlushTask?.cancel()
       messageFlushTask = nil
       await flushPendingMessages()
+      guard eventGeneration == configurationGeneration else { return }
       lastSequences[spaceID] = max(lastSequences[spaceID] ?? 0, latestSequence)
       if let history = histories[spaceID] {
         _ = await history.advanceCheckpoint(to: latestSequence)
@@ -588,18 +643,33 @@ public final class HermesChatStore: ObservableObject {
         recentRefreshProfileID = nil
         isRefreshingMessages = false
       }
-    case .actionAcknowledged(_, _, let delivered):
-      if !delivered { errorMessage = "Hermes Agent 当前未连接，操作没有执行。" }
-    case .typing(let spaceID, let active):
-      if active {
-        typingProfiles.insert(spaceID)
-        markAwaiting(spaceID)
-      } else {
-        typingProfiles.remove(spaceID)
+    case .actionAcknowledged(
+      let spaceID,
+      let actionID,
+      let delivered,
+      let eventGeneration
+    ):
+      guard eventGeneration == configurationGeneration else { return }
+      let pending = actionAwaitingGenerations.removeValue(forKey: actionID)
+      if !delivered, let pending, pending.spaceID == spaceID,
+        cancelAwaiting(spaceID, generation: pending.generation)
+      {
+        cancelTyping(spaceID)
+        errorMessage = "Hermes Agent 当前未连接，操作没有执行。"
       }
-    case .profileError(_, let reason):
+    case .typing(let spaceID, let active, let terminal, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
+      if active {
+        markTyping(spaceID)
+      } else {
+        cancelTyping(spaceID)
+        if terminal { cancelAwaiting(spaceID) }
+      }
+    case .profileError(_, let reason, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
       errorMessage = reason
-    case .disconnected(let reason):
+    case .disconnected(let reason, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
       handleDisconnect(reason: reason)
     }
   }
@@ -610,7 +680,13 @@ public final class HermesChatStore: ObservableObject {
     countUnread: Bool
   ) {
     applyBatch(
-      [PendingIncomingMessage(message: incoming, countUnread: countUnread)],
+      [
+        PendingIncomingMessage(
+          message: incoming,
+          countUnread: countUnread,
+          configurationGeneration: configurationGeneration
+        )
+      ],
       spaceID: spaceID
     )
   }
@@ -618,10 +694,15 @@ public final class HermesChatStore: ObservableObject {
   private func queue(
     _ message: HermesChatMessage,
     spaceID: String,
-    countUnread: Bool
+    countUnread: Bool,
+    configurationGeneration: Int
   ) {
     pendingMessagesByProfile[spaceID, default: []].append(
-      PendingIncomingMessage(message: message, countUnread: countUnread)
+      PendingIncomingMessage(
+        message: message,
+        countUnread: countUnread,
+        configurationGeneration: configurationGeneration
+      )
     )
     guard messageFlushTask == nil else { return }
     messageFlushTask = Task { [weak self] in
@@ -636,11 +717,16 @@ public final class HermesChatStore: ObservableObject {
     let pending = pendingMessagesByProfile
     pendingMessagesByProfile = [:]
     guard !pending.isEmpty else { return }
-    for (spaceID, values) in pending {
+    let flushGeneration = configurationGeneration
+    let current = pending.mapValues { values in
+      values.filter { $0.configurationGeneration == flushGeneration }
+    }.filter { !$0.value.isEmpty }
+    let targetHistories = histories
+    for (spaceID, values) in current {
       applyBatch(values, spaceID: spaceID)
     }
-    for (spaceID, values) in pending {
-      if let history = histories[spaceID] {
+    for (spaceID, values) in current {
+      if let history = targetHistories[spaceID] {
         _ = await history.recordBatch(values.map(\.message))
       }
     }
@@ -679,26 +765,102 @@ public final class HermesChatStore: ObservableObject {
     if unreadDelta > 0 { unreadByProfile[spaceID, default: 0] += unreadDelta }
   }
 
-  private func markAwaiting(_ spaceID: String) {
+  @discardableResult
+  func markAwaiting(_ spaceID: String) -> UInt64 {
+    awaitingTasks.removeValue(forKey: spaceID)?.cancel()
+    nextAwaitingGeneration &+= 1
+    let generation = nextAwaitingGeneration
+    awaitingGenerations[spaceID] = generation
     awaitingProfiles.insert(spaceID)
-    awaitingTasks[spaceID]?.cancel()
     awaitingTasks[spaceID] = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(120))
-      guard !Task.isCancelled else { return }
-      await MainActor.run {
-        self?.awaitingProfiles.remove(spaceID)
-        self?.awaitingTasks.removeValue(forKey: spaceID)
+      do {
+        try await Task.sleep(for: .seconds(120))
+      } catch {
+        return
       }
+      guard !Task.isCancelled else { return }
+      self?.expireAwaiting(spaceID, generation: generation)
     }
+    return generation
+  }
+
+  func expireAwaiting(_ spaceID: String, generation: UInt64) {
+    guard awaitingGenerations[spaceID] == generation else { return }
+    awaitingGenerations.removeValue(forKey: spaceID)
+    awaitingTasks.removeValue(forKey: spaceID)
+    awaitingProfiles.remove(spaceID)
+    removeAwaitingActions(spaceID: spaceID)
   }
 
   private func cancelAwaiting(_ spaceID: String) {
+    awaitingGenerations.removeValue(forKey: spaceID)
     awaitingTasks.removeValue(forKey: spaceID)?.cancel()
     awaitingProfiles.remove(spaceID)
+    removeAwaitingActions(spaceID: spaceID)
+  }
+
+  @discardableResult
+  func cancelAwaiting(_ spaceID: String, generation: UInt64) -> Bool {
+    guard awaitingGenerations[spaceID] == generation else { return false }
+    awaitingGenerations.removeValue(forKey: spaceID)
+    awaitingTasks.removeValue(forKey: spaceID)?.cancel()
+    awaitingProfiles.remove(spaceID)
+    removeAwaitingActions(spaceID: spaceID)
+    return true
+  }
+
+  func registerAwaitingAction(_ actionID: String, spaceID: String, generation: UInt64) {
+    actionAwaitingGenerations[actionID] = PendingActionAwaiting(
+      spaceID: spaceID,
+      generation: generation
+    )
+  }
+
+  private func removeAwaitingActions(spaceID: String) {
+    actionAwaitingGenerations = actionAwaitingGenerations.filter { $0.value.spaceID != spaceID }
+  }
+
+  private func markTyping(_ spaceID: String) {
+    typingTasks.removeValue(forKey: spaceID)?.cancel()
+    nextTypingGeneration &+= 1
+    let generation = nextTypingGeneration
+    let timeout = typingTimeout
+    typingGenerations[spaceID] = generation
+    typingProfiles.insert(spaceID)
+    typingTasks[spaceID] = Task { [weak self] in
+      do {
+        try await Task.sleep(for: timeout)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      self?.expireTyping(spaceID, generation: generation)
+    }
+  }
+
+  private func expireTyping(_ spaceID: String, generation: UInt64) {
+    guard typingGenerations[spaceID] == generation else { return }
+    typingGenerations.removeValue(forKey: spaceID)
+    typingTasks.removeValue(forKey: spaceID)
+    typingProfiles.remove(spaceID)
+  }
+
+  private func cancelTyping(_ spaceID: String) {
+    typingGenerations.removeValue(forKey: spaceID)
+    typingTasks.removeValue(forKey: spaceID)?.cancel()
+    typingProfiles.remove(spaceID)
+  }
+
+  private func clearTyping() {
+    for task in typingTasks.values { task.cancel() }
+    typingTasks = [:]
+    typingGenerations = [:]
+    typingProfiles = []
   }
 
   private func handleDisconnect(reason: String) {
     guard started else { return }
+    clearTyping()
     connectionState = .disconnected(reason)
     recentRefreshProfileID = nil
     isRefreshingMessages = false
@@ -749,6 +911,12 @@ public final class HermesChatStore: ObservableObject {
   private struct PendingIncomingMessage {
     let message: HermesChatMessage
     let countUnread: Bool
+    let configurationGeneration: Int
+  }
+
+  private struct PendingActionAwaiting {
+    let spaceID: String
+    let generation: UInt64
   }
 
   private func cachedProfiles() -> [HermesChatProfile] {
@@ -814,12 +982,14 @@ public enum HermesChatStoreError: LocalizedError, Sendable {
   case invalidProfiles
   case unsupportedAttachment(String)
   case invalidAttachmentSize
+  case configurationChanged
 
   public var errorDescription: String? {
     switch self {
     case .invalidProfiles: "Hermes profile 配置无效。"
     case .unsupportedAttachment(let name): "暂不支持附件“\(name)”的文件类型。"
     case .invalidAttachmentSize: "附件必须是 10 MiB 以内的普通文件。"
+    case .configurationChanged: "Hermes 聊天密钥已更改，请重新发送。"
     }
   }
 }

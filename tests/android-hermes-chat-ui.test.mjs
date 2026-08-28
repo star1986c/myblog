@@ -155,32 +155,56 @@ test("Hermes message footers show the local send time instead of a sender label"
   assert.doesNotMatch(source, /message\.finalUpdate \? "Hermes"/);
 });
 
-test("every profile shows WebSocket and awaiting-response status immediately after send", async () => {
-  const source = await readFile(activityPath, "utf8");
-  const onMessage = source.slice(
-    source.indexOf("public void onMessage"),
-    source.indexOf("public void onAcknowledged"),
+test("Activity mirrors the manager's complete busy state without owning another timer", async () => {
+  const [activity, manager] = await Promise.all([
+    readFile(activityPath, "utf8"),
+    readFile(connectionManagerPath, "utf8"),
+  ]);
+  const onReady = activity.slice(
+    activity.indexOf("public void onReady"),
+    activity.indexOf("public void onConnecting"),
   );
-  const onTyping = source.slice(
-    source.indexOf("public void onTyping"),
-    source.indexOf("public void onDisconnected"),
+  const onTyping = activity.slice(
+    activity.indexOf("public void onTyping"),
+    activity.indexOf("public void onDisconnected"),
   );
-  const sendText = source.slice(
-    source.indexOf("private void sendText()"),
-    source.indexOf("private void chooseAttachment()"),
+  const sendMessage = manager.slice(
+    manager.indexOf("HermesChatCrypto.ChatMessage sendMessage"),
+    manager.indexOf("String sendInteractionAction"),
   );
-  const sendAttachment = source.slice(
-    source.indexOf("private void sendAttachment(Uri uri)"),
-    source.indexOf("private void renderCachedMessages"),
+  const publishBusy = manager.slice(
+    manager.indexOf("private void publishBusyState"),
+    manager.indexOf("private void drainPendingEvents"),
   );
 
-  assert.match(source, /WS 已连接/);
-  assert.match(source, /WS 已断开/);
-  assert.match(sendText, /connection\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
-  assert.match(sendAttachment, /targetConnection\.sendMessage[\s\S]*markAwaitingAgentResponse\(\)/);
-  assert.match(onMessage, /"agent"\.equals\(message\.sender\)[\s\S]*clearAwaitingAgentResponse\(\)/);
-  assert.doesNotMatch(onTyping, /else clearAwaitingAgentResponse\(\)/);
-  assert.match(source, /showConnectionAwareStatus\("正在思考…"\)/);
+  assert.match(activity, /WS 已连接/);
+  assert.match(activity, /WS 已断开/);
+  assert.match(onReady, /webSocketReady = true;\s*restoreConversationStatus\(\)/);
+  assert.match(onTyping, /setConversationBusy\(busy\)/);
+  assert.match(activity, /conversationBusy \? "正在思考…" : "已加密"/);
+  assert.doesNotMatch(activity, /expireAwaitingAgentResponse|AWAITING_RESPONSE_TIMEOUT_MS/);
+  assert.match(sendMessage, /beginAwaitingAgentResponse\(session\)[\s\S]*client\.sendMessage/);
+  assert.match(publishBusy, /target\.onTyping\(session\.isBusy\(\)\)/);
+});
+
+test("attachment sends keep the encryption key and WebSocket session aligned", async () => {
+  const activity = await readFile(activityPath, "utf8");
+  const start = activity.indexOf("private void sendAttachment");
+  const sendAttachment = activity.slice(start, activity.indexOf("private byte[] readBounded", start));
+  const uploadIndex = sendAttachment.indexOf("api.uploadHermesChatAttachment(");
+  const generationGuardIndex = sendAttachment.indexOf("if (generation != profileGeneration");
+  const sendIndex = sendAttachment.indexOf("targetConnection.sendMessage(");
+
+  assert.match(
+    sendAttachment,
+    /profileSessionToken\(spaceId\)[\s\S]*encryptAttachment[\s\S]*runOnUiThread[\s\S]*isCurrentProfile\(spaceId, targetSessionToken\)[\s\S]*sendMessage\([\s\S]*targetSessionToken/,
+  );
+  assert.ok(uploadIndex >= 0 && uploadIndex < generationGuardIndex);
+  assert.ok(generationGuardIndex < sendIndex);
+  assert.match(
+    activity,
+    /private void startWithKey[\s\S]*long generation = \+\+profileGeneration/,
+  );
 });
 
 test("long profile titles cannot cover the WebSocket status row", async () => {
@@ -192,7 +216,7 @@ test("long profile titles cannot cover the WebSocket status row", async () => {
   assert.match(source, /status\.setEllipsize\(TextUtils\.TruncateAt\.END\)/);
   assert.match(source, /heading\.setMinimumHeight\(dp\(52\)\)/);
   assert.match(source, /"WS 已连接 · "/);
-  assert.match(source, /showConnectionAwareStatus\("已加密"\)/);
+  assert.match(source, /restoreConversationStatus\(\)/);
   assert.doesNotMatch(source, /new LinearLayout\.LayoutParams\(0, dp\(52\), 1\)/);
   assert.doesNotMatch(source, /"WebSocket 已连接 · "/);
 });
@@ -205,7 +229,7 @@ test("debug demo can render the real awaiting status through normal navigation",
   ]);
 
   assert.match(chat, /EXTRA_DEMO_AWAITING/);
-  assert.match(chat, /getBooleanExtra\(EXTRA_DEMO_AWAITING, false\)[\s\S]*webSocketReady = true;[\s\S]*markAwaitingAgentResponse\(\)/);
+  assert.match(chat, /getBooleanExtra\(EXTRA_DEMO_AWAITING, false\)[\s\S]*webSocketReady = true;[\s\S]*setConversationBusy\(true\)/);
   assert.match(conversations, /HermesChatActivity\.EXTRA_DEMO_AWAITING/);
   assert.match(main, /HermesChatActivity\.EXTRA_DEMO_AWAITING/);
 });
@@ -531,7 +555,10 @@ test("Hermes official interactive prompts render encrypted accessible action but
   assert.match(client, /\.put\("type", "action"\)/);
   assert.match(client, /\.put\("message", message\)/);
   assert.match(client, /!frame\.optBoolean\("durable", true\)/);
-  assert.match(manager, /sendInteractionAction\(profileId, promptId, optionId\)/);
+  assert.match(
+    manager,
+    /sendInteractionAction\(profileId, promptId, optionId, actionId\)/,
+  );
   assert.match(activity, /private void addInteractionCard/);
   assert.match(activity, /button\.setMinHeight\(dp\(48\)\)/);
   assert.match(activity, /button\.setText\(\(selected \? "✓ " : ""\) \+ label\)/);

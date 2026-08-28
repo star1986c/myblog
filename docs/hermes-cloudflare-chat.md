@@ -352,6 +352,34 @@ AES-GCM 通用端点；超过 10 MiB 时由插件先流式计算 SHA-256，再�
 对象 PUT 直传并完成 HEAD 校验，成功后才发送加密消息描述符。首版采用单 PUT，默认
 512 MiB 上限，不实现 Multipart。客户端仍不能上传超过 10 MiB 的文件。
 
+插件 0.3.3 在 Hermes 完成回复时显式发送
+`typing active=false, terminal=true`。配套 Worker 会在每个 profile Room DO 实例内复用
+同一用户 Hub 的 RPC stub，并按 Hub 串行 RPC 调用，保证最终回复和紧随其后的停止输入
+状态按调用顺序到达；只有 RPC 本身失败或确认过期注册已不存在时才淘汰 stub，
+并发刷新过的注册会保留其 stub。stub
+缓存和发送队列不放进 `blockConcurrencyWhile`，DO 初始化锁仍只执行本地 SQL，不跨
+Durable Object 做外部 I/O。
+
+插件侧还会为每条已接收入站消息推进独立的 typing epoch，并在入站边界先发送
+`active=false, terminal=false` 清除上一 turn 的残留输入态，但不结束客户端刚建立的本次
+等待状态。只有当前 turn 创建的 `_keep_typing` task 才能
+重新发送 `active=true`；正常 turn 和级联处理的排队消息都会由自己的 task 点亮并最终
+关闭状态，而 `/new`、`/reset` 等不启动新 task 的旁路会保持关闭。有效的 `stop_typing`
+会先关闭当前 epoch，再发送 `active=false`；旧 task 即使因 Hermes 上游生命周期边缘情况
+没有被取消，它后续的心跳和 finally 清理也不会复活输入状态或误清新 turn。关闭状态
+不会消耗新的 epoch id，因此首次 `active=false` 发送失败时，Hermes 基类仍可在同一 turn
+重试；一旦有新入站推进 epoch，旧 retry 立即失效。Hermes 将多条排队 text/media 合并进
+existing pending event 或 queue-mode text debounce 的 `state.event` 时，插件会只把该对象
+更新到最新 epoch；独立的旧 event 即使延迟调度，仍保留原 epoch，不能偷领新 turn。
+对 runner 原任务内直接取出的下一条队列消息，会把当前 owner task 重绑到新 epoch；
+活跃会话的内联指令以及 approval/clarify 恢复也只重绑最新的 owner/heartbeat task，
+活跃会话中的 `/new`/`/reset` 会在中断旧 owner 后为新请求显式发送 terminal stop。
+
+部署本版本 Worker、替换每个 profile 的插件并重启 Gateway；环境变量和聊天密钥不变。
+Android 2.21 与 macOS 1.15 起会区分上述 fence 与 terminal；旧插件省略 `terminal` 的
+`active=false` 仍按 terminal 处理以保持兼容，并同时保留短期 typing 超时，防御断线等
+无法送达停止帧的情况。
+
 插件 0.3.2 在每次创建危险命令授权消息时，从当前 Hermes profile 的
 `approvals.timeout` 动态读取有效期；配置缺失、格式错误或暂时无法读取时，回退到
 Hermes 默认的 300 秒。这样 Hermes 的 fail-closed 等待、加密按钮的 `expiresAt` 和

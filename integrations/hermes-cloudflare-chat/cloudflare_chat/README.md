@@ -27,6 +27,39 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.3.3 explicitly clears the relay typing state with
+`active=false, terminal=true` when Hermes finishes a response. It also requires
+the matching Worker release, which keeps one Durable Object stub and one serial
+RPC queue per native-client hub so the final response and the following stop
+frame cannot be reordered. A stub is evicted only after an RPC failure or an
+expired registration is confirmed absent; a concurrently refreshed
+registration keeps its stub. No environment variables or chat keys change.
+
+The adapter also assigns every accepted inbound message its own typing epoch.
+At that boundary it first emits `active=false, terminal=false` to clear any
+typing state left by the previous turn without cancelling the client's new
+pending-response state. Only a refresh task created by the current turn may emit a new
+`active=true` frame, and stopping that turn closes its epoch before sending
+`active=false`. Normal and cascaded queued turns therefore light the indicator
+from their own `_keep_typing` task, while `/new` or `/reset` bypass paths that
+create no new task remain clear. This is a local defense for an upstream Hermes
+lifecycle edge case where an older refresh task survives: its late heartbeats
+and final cleanup become no-ops rather than changing the new turn's state.
+Closing does not consume a new epoch id, so Hermes may retry `active=false`
+after a transient send failure; a later inbound epoch immediately makes those
+old retries stale. If Hermes merges several queued text/media follow-ups into
+an existing pending or text-debounce event, the adapter retags that object with
+the latest epoch; a distinct older event keeps its original epoch even when its
+task is scheduled late. In-band queue draining rebinds the existing runner task
+to that latest epoch. Inline busy-session commands and approval/clarify resumes
+likewise rebind only the newest live owner/heartbeat task; active `/new` and
+`/reset` turns emit their own terminal stop after interrupting the old owner.
+
+New clients treat a missing `terminal` marker on an inactive frame as terminal
+for compatibility with older plugins. Deploy the Worker, replace the plugin for
+every Hermes profile, restart each Gateway, and install a client release with
+the defensive typing timeout.
+
 Version 0.3.2 reads the dangerous-command authorization deadline from the
 current Hermes profile's `approvals.timeout` setting each time it creates an
 approval prompt. Missing, malformed, or unreadable configuration falls back to

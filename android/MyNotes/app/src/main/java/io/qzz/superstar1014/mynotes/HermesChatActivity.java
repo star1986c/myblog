@@ -80,7 +80,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   static final String EXTRA_DEMO_LONG_HISTORY = "hermes_demo_long_history";
   private static final int REQUEST_ATTACHMENT = 2201;
   private static final int REQUEST_SAVE_ATTACHMENT = 2202;
-  private static final long AWAITING_RESPONSE_TIMEOUT_MS = 120_000L;
   private static final long INTERACTION_RESULT_TIMEOUT_MS = 20_000L;
   private static final long SHARE_FILE_LIFETIME_MS = 60 * 60 * 1_000L;
   private static final long STALE_SHARE_FILE_AGE_MS = 24 * 60 * 60 * 1_000L;
@@ -143,7 +142,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private String requestedProfileId;
   private boolean demoMode;
   private boolean webSocketReady;
-  private boolean awaitingAgentResponse;
+  private boolean conversationBusy;
   private boolean destroyed;
   private boolean resumed;
   private boolean deletingMessages;
@@ -279,8 +278,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   public void onReady() {
     runOnUiThread(() -> {
       webSocketReady = true;
-      if (awaitingAgentResponse) markAwaitingAgentResponse();
-      else showConnectionAwareStatus("已加密");
+      restoreConversationStatus();
       sendButton.setEnabled(true);
     });
   }
@@ -299,7 +297,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   @Override
   public void onMessage(HermesChatCrypto.ChatMessage message) {
     runOnUiThread(() -> {
-      if ("agent".equals(message.sender)) clearAwaitingAgentResponse();
       appendMessage(message);
       keepComposerFocusedIfImeVisible();
     });
@@ -353,10 +350,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   @Override
-  public void onTyping(boolean active) {
-    runOnUiThread(() -> {
-      if (active) markAwaitingAgentResponse();
-    });
+  public void onTyping(boolean busy) {
+    runOnUiThread(() -> setConversationBusy(busy));
   }
 
   @Override
@@ -370,22 +365,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     });
   }
 
-  private final Runnable expireAwaitingAgentResponse = () -> {
-    awaitingAgentResponse = false;
-    if (webSocketReady) showConnectionAwareStatus("已加密");
-  };
-
-  private void markAwaitingAgentResponse() {
-    awaitingAgentResponse = true;
-    handler.removeCallbacks(expireAwaitingAgentResponse);
-    showConnectionAwareStatus("正在思考…");
-    handler.postDelayed(expireAwaitingAgentResponse, AWAITING_RESPONSE_TIMEOUT_MS);
-  }
-
-  private void clearAwaitingAgentResponse() {
-    awaitingAgentResponse = false;
-    handler.removeCallbacks(expireAwaitingAgentResponse);
-    if (webSocketReady) showConnectionAwareStatus("已加密");
+  private void setConversationBusy(boolean busy) {
+    conversationBusy = busy;
+    if (webSocketReady) restoreConversationStatus();
   }
 
   private void showConnectionAwareStatus(String detail) {
@@ -802,7 +784,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     }
     if (getIntent().getBooleanExtra(EXTRA_DEMO_AWAITING, false)) {
       webSocketReady = true;
-      markAwaitingAgentResponse();
+      setConversationBusy(true);
     }
   }
 
@@ -811,7 +793,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     profileGeneration += 1;
     handler.removeCallbacksAndMessages(null);
     webSocketReady = false;
-    awaitingAgentResponse = false;
+    conversationBusy = false;
     if (connectionListener != null) connection.detach(connectionListener);
     connectionListener = null;
     selectedProfile = profile;
@@ -846,7 +828,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       HermesChatCrypto targetCrypto = new HermesChatCrypto(encodedKey);
       sendButton.setEnabled(false);
       String spaceId = selectedProfile.id;
-      long generation = profileGeneration;
+      long generation = ++profileGeneration;
       showConnectionAwareStatus("正在加载本地加密聊天记录…");
       executor.submit(() -> {
         HermesChatHistoryStore targetHistory = new HermesChatHistoryStore(
@@ -1250,7 +1232,6 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       );
       composer.setText("");
       appendMessage(message);
-      markAwaitingAgentResponse();
       focusComposer(true);
     } catch (Exception error) {
       toast(error.getMessage());
@@ -1313,6 +1294,11 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     String spaceId = selectedProfile.id;
     HermesChatCrypto targetCrypto = crypto;
     HermesChatConnectionManager targetConnection = connection;
+    String targetSessionToken = targetConnection.profileSessionToken(spaceId);
+    if (targetSessionToken == null) {
+      toast("请等待 Hermes 连接成功后再发送附件。");
+      return;
+    }
     long generation = profileGeneration;
     showConnectionAwareStatus("正在加密并上传附件…");
     String caption = composer.getText().toString().trim();
@@ -1339,21 +1325,30 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
         HermesChatImageCache targetImages = imageCache;
         if (targetImages != null) targetImages.write(encrypted.descriptor, encrypted.ciphertext);
         JSONArray attachments = new JSONArray().put(encrypted.descriptor);
-        HermesChatCrypto.ChatMessage message = targetConnection.sendMessage(
-          spaceId,
-          caption,
-          attachments
-        );
         runOnUiThread(() -> {
           if (generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)
-              || !targetConnection.isCurrentProfile(spaceId)) return;
-          composer.setText("");
-          if (uri.equals(pendingAttachmentUri)) clearPendingAttachment();
-          appendMessage(message);
-          markAwaitingAgentResponse();
-          sendButton.setEnabled(true);
-          focusComposer(true);
+              || !targetConnection.isCurrentProfile(spaceId, targetSessionToken)) return;
+          try {
+            HermesChatCrypto.ChatMessage message = targetConnection.sendMessage(
+              spaceId,
+              caption,
+              attachments,
+              targetSessionToken
+            );
+            composer.setText("");
+            if (uri.equals(pendingAttachmentUri)) clearPendingAttachment();
+            appendMessage(message);
+            sendButton.setEnabled(true);
+            focusComposer(true);
+          } catch (Exception error) {
+            toast(error.getMessage());
+            showConnectionAwareStatus("附件发送失败");
+            sendButton.setEnabled(
+              selectedProfile != null && connection.isReady(selectedProfile.id)
+            );
+            focusComposer(true);
+          }
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
@@ -3261,7 +3256,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void restoreConversationStatus() {
-    showConnectionAwareStatus(awaitingAgentResponse ? "正在思考…" : "已加密");
+    showConnectionAwareStatus(conversationBusy ? "正在思考…" : "已加密");
   }
 
   private void showImagePreview(JSONObject descriptor) {
@@ -3288,7 +3283,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           if (destroyed || generation != profileGeneration || selectedProfile == null
               || !spaceId.equals(selectedProfile.id)) return;
           showConnectionAwareStatus(
-            awaitingAgentResponse ? "正在思考…" : "已加密"
+            conversationBusy ? "正在思考…" : "已加密"
           );
           showImagePreview(bitmap, plaintext, privateFile, descriptor);
         });

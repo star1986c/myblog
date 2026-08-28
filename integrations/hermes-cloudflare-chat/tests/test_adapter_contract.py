@@ -48,6 +48,25 @@ def install_hermes_stubs():
         async def handle_message(self, event):
             return None
 
+        async def _keep_typing(
+            self,
+            chat_id,
+            interval=2.0,
+            metadata=None,
+            stop_event=None,
+        ):
+            try:
+                await self.send_typing(chat_id, metadata=metadata)
+                if stop_event is None:
+                    await asyncio.Future()
+                else:
+                    await stop_event.wait()
+            finally:
+                await self.stop_typing(chat_id)
+
+        async def _process_message_background(self, event, session_key):
+            return None
+
         async def send_clarify(
             self,
             chat_id,
@@ -61,6 +80,9 @@ def install_hermes_stubs():
 
         def resume_typing_for_chat(self, chat_id):
             self.resumed_typing_chats.append(chat_id)
+
+        def get_pending_message(self, session_key):
+            return getattr(self, "_pending_messages", {}).pop(session_key, None)
 
         @staticmethod
         def validate_media_delivery_path(path):
@@ -89,6 +111,7 @@ def install_hermes_stubs():
         media_urls: list[str] | None = None
         media_types: list[str] | None = None
         raw_message: dict | None = None
+        metadata: dict = dataclasses.field(default_factory=dict)
 
     @dataclasses.dataclass
     class SendResult:
@@ -175,7 +198,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.2")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.3")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -800,6 +823,40 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(result.error, "text fallback")
         self.assertEqual(instance._pending_interactions, {})
 
+    def test_native_clarify_choice_resumes_typing_but_other_waits_for_text(self):
+        tools_module = types.ModuleType("tools")
+        clarify_module = types.ModuleType("tools.clarify_gateway")
+        clarify_module.resolve_gateway_clarify = lambda clarify_id, answer: (
+            clarify_id == "clarify-one" and answer == "B"
+        )
+        clarify_module.mark_awaiting_text = lambda clarify_id: clarify_id == "clarify-one"
+        tools_module.clarify_gateway = clarify_module
+
+        async def scenario():
+            selected = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            state = {
+                "kind": "clarify",
+                "clarify_id": "clarify-one",
+                "chat_id": "primary",
+                "choices": ["A", "B"],
+            }
+            with patch.dict(sys.modules, {
+                "tools": tools_module,
+                "tools.clarify_gateway": clarify_module,
+            }), patch.object(selected, "_finish_interaction", AsyncMock()):
+                await selected._dispatch_interaction(state, 1)
+            self.assertEqual(selected.resumed_typing_chats, ["primary"])
+
+            other = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            with patch.dict(sys.modules, {
+                "tools": tools_module,
+                "tools.clarify_gateway": clarify_module,
+            }), patch.object(other, "_finish_interaction", AsyncMock()):
+                await other._dispatch_interaction(state, "other")
+            self.assertEqual(other.resumed_typing_chats, [])
+
+        asyncio.run(scenario())
+
     def test_resume_sequence_is_scoped_and_persisted_per_profile(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             self.adapter,
@@ -814,16 +871,21 @@ class AdapterContractTests(unittest.TestCase):
             self.assertEqual(second._last_sequence, 42)
             self.assertIn("primary", str(second._state_path))
 
-    def test_inbound_message_announces_typing_before_gateway_dispatch(self):
+    def test_inbound_message_clears_prior_typing_before_gateway_dispatch(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
         event = types.SimpleNamespace(media_urls=[])
         order = []
 
         async def send_frame(frame):
-            order.append(("frame", frame["type"], frame.get("active")))
+            order.append((
+                "frame",
+                frame["type"],
+                frame.get("active"),
+                frame.get("terminal"),
+            ))
 
         async def handle_message(received_event):
-            order.append(("handle", received_event, None))
+            order.append(("handle", received_event, None, None))
 
         with patch.object(
             instance,
@@ -849,10 +911,1045 @@ class AdapterContractTests(unittest.TestCase):
             })))
 
         self.assertEqual(order, [
-            ("frame", "typing", True),
-            ("handle", event, None),
-            ("frame", "received", None),
+            ("frame", "typing", False, False),
+            ("handle", event, None, None),
+            ("frame", "received", None, None),
         ])
+
+    def test_active_reset_like_inbound_clears_without_leaving_a_new_true(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            frames = []
+            old_task_started = asyncio.Event()
+            finish_old_task = asyncio.Event()
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                old_task_started.set()
+                await finish_old_task.wait()
+                await adapter.send_typing(chat_id)
+                await adapter.stop_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=types.SimpleNamespace(
+                    text="/reset",
+                    media_urls=[],
+                    metadata={},
+                )),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ):
+                old_epoch = instance._advance_typing_epoch()
+                old_context = instance._typing_turn_context.set(old_epoch)
+                try:
+                    old_task = asyncio.create_task(instance._keep_typing("primary"))
+                finally:
+                    instance._typing_turn_context.reset(old_context)
+                await old_task_started.wait()
+
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "reset-message"},
+                }))
+                finish_old_task.set()
+                await old_task
+
+            typing_frames = [
+                frame["active"] for frame in frames if frame["type"] == "typing"
+            ]
+            self.assertEqual(typing_frames, [True, False])
+            self.assertEqual(
+                [
+                    frame.get("terminal")
+                    for frame in frames
+                    if frame["type"] == "typing"
+                ],
+                [None, False],
+            )
+            self.assertEqual(instance._typing_epoch, old_epoch + 1)
+
+        asyncio.run(scenario())
+
+    def test_active_interrupt_command_terminally_clears_the_new_client_wait(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            instance._active_sessions = {"session": object()}
+            frames = []
+            event = types.SimpleNamespace(
+                text="/reset",
+                media_urls=[],
+                metadata={},
+                get_command=lambda: "reset",
+            )
+            commands = types.ModuleType("hermes_cli.commands")
+            commands.should_bypass_active_session = lambda _command: False
+            commands.is_interrupt_then_dispatch = lambda command: command == "reset"
+            hermes_cli = types.ModuleType("hermes_cli")
+            hermes_cli.__path__ = []
+            hermes_cli.commands = commands
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=event),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ), patch.dict(sys.modules, {
+                "hermes_cli": hermes_cli,
+                "hermes_cli.commands": commands,
+            }):
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "active-reset-message"},
+                }))
+
+            self.assertEqual([
+                (frame["active"], frame.get("terminal"))
+                for frame in frames if frame["type"] == "typing"
+            ], [
+                (False, False),
+                (False, True),
+            ])
+
+        asyncio.run(scenario())
+
+    def test_normal_inbound_turn_is_lit_and_cleared_by_its_current_keep_task(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            frames = []
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                await adapter.stop_typing(chat_id)
+
+            async def handle_message(_event):
+                await instance._keep_typing("primary")
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=types.SimpleNamespace(
+                    text="查询系统状态",
+                    media_urls=[],
+                    metadata={},
+                )),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                side_effect=handle_message,
+            ):
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "regular-message"},
+                }))
+
+            self.assertEqual([
+                frame["active"] for frame in frames if frame["type"] == "typing"
+            ], [False, True, False])
+            self.assertEqual([
+                frame.get("terminal")
+                for frame in frames
+                if frame["type"] == "typing"
+            ], [False, None, True])
+
+        asyncio.run(scenario())
+
+    def test_inline_busy_command_rebinds_the_continuing_typing_task(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            instance._active_sessions = {"session": object()}
+            frames = []
+            typing_started = asyncio.Event()
+            finish_typing = asyncio.Event()
+            event = types.SimpleNamespace(
+                text="/status",
+                media_urls=[],
+                metadata={},
+                get_command=lambda: "status",
+            )
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                typing_started.set()
+                await finish_typing.wait()
+                await adapter.send_typing(chat_id)
+                await adapter.stop_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            commands = types.ModuleType("hermes_cli.commands")
+            commands.should_bypass_active_session = lambda command: command == "status"
+            commands.is_interrupt_then_dispatch = lambda _command: False
+            hermes_cli = types.ModuleType("hermes_cli")
+            hermes_cli.__path__ = []
+            hermes_cli.commands = commands
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=event),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ), patch.dict(sys.modules, {
+                "hermes_cli": hermes_cli,
+                "hermes_cli.commands": commands,
+            }):
+                old_epoch = instance._advance_typing_epoch()
+                old_context = instance._typing_turn_context.set(old_epoch)
+                try:
+                    typing_task = asyncio.create_task(instance._keep_typing("primary"))
+                finally:
+                    instance._typing_turn_context.reset(old_context)
+                await typing_started.wait()
+
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "status-message"},
+                }))
+                finish_typing.set()
+                await typing_task
+
+            typing_frames = [
+                (frame["active"], frame.get("terminal"))
+                for frame in frames
+                if frame["type"] == "typing"
+            ]
+            self.assertEqual(typing_frames, [
+                (True, None),
+                (False, False),
+                (True, None),
+                (False, True),
+            ])
+            self.assertEqual(instance._typing_task_epochs, {})
+            self.assertEqual(instance._typing_task_chats, {})
+
+        asyncio.run(scenario())
+
+    def test_current_typing_stop_suppresses_the_old_tasks_late_heartbeat(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            first_sent = asyncio.Event()
+            send_late_heartbeat = asyncio.Event()
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                first_sent.set()
+                await send_late_heartbeat.wait()
+                await adapter.send_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                epoch = instance._advance_typing_epoch()
+                context = instance._typing_turn_context.set(epoch)
+                try:
+                    typing_task = asyncio.create_task(instance._keep_typing("primary"))
+                finally:
+                    instance._typing_turn_context.reset(context)
+                await first_sent.wait()
+                await instance.stop_typing("primary")
+                send_late_heartbeat.set()
+                await typing_task
+
+            self.assertEqual([frame["active"] for frame in frames], [True, False])
+            self.assertEqual(
+                [frame.get("terminal") for frame in frames],
+                [None, True],
+            )
+            self.assertEqual(instance._typing_task_epochs, {})
+
+        asyncio.run(scenario())
+
+    def test_resume_rebinds_only_the_latest_live_typing_task(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            typing_started = asyncio.Event()
+            finish_typing = asyncio.Event()
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                typing_started.set()
+                await finish_typing.wait()
+                await adapter.send_typing(chat_id)
+                await adapter.stop_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                old_epoch = instance._advance_typing_epoch()
+                old_context = instance._typing_turn_context.set(old_epoch)
+                try:
+                    typing_task = asyncio.create_task(instance._keep_typing("primary"))
+                finally:
+                    instance._typing_turn_context.reset(old_context)
+                await typing_started.wait()
+
+                new_epoch = instance._advance_typing_epoch()
+                instance.resume_typing_for_chat("primary")
+                finish_typing.set()
+                await typing_task
+
+            self.assertGreater(new_epoch, old_epoch)
+            self.assertEqual(
+                [(frame["active"], frame.get("terminal")) for frame in frames],
+                [(True, None), (True, None), (False, True)],
+            )
+            self.assertEqual(instance.resumed_typing_chats, ["primary"])
+            self.assertEqual(instance._typing_task_epochs, {})
+            self.assertEqual(instance._typing_task_chats, {})
+
+        asyncio.run(scenario())
+
+    def test_new_turn_invalidates_an_older_typing_task(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            first_sent = asyncio.Event()
+            send_next_heartbeat = asyncio.Event()
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                first_sent.set()
+                await send_next_heartbeat.wait()
+                await adapter.send_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                old_epoch = instance._advance_typing_epoch()
+                context = instance._typing_turn_context.set(old_epoch)
+                try:
+                    old_task = asyncio.create_task(instance._keep_typing("primary"))
+                finally:
+                    instance._typing_turn_context.reset(context)
+                await first_sent.wait()
+                new_epoch = instance._advance_typing_epoch()
+                await instance._send_typing_frame(active=True)
+                send_next_heartbeat.set()
+                await old_task
+
+            self.assertGreater(new_epoch, old_epoch)
+            self.assertEqual([frame["active"] for frame in frames], [True, True])
+
+        asyncio.run(scenario())
+
+    def test_metadata_less_background_owner_cannot_stop_a_newer_turn(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            owner_started = asyncio.Event()
+            release_owner = asyncio.Event()
+            event = types.SimpleNamespace(source={"chat_id": "primary"}, metadata={})
+
+            async def base_process_message(adapter, _event, _session_key):
+                await adapter.send_typing("primary")
+                owner_started.set()
+                await release_owner.wait()
+                await adapter.stop_typing("primary")
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_process_message_background",
+                new=base_process_message,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                owner_epoch = instance._advance_typing_epoch()
+                owner_task = asyncio.create_task(
+                    instance._process_message_background(event, "session")
+                )
+                await owner_started.wait()
+                newer_epoch = instance._advance_typing_epoch()
+                await instance._send_typing_frame(active=False, terminal=False)
+                release_owner.set()
+                await owner_task
+
+            self.assertGreater(newer_epoch, owner_epoch)
+            self.assertEqual([
+                (frame["active"], frame.get("terminal")) for frame in frames
+            ], [
+                (True, None),
+                (False, False),
+            ])
+            self.assertEqual(instance._event_typing_epoch(event), owner_epoch)
+            self.assertEqual(instance._typing_owner_epochs, {})
+
+        asyncio.run(scenario())
+
+    def test_cascaded_follow_up_restores_its_epoch_without_authorizing_old_stop(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            observed_contexts = []
+            follow_up_started = asyncio.Event()
+            finish_follow_up = asyncio.Event()
+
+            async def base_process_message(adapter, event, session_key):
+                observed_contexts.append(adapter._typing_turn_context.get())
+                await adapter._keep_typing("primary")
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                follow_up_started.set()
+                await finish_follow_up.wait()
+                await adapter.stop_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_process_message_background",
+                new=base_process_message,
+            ), patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                old_epoch = instance._advance_typing_epoch()
+                follow_up_epoch = instance._advance_typing_epoch()
+                follow_up = types.SimpleNamespace(metadata={})
+                instance._set_event_typing_epoch(follow_up, follow_up_epoch)
+
+                old_context = instance._typing_turn_context.set(old_epoch)
+                try:
+                    drain_task = asyncio.create_task(
+                        instance._process_message_background(follow_up, "session")
+                    )
+                    await follow_up_started.wait()
+
+                    # The old background task's outer cleanup still carries
+                    # old_epoch and must not clear the cascaded turn.
+                    await instance.stop_typing("primary")
+                    self.assertEqual(
+                        [frame["active"] for frame in frames],
+                        [True],
+                    )
+
+                    finish_follow_up.set()
+                    await drain_task
+                finally:
+                    instance._typing_turn_context.reset(old_context)
+
+            self.assertEqual(observed_contexts, [follow_up_epoch])
+            self.assertEqual([frame["active"] for frame in frames], [True, False])
+            self.assertEqual(instance._typing_epoch, follow_up_epoch)
+            self.assertEqual(instance._typing_closed_epoch, follow_up_epoch)
+
+        asyncio.run(scenario())
+
+    def test_merged_pending_turn_gets_latest_epoch_without_rebinding_late_old_task(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            frames = []
+            observed_contexts = []
+            old_process_started = asyncio.Event()
+            release_old_process = asyncio.Event()
+
+            old_epoch = instance._advance_typing_epoch()
+            pending_epoch = instance._advance_typing_epoch()
+            source = {"chat_id": instance.space_id}
+            old_event = types.SimpleNamespace(
+                label="old",
+                source=source,
+                metadata={},
+            )
+            pending_event = types.SimpleNamespace(
+                label="merged",
+                text="first queued part",
+                source=source,
+                metadata={},
+            )
+            incoming_event = types.SimpleNamespace(
+                label="incoming",
+                text="second queued part",
+                source=source,
+                media_urls=[],
+                metadata={},
+            )
+            instance._set_event_typing_epoch(old_event, old_epoch)
+            instance._set_event_typing_epoch(pending_event, pending_epoch)
+            instance._pending_messages = {"session": pending_event}
+
+            async def base_process_message(adapter, event, session_key):
+                observed_contexts.append((
+                    event.label,
+                    adapter._typing_turn_context.get(),
+                ))
+                if event is old_event:
+                    old_process_started.set()
+                    await release_old_process.wait()
+                await adapter._keep_typing("primary")
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                await adapter.stop_typing(chat_id)
+
+            async def merge_without_replacing_existing(_event):
+                pending_event.text += "\nsecond queued part"
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_process_message_background",
+                new=base_process_message,
+            ), patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=incoming_event),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                side_effect=merge_without_replacing_existing,
+            ):
+                old_task = asyncio.create_task(
+                    instance._process_message_background(old_event, "session")
+                )
+                await old_process_started.wait()
+
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "second-queued-message"},
+                }))
+                latest_epoch = instance._event_typing_epoch(incoming_event)
+
+                self.assertEqual(
+                    instance._event_typing_epoch(pending_event),
+                    latest_epoch,
+                )
+                await instance._process_message_background(pending_event, "session")
+                release_old_process.set()
+                await old_task
+
+            self.assertEqual(observed_contexts, [
+                ("old", old_epoch),
+                ("merged", latest_epoch),
+            ])
+            self.assertEqual([
+                frame["active"] for frame in frames if frame["type"] == "typing"
+            ], [False, True, False])
+
+        asyncio.run(scenario())
+
+    def test_in_band_pending_turn_rebinds_the_existing_owner_task(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            observed = []
+            source = {"chat_id": instance.space_id}
+            owner_event = types.SimpleNamespace(source=source, metadata={})
+            pending_event = types.SimpleNamespace(source=source, metadata={})
+            owner_epoch = instance._advance_typing_epoch()
+            pending_epoch = instance._advance_typing_epoch()
+            instance._set_event_typing_epoch(owner_event, owner_epoch)
+            instance._set_event_typing_epoch(pending_event, pending_epoch)
+            instance._pending_messages = {"session": pending_event}
+
+            async def base_process_message(adapter, event, session_key):
+                self.assertIs(event, owner_event)
+                dequeued = adapter.get_pending_message(session_key)
+                task = asyncio.current_task()
+                observed.append((
+                    dequeued,
+                    adapter._typing_turn_context.get(),
+                    adapter._typing_owner_epochs.get(task),
+                ))
+                await adapter.send_typing("primary")
+                await adapter.stop_typing("primary")
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_process_message_background",
+                new=base_process_message,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                await instance._send_typing_frame(active=False, terminal=False)
+                await instance._process_message_background(owner_event, "session")
+
+            self.assertEqual(observed, [(pending_event, pending_epoch, pending_epoch)])
+            self.assertEqual([
+                (frame["active"], frame.get("terminal")) for frame in frames
+            ], [
+                (False, False),
+                (True, None),
+                (False, True),
+            ])
+            self.assertEqual(instance._typing_owner_epochs, {})
+            self.assertEqual(instance._typing_owner_chats, {})
+
+        asyncio.run(scenario())
+
+    def test_text_debounce_event_gets_latest_epoch_without_creating_a_store(self):
+        async def scenario():
+            probe = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            self.assertFalse(hasattr(probe, "_text_debounce"))
+            probe._retag_pending_typing_epoch(probe._typing_epoch)
+            self.assertFalse(hasattr(probe, "_text_debounce"))
+
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            frames = []
+            source = {"chat_id": instance.space_id}
+            debounce_epoch = instance._advance_typing_epoch()
+            debounced_event = types.SimpleNamespace(
+                text="first burst",
+                source=source,
+                metadata={},
+            )
+            incoming_event = types.SimpleNamespace(
+                text="second burst",
+                source=source,
+                media_urls=[],
+                metadata={},
+            )
+            instance._set_event_typing_epoch(debounced_event, debounce_epoch)
+            instance._text_debounce = {
+                "session": types.SimpleNamespace(event=debounced_event),
+            }
+
+            async def base_process_message(adapter, event, session_key):
+                await adapter._keep_typing("primary")
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                await adapter.stop_typing(chat_id)
+
+            async def merge_debounce_text(_event):
+                debounced_event.text += "\nsecond burst"
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_process_message_background",
+                new=base_process_message,
+            ), patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=incoming_event),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                side_effect=merge_debounce_text,
+            ):
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "second-debounced-message"},
+                }))
+                latest_epoch = instance._event_typing_epoch(incoming_event)
+                self.assertEqual(
+                    instance._event_typing_epoch(debounced_event),
+                    latest_epoch,
+                )
+                await instance._process_message_background(
+                    debounced_event,
+                    "session",
+                )
+
+            self.assertEqual([
+                frame["active"] for frame in frames if frame["type"] == "typing"
+            ], [False, True, False])
+
+        asyncio.run(scenario())
+
+    def test_stale_typing_task_finally_cannot_clear_a_new_turn(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+            first_sent = asyncio.Event()
+            finish_old_task = asyncio.Event()
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.send_typing(chat_id)
+                first_sent.set()
+                await finish_old_task.wait()
+                await adapter.stop_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                old_epoch = instance._advance_typing_epoch()
+                context = instance._typing_turn_context.set(old_epoch)
+                try:
+                    old_task = asyncio.create_task(instance._keep_typing("primary"))
+                finally:
+                    instance._typing_turn_context.reset(context)
+                await first_sent.wait()
+                instance._advance_typing_epoch()
+                await instance._send_typing_frame(active=True)
+                finish_old_task.set()
+                await old_task
+
+            self.assertEqual([frame["active"] for frame in frames], [True, True])
+
+        asyncio.run(scenario())
+
+    def test_current_typing_task_stop_sends_false_and_closes_its_epoch(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            frames = []
+
+            async def base_keep_typing(adapter, chat_id, **_kwargs):
+                await adapter.stop_typing(chat_id)
+                await adapter.send_typing(chat_id)
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                self.adapter.BasePlatformAdapter,
+                "_keep_typing",
+                new=base_keep_typing,
+            ), patch.object(instance, "_send_frame", side_effect=capture):
+                epoch = instance._advance_typing_epoch()
+                context = instance._typing_turn_context.set(epoch)
+                try:
+                    await instance._keep_typing("primary")
+                finally:
+                    instance._typing_turn_context.reset(context)
+
+            self.assertEqual([frame["active"] for frame in frames], [False])
+            self.assertEqual([frame.get("terminal") for frame in frames], [True])
+            self.assertEqual(instance._typing_epoch, epoch)
+            self.assertEqual(instance._typing_closed_epoch, epoch)
+
+        asyncio.run(scenario())
+
+    def test_reset_and_regular_inbound_messages_each_advance_the_typing_epoch(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            events = [
+                types.SimpleNamespace(text="/reset", media_urls=[]),
+                types.SimpleNamespace(text="查询系统状态", media_urls=[]),
+            ]
+            observed = []
+
+            async def handle_message(event):
+                observed.append((
+                    event.text,
+                    instance._typing_epoch,
+                    instance._typing_turn_context.get(),
+                ))
+
+            with patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(side_effect=events),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                AsyncMock(),
+            ), patch.object(
+                instance,
+                "handle_message",
+                side_effect=handle_message,
+            ):
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "reset-message"},
+                }))
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 2,
+                    "message": {"id": "regular-message"},
+                }))
+
+            self.assertEqual(observed, [
+                ("/reset", 1, 1),
+                ("查询系统状态", 2, 2),
+            ])
+
+        asyncio.run(scenario())
+
+    def test_stop_typing_sends_an_explicit_inactive_frame(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        with patch.object(instance, "_send_frame", AsyncMock()) as send_frame:
+            asyncio.run(instance.stop_typing("primary"))
+
+        send_frame.assert_awaited_once_with({
+            "v": 1,
+            "type": "typing",
+            "active": False,
+            "terminal": True,
+        })
+
+    def test_stop_typing_is_best_effort_when_the_socket_is_unavailable(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        with patch.object(
+            instance,
+            "_send_frame",
+            AsyncMock(side_effect=ConnectionError("socket closed")),
+        ) as send_frame:
+            asyncio.run(instance.stop_typing("primary"))
+
+        send_frame.assert_awaited_once()
+
+    def test_same_turn_stop_retry_succeeds_after_the_first_false_fails(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            send_frame = AsyncMock(side_effect=[
+                ConnectionError("socket closed"),
+                None,
+            ])
+            epoch = instance._advance_typing_epoch()
+            context = instance._typing_turn_context.set(epoch)
+            try:
+                with patch.object(instance, "_send_frame", send_frame):
+                    await instance.stop_typing("primary")
+                    await instance.stop_typing("primary")
+            finally:
+                instance._typing_turn_context.reset(context)
+
+            self.assertEqual(instance._typing_epoch, epoch)
+            self.assertEqual(instance._typing_closed_epoch, epoch)
+            self.assertEqual(send_frame.await_args_list, [
+                call({"v": 1, "type": "typing", "active": False, "terminal": True}),
+                call({"v": 1, "type": "typing", "active": False, "terminal": True}),
+            ])
+
+        asyncio.run(scenario())
+
+    def test_old_stop_retry_is_suppressed_after_a_new_inbound_epoch(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            frames = []
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            old_epoch = instance._advance_typing_epoch()
+            old_context = instance._typing_turn_context.set(old_epoch)
+            try:
+                with patch.object(
+                    instance,
+                    "_prepare_inbound_message",
+                    AsyncMock(return_value=types.SimpleNamespace(
+                        text="next turn",
+                        media_urls=[],
+                        metadata={},
+                    )),
+                ), patch.object(
+                    instance,
+                    "_save_last_sequence",
+                ), patch.object(
+                    instance,
+                    "_send_frame",
+                    side_effect=capture,
+                ), patch.object(
+                    instance,
+                    "handle_message",
+                    AsyncMock(),
+                ):
+                    await instance.stop_typing("primary")
+                    await instance._handle_frame(json.dumps({
+                        "v": 1,
+                        "type": "message",
+                        "seq": 1,
+                        "message": {"id": "next-turn"},
+                    }))
+                    await instance.stop_typing("primary")
+            finally:
+                instance._typing_turn_context.reset(old_context)
+
+            self.assertEqual(instance._typing_epoch, old_epoch + 1)
+            self.assertIsNone(instance._typing_closed_epoch)
+            self.assertEqual([
+                frame["active"] for frame in frames if frame["type"] == "typing"
+            ], [False, False])
+
+        asyncio.run(scenario())
+
+    def test_unbound_stop_retry_cannot_clear_a_new_inbound_epoch(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._last_sequence = 0
+            frames = []
+
+            async def capture(frame):
+                frames.append(dict(frame))
+
+            with patch.object(
+                instance,
+                "_prepare_inbound_message",
+                AsyncMock(return_value=types.SimpleNamespace(
+                    text="next turn",
+                    media_urls=[],
+                    metadata={},
+                )),
+            ), patch.object(
+                instance,
+                "_save_last_sequence",
+            ), patch.object(
+                instance,
+                "_send_frame",
+                side_effect=capture,
+            ), patch.object(
+                instance,
+                "handle_message",
+                AsyncMock(),
+            ):
+                await instance.stop_typing("primary")
+                await instance._handle_frame(json.dumps({
+                    "v": 1,
+                    "type": "message",
+                    "seq": 1,
+                    "message": {"id": "next-turn"},
+                }))
+                await instance.stop_typing("primary")
+
+            self.assertEqual(instance._typing_epoch, 1)
+            self.assertIsNone(instance._typing_closed_epoch)
+            self.assertEqual([
+                frame["active"] for frame in frames if frame["type"] == "typing"
+            ], [False, False])
+
+        asyncio.run(scenario())
+
+    def test_stop_typing_does_not_swallow_task_cancellation(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        with patch.object(
+            instance,
+            "_send_frame",
+            AsyncMock(side_effect=asyncio.CancelledError()),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(instance.stop_typing("primary"))
 
     def test_local_image_is_encrypted_uploaded_and_sent_as_attachment(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -1327,7 +2424,7 @@ class AdapterContractTests(unittest.TestCase):
             handle_inbound.assert_awaited_once_with(event)
             save.assert_called_once_with()
             send_frame.assert_has_awaits([
-                call({"v": 1, "type": "typing", "active": True}),
+                call({"v": 1, "type": "typing", "active": False, "terminal": False}),
                 call({"v": 1, "type": "received", "seq": 43}),
             ])
             self.assertEqual(send_frame.await_count, 2)
@@ -1366,7 +2463,8 @@ class AdapterContractTests(unittest.TestCase):
             send_frame.assert_awaited_once_with({
                 "v": 1,
                 "type": "typing",
-                "active": True,
+                "active": False,
+                "terminal": False,
             })
             self.assertEqual(instance._last_sequence, 43)
 
@@ -1405,7 +2503,7 @@ class AdapterContractTests(unittest.TestCase):
 
             handle_inbound.assert_awaited_once_with(event)
             send_frame.assert_has_awaits([
-                call({"v": 1, "type": "typing", "active": True}),
+                call({"v": 1, "type": "typing", "active": False, "terminal": False}),
                 call({"v": 1, "type": "received", "seq": 43}),
             ])
             self.assertEqual(send_frame.await_count, 2)
