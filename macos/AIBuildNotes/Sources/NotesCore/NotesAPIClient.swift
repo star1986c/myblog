@@ -36,9 +36,15 @@ public actor NotesAPIClient {
   private let baseURL: URL
   private let session: URLSession
   private var csrfToken = ""
+  private let deviceTokens: any NotesDeviceTokenStoring
+  private var refreshTask: Task<AdminUser?, Error>?
+  private var sessionGeneration = 0
 
-  public init(baseURL: URL = productionBaseURL, session: URLSession? = nil) {
+  public init(baseURL: URL = productionBaseURL, session: URLSession? = nil,
+    deviceTokens: (any NotesDeviceTokenStoring)? = nil
+  ) {
     self.baseURL = baseURL
+    self.deviceTokens = deviceTokens ?? NotesDeviceTokenKeychain(account: baseURL.absoluteString)
     if let session {
       self.session = session
     } else {
@@ -54,22 +60,33 @@ public actor NotesAPIClient {
   public func restoreSession() async throws -> AdminUser? {
     let response: SessionResponse = try await request(path: "api/auth/me")
     csrfToken = response.csrfToken ?? ""
-    return response.authenticated ? response.user : nil
+    if response.authenticated { return response.user }
+    return try await refreshSession()
   }
 
   public func login(username: String, password: String) async throws -> AdminUser {
+    _ = try? await refreshTask?.value
     let body = try JSONEncoder().encode(LoginRequest(username: username, password: password))
     let response: LoginResponse = try await request(
       method: "POST",
       path: "api/auth/login",
       body: body
     )
+    try deviceTokens.save(response.deviceToken)
     csrfToken = response.csrfToken
+    sessionGeneration += 1
     return response.user
   }
 
   public func logout() async {
+    _ = try? await refreshTask?.value
     let _: OKResponse? = try? await request(method: "POST", path: "api/auth/logout")
+    try? deviceTokens.save(nil)
+    sessionGeneration += 1
+    for cookie in session.configuration.httpCookieStorage?.cookies(for: baseURL) ?? []
+      where cookie.name == "site_admin_session" {
+      session.configuration.httpCookieStorage?.deleteCookie(cookie)
+    }
     csrfToken = ""
   }
 
@@ -90,6 +107,10 @@ public actor NotesAPIClient {
       )
     )
     csrfToken = response.csrfToken
+    sessionGeneration += 1
+    try deviceTokens.save(nil)
+    // Password changes revoke all device tokens; enroll again using the new password.
+    _ = try? await login(username: response.account.username, password: newPassword)
     return response.account
   }
 
@@ -264,7 +285,7 @@ public actor NotesAPIClient {
     if !csrfToken.isEmpty {
       request.setValue(csrfToken, forHTTPHeaderField: "X-CSRF-Token")
     }
-    let (data, response) = try await session.data(for: request)
+    let (data, response) = try await authenticatedData(for: request)
     let http = try validate(response: response, data: data, path: request.url?.path ?? "")
     guard (200..<300).contains(http.statusCode) else { throw NotesAPIError.invalidResponse }
     guard let value = try? JSONDecoder().decode(AttachmentResponse.self, from: data) else {
@@ -283,7 +304,7 @@ public actor NotesAPIClient {
     request.timeoutInterval = 60
     request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
     request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
-    let (data, response) = try await session.data(for: request)
+    let (data, response) = try await authenticatedData(for: request)
     _ = try validate(response: response, data: data, path: request.url?.path ?? "")
     return data
   }
@@ -342,7 +363,7 @@ public actor NotesAPIClient {
     if !csrfToken.isEmpty {
       request.setValue(csrfToken, forHTTPHeaderField: "X-CSRF-Token")
     }
-    let (data, response) = try await session.data(for: request)
+    let (data, response) = try await authenticatedData(for: request)
     _ = try validate(response: response, data: data, path: request.url?.path ?? "")
   }
 
@@ -360,7 +381,7 @@ public actor NotesAPIClient {
     request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
     request.setValue(spaceID, forHTTPHeaderField: "X-Hermes-Space")
     request.setValue("1", forHTTPHeaderField: "X-Attachment-Support")
-    let (data, response) = try await session.data(for: request)
+    let (data, response) = try await authenticatedData(for: request)
     _ = try validate(response: response, data: data, path: request.url?.path ?? "")
     return data
   }
@@ -471,13 +492,65 @@ public actor NotesAPIClient {
       request.setValue("\"\(revision)\"", forHTTPHeaderField: "If-Match")
     }
 
-    let (data, urlResponse) = try await session.data(for: request)
+    if path == "api/auth/logout", let token = deviceTokens.load() {
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
+    let (data, urlResponse) = try await authenticatedData(for: request)
     _ = try validate(response: urlResponse, data: data, path: path)
     do {
       return try JSONDecoder().decode(Response.self, from: data)
     } catch {
       throw NotesAPIError.decoding
     }
+  }
+
+  private func refreshSession() async throws -> AdminUser? {
+    if let refreshTask { return try await refreshTask.value }
+    guard let token = deviceTokens.load() else { return nil }
+    let task = Task<AdminUser?, Error> {
+      var request = URLRequest(url: baseURL.appendingPathComponent("api/auth/token"))
+      request.httpMethod = "POST"
+      request.httpBody = Data()
+      request.timeoutInterval = 25
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let (data, response) = try await session.data(for: request)
+      if (response as? HTTPURLResponse)?.statusCode == 401 {
+        try deviceTokens.save(nil)
+      }
+      _ = try validate(response: response, data: data, path: "api/auth/token")
+      let login = try JSONDecoder().decode(LoginResponse.self, from: data)
+      guard let rotated = login.deviceToken, !rotated.isEmpty else {
+        throw NotesAPIError.invalidResponse
+      }
+      try deviceTokens.save(rotated)
+      csrfToken = login.csrfToken
+      sessionGeneration += 1
+      return login.user
+    }
+    refreshTask = task
+    defer { refreshTask = nil }
+    return try await task.value
+  }
+
+  // Only retry explicit authentication failures, never ambiguous network/write failures.
+  private func authenticatedData(for original: URLRequest) async throws -> (Data, URLResponse) {
+    let generation = sessionGeneration
+    let result = try await session.data(for: original)
+    let status = (result.1 as? HTTPURLResponse)?.statusCode
+    let staleCSRF = status == 403
+      && (try? JSONDecoder().decode(ErrorResponse.self, from: result.0).error) == "Invalid CSRF token."
+    guard status == 401 || staleCSRF,
+      !(original.url?.path.hasPrefix("/api/auth/") ?? true)
+    else { return result }
+    if generation == sessionGeneration {
+      let user = try await (staleCSRF ? restoreSession() : refreshSession())
+      guard user != nil else { return result }
+    }
+    var retry = original
+    if !["GET", "HEAD"].contains(retry.httpMethod ?? "GET") {
+      retry.setValue(csrfToken, forHTTPHeaderField: "X-CSRF-Token")
+    }
+    return try await session.data(for: retry)
   }
 
   private func validate(response: URLResponse, data: Data, path: String) throws -> HTTPURLResponse {
@@ -501,12 +574,14 @@ private struct SessionResponse: Codable {
   let csrfToken: String?
 }
 
-private struct LoginRequest: Codable {
+private struct LoginRequest: Encodable {
   let username: String
   let password: String
+  let rememberDevice = true
 }
 
 private struct LoginResponse: Codable {
+  let deviceToken: String?
   let user: AdminUser
   let csrfToken: String
 }

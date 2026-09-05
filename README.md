@@ -64,7 +64,7 @@ flowchart LR
 ## 安全边界
 
 - 不要把 `.dev.vars`、Cloudflare API Token、Hermes agent secret、任何 profile 聊天密钥或生产环境配置提交到仓库。
-- Android 使用 Keystore 保护设备令牌和 Hermes profile 密钥；macOS 使用 Keychain 保存 Hermes 密钥与 Cloudflare Billing Read Token。
+- Android 使用 Keystore 保护设备令牌和 Hermes profile 密钥；macOS 使用 Keychain 保存设备令牌、Hermes 密钥与 Cloudflare Billing Read Token。
 - `SESSION_SECRET` 只负责会话签名；`NOTES_KEY_ENCRYPTION_SECRET` 用于包装笔记数据密钥。丢失前者会让现有会话失效，丢失后者且没有安全重包装/备份会使已有笔记无法恢复。
 - 笔记和 Hermes 使用不同的加密域。每个 Hermes profile 必须使用独立的 32 字节 `HERMES_CF_CHAT_KEY`。
 - `notes` R2 bucket 必须保持私有，不得启用 `r2.dev` 或公共自定义域名。
@@ -96,6 +96,8 @@ swift test --package-path macos/AIBuildNotes
 ```
 
 release App 会输出到 `output/My Notes.app`。传入 `debug` 可生成 `output/My Notes Preview.app`。构建脚本会生成完整 `.icns`、执行 ad-hoc 签名并验证 App bundle。
+
+Mac 登录成功后会自动记住本机，设备令牌保存在本机钥匙串，不保存密码。7 天会话过期或 Cookie 丢失时自动恢复登录，并重试认证失败的请求；设备令牌每次续期后有效 90 天。首次升级需登录一次以登记设备；主动退出会清除本机令牌并尝试在服务器撤销。连续 90 天未续期或令牌被撤销时仍需重新登录。
 
 ### Android
 

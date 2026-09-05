@@ -12,7 +12,8 @@ struct AccountPasswordTests {
     configuration.protocolClasses = [AccountPasswordURLProtocol.self]
     let api = NotesAPIClient(
       baseURL: URL(string: "https://notes.test/")!,
-      session: URLSession(configuration: configuration)
+      session: URLSession(configuration: configuration),
+      deviceTokens: MemoryDeviceTokens()
     )
 
     _ = try await api.login(username: "admin", password: "old-password-value")
