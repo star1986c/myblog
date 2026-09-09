@@ -33,6 +33,7 @@ struct HermesMessageRow: View {
       VStack(alignment: .leading, spacing: 9) {
         if !message.text.isEmpty {
           HermesMarkdownMessage(text: message.text, isClient: isClient)
+            .textSelection(.enabled)
         }
 
         if !message.attachments.isEmpty {
@@ -61,6 +62,17 @@ struct HermesMessageRow: View {
           }
           Text(HermesChatFormat.fullTime(message.sentAt))
             .monospacedDigit()
+
+          if !message.text.isEmpty {
+            Button {
+              HermesDesktopActions.copy(message.text)
+            } label: {
+              Label("复制", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.plain)
+            .help("复制整条消息文字（保留 Markdown）")
+            .accessibilityLabel("复制整条消息文字")
+          }
         }
         .font(.caption2)
         .foregroundStyle(isClient ? Color.white.opacity(0.76) : Color.secondary.opacity(0.72))
