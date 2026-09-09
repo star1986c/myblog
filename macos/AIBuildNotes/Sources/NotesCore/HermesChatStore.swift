@@ -47,6 +47,7 @@ public final class HermesChatStore: ObservableObject {
   private var reconnectAttempt = 0
   private var configurationGeneration = 0
   private var recentRefreshProfileID: String?
+  private var openingSync = HermesChatOpeningSync()
 
   public init(
     api: NotesAPIClient = NotesAPIClient(),
@@ -161,6 +162,7 @@ public final class HermesChatStore: ObservableObject {
       return
     }
     started = true
+    openingSync = HermesChatOpeningSync()
     eventTask = Task { [weak self, client] in
       for await event in client.events {
         guard !Task.isCancelled else { return }
@@ -583,7 +585,7 @@ public final class HermesChatStore: ObservableObject {
       guard generation == configurationGeneration else { return }
       let configurations = try ids.map { id in
         guard let crypto = cryptos[id] else { throw HermesChatCryptoError.invalidKey }
-        let recentSince = recentSyncSinceByProfile[id]
+        let recentSince = recentSyncSinceByProfile[id] ?? openingSync.sinceMilliseconds(spaceID: id)
         return HermesChatClientProfile(
           spaceID: id,
           crypto: crypto,
@@ -639,10 +641,12 @@ public final class HermesChatStore: ObservableObject {
       if let history = histories[spaceID] {
         _ = await history.advanceCheckpoint(to: latestSequence)
       }
+      guard eventGeneration == configurationGeneration else { return }
       if recentRefreshProfileID == spaceID {
         recentRefreshProfileID = nil
         isRefreshingMessages = false
       }
+      openingSync.complete(spaceID: spaceID)
     case .actionAcknowledged(
       let spaceID,
       let actionID,

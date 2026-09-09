@@ -20,7 +20,7 @@ struct RootView: View {
   @EnvironmentObject private var hermesStore: HermesChatStore
   @EnvironmentObject private var cloudflareBillingStore: CloudflareBillingStore
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
-  @State private var sidebarDestination: SidebarDestination? = .notes(.allNotes)
+  @State private var sidebarDestination: SidebarDestination? = .hermes
 
   var body: some View {
     Group {

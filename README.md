@@ -97,6 +97,8 @@ swift test --package-path macos/AIBuildNotes
 
 release App 会输出到 `output/My Notes.app`。传入 `debug` 可生成 `output/My Notes Preview.app`。构建脚本会生成完整 `.icns`、执行 ad-hoc 签名并验证 App bundle。
 
+Mac 应用启动后默认进入 Hermes 聊天，并为每个已配置密钥的会话自动同步最近 24 小时的消息，与本地历史合并去重。同步中断会继续重试，完成后恢复按序号增量同步；手动刷新仍使用原有的时间范围设置。
+
 Mac 登录成功后会自动记住本机，设备令牌保存在本机钥匙串，不保存密码。7 天会话过期或 Cookie 丢失时自动恢复登录，并重试认证失败的请求；设备令牌每次续期后有效 90 天。首次升级需登录一次以登记设备；主动退出会清除本机令牌并尝试在服务器撤销。连续 90 天未续期或令牌被撤销时仍需重新登录。
 
 ### Android
