@@ -68,16 +68,22 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import javax.crypto.SecretKey;
 
 public final class MainActivity extends Activity {
+  static final String EXTRA_OPEN_NOTES = "open_notes";
+  static final String EXTRA_LOGIN_FOR_HERMES = "login_for_hermes";
   private static final long AUTO_SAVE_DELAY_MS = 10_000L;
   private static final int REQUEST_IMAGE = 1201;
   private static final int REQUEST_CAMERA = 1202;
@@ -90,6 +96,8 @@ public final class MainActivity extends Activity {
 
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
+  private final ExecutorService readExecutor = Executors.newFixedThreadPool(4);
+  private final ExecutorService cacheExecutor = Executors.newSingleThreadExecutor();
   private final List<Models.NoteDocument> notes = new ArrayList<>();
   private final List<Models.NoteDocument> trash = new ArrayList<>();
   private final List<Models.FolderDocument> folders = new ArrayList<>();
@@ -97,6 +105,19 @@ public final class MainActivity extends Activity {
   private final List<Models.AttachmentDocument> attachments = new ArrayList<>();
 
   private NotesApiClient api;
+  private NotesSnapshotStore snapshotStore;
+  private NotesSnapshotStore.Snapshot startupSnapshot;
+  private NotesSyncStore syncStore;
+  private String keyFingerprint = "";
+  private long snapshotGeneration;
+  private boolean notesReady;
+  private boolean syncInProgress;
+  private boolean trashLoaded;
+  private boolean trashLoading;
+  private long stateGeneration;
+  private String syncMessage = "正在验证登录并同步 · 本机笔记只读";
+  private AlertDialog cachedReader;
+
   private AttachmentDiskCache attachmentCache;
   private BiometricProtectionStore biometricStore;
   private Models.User user;
@@ -143,6 +164,13 @@ public final class MainActivity extends Activity {
     getWindow().setNavigationBarContrastEnforced(false);
     demoMode = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0
       && getIntent().getBooleanExtra("demo", false);
+    if (!demoMode && !getIntent().getBooleanExtra(EXTRA_OPEN_NOTES, false)) {
+      openHermesConversations();
+      finish();
+      return;
+    }
+    snapshotStore = new NotesSnapshotStore(this);
+    syncStore = new NotesSyncStore(this);
     backCallback = this::handleBackNavigation;
     getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
       OnBackInvokedDispatcher.PRIORITY_DEFAULT,
@@ -153,7 +181,7 @@ public final class MainActivity extends Activity {
     biometricStore = new BiometricProtectionStore(this);
     if (savedInstanceState != null) pendingCameraPath = savedInstanceState.getString("cameraPath");
     if (demoMode) loadDemoData();
-    else restoreSession();
+    else restoreCachedNotes();
   }
 
   @Override
@@ -313,7 +341,11 @@ public final class MainActivity extends Activity {
     discardActiveRecording();
     stopAudioPlayback();
     handler.removeCallbacksAndMessages(null);
+    stateGeneration++;
+    if (cachedReader != null) cachedReader.dismiss();
     executor.shutdownNow();
+    readExecutor.shutdownNow();
+    cacheExecutor.shutdown();
     super.onDestroy();
   }
 
@@ -334,34 +366,137 @@ public final class MainActivity extends Activity {
     return super.onKeyShortcut(keyCode, event);
   }
 
-  private void restoreSession() {
-    showLoading("正在恢复登录状态…");
-    runAsync(api::restoreSession, session -> {
-      if (!session.authenticated) {
-        showLogin();
-        return;
+  private void restoreCachedNotes() {
+    showLoading("正在打开笔记…");
+    runAsync(() -> {
+      SecureSessionStore secure = new SecureSessionStore(this);
+      if (secure.load().isEmpty() && secure.loadDeviceToken().isEmpty()) {
+        snapshotStore.clear();
+        return null;
       }
-      user = session.user;
-      HermesChatConnectionManager.get(this).markAuthenticated();
-      HermesChatConnectionService.startIfConfigured(this);
-      loadAllData();
+      return snapshotStore.load();
+    }, cached -> {
+      startupSnapshot = cached;
+      if (cached != null) {
+        user = cached.user;
+        keyFingerprint = cached.keyFingerprint;
+        folders.addAll(cached.folders);
+        notes.addAll(cached.notes);
+        renderHome();
+      }
+      restoreSession();
     });
   }
 
-  private void loadAllData() {
-    showLoading("正在解密笔记…");
-    runAsync(() -> {
-      SecretKey key = CryptoEngine.importDataKey(api.workspaceKey());
-      Models.ProtectionKeyring keyring = api.protectionKeyring();
-      List<Models.FolderDocument> loadedFolders = new ArrayList<>();
-      for (Models.FolderEnvelope envelope : api.listFolders()) {
-        loadedFolders.add(new Models.FolderDocument(envelope, CryptoEngine.decryptFolder(key, envelope)));
+  private void restoreSession() {
+    if (syncInProgress) return;
+    syncInProgress = true;
+    notesReady = false;
+    if (user == null) showLoading("正在恢复登录状态…");
+    else {
+      syncMessage = "正在验证登录并同步 · 本机笔记只读";
+      renderHome();
+    }
+    runAsync(api::restoreSession, session -> {
+      syncInProgress = false;
+      if (!session.authenticated) {
+        authenticationExpired();
+        return;
       }
-      List<Models.NoteDocument> loadedNotes = decryptNotes(key, api.listNotes(false));
-      List<Models.NoteDocument> loadedTrash = decryptNotes(key, api.listNotes(true));
-      return new LoadedData(key, keyring, loadedFolders, loadedNotes, loadedTrash);
+      if (user != null && !user.username.equals(session.user.username)) {
+        snapshotStore.clear();
+        clearState();
+      }
+      user = session.user;
+      snapshotGeneration = snapshotStore.generation();
+      HermesChatConnectionManager.get(this).markAuthenticated();
+      HermesChatConnectionService.startIfConfigured(this);
+      loadAllData();
+    }, this::startupFailed);
+  }
+
+  private void loadAllData() {
+    if (syncInProgress) return;
+    if (dirty || saving) {
+      toast("请先保存当前笔记，再刷新同步。");
+      return;
+    }
+    syncInProgress = true;
+    notesReady = false;
+    trashLoaded = false;
+    syncMessage = "正在同步最新笔记 · 本机笔记只读";
+    if (startupSnapshot == null && dataKey == null) showLoading("正在同步笔记…");
+    else renderHome();
+    Map<String, Models.NoteDocument> previous = new HashMap<>();
+    for (Models.NoteDocument note : notes) previous.put(note.envelope.id, note);
+    String previousFingerprint = keyFingerprint;
+    String syncScope = api.notesSyncScope(user.username);
+    long syncGeneration = syncStore.generation();
+    runAsync(() -> {
+      Future<String> keyTask = readExecutor.submit(api::workspaceKey);
+      Future<Models.ProtectionKeyring> protectionTask = readExecutor.submit(api::protectionKeyring);
+      try {
+        SecretKey key = CryptoEngine.importDataKey(awaitRead(keyTask));
+        String fingerprint = NotesSnapshotStore.fingerprint(key);
+        JSONObject syncSnapshot = null;
+        List<Models.FolderEnvelope> folderEnvelopes = new ArrayList<>();
+        List<Models.NoteEnvelope> noteEnvelopes = new ArrayList<>();
+        try {
+          syncSnapshot = syncStore.fetch(api, syncScope, key);
+          JSONObject folderValues = syncSnapshot.getJSONObject("folders");
+          java.util.Iterator<String> folderIds = folderValues.keys();
+          while (folderIds.hasNext()) folderEnvelopes.add(Models.FolderEnvelope.fromJson(folderValues.getJSONObject(folderIds.next())));
+          JSONObject noteValues = syncSnapshot.getJSONObject("notes");
+          java.util.Iterator<String> noteIds = noteValues.keys();
+          while (noteIds.hasNext()) noteEnvelopes.add(Models.NoteEnvelope.fromJson(noteValues.getJSONObject(noteIds.next())));
+        } catch (NotesApiClient.ApiException error) {
+          if (error.status != 404) throw error;
+          // Keep old-server startup/trash behavior during a rolling upgrade.
+          Future<List<Models.FolderEnvelope>> folderTask = readExecutor.submit(api::listFolders);
+          Future<List<Models.NoteEnvelope>> noteTask = readExecutor.submit(() -> api.listNotes(false));
+          try { folderEnvelopes = awaitRead(folderTask); noteEnvelopes = awaitRead(noteTask); }
+          finally { folderTask.cancel(true); noteTask.cancel(true); }
+        }
+        List<Models.FolderDocument> loadedFolders = new ArrayList<>();
+        for (Models.FolderEnvelope envelope : folderEnvelopes) {
+          loadedFolders.add(new Models.FolderDocument(envelope, CryptoEngine.decryptFolder(key, envelope)));
+        }
+        loadedFolders.sort(Comparator.comparingInt((Models.FolderDocument folder) -> folder.envelope.sortOrder)
+          .thenComparing(folder -> folder.envelope.createdAt == null ? "" : folder.envelope.createdAt)
+          .thenComparing(folder -> folder.envelope.id));
+        List<Models.NoteDocument> loadedNotes = new ArrayList<>();
+        List<Models.NoteDocument> loadedTrash = new ArrayList<>();
+        for (Models.NoteEnvelope envelope : noteEnvelopes) {
+          Models.NoteDocument cached = previous.get(envelope.id);
+          boolean unchanged = fingerprint.equals(previousFingerprint) && cached != null
+            && cached.envelope.version == envelope.version
+            && cached.envelope.revision == envelope.revision
+            && cached.envelope.locked == envelope.locked
+            && cached.envelope.nonce.equals(envelope.nonce)
+            && cached.envelope.ciphertext.equals(envelope.ciphertext);
+          Models.NoteContent content = unchanged
+            ? Models.NoteContent.fromJson(cached.content.toEncryptedJson())
+            : CryptoEngine.decryptNote(key, envelope);
+          (envelope.deletedAt == null ? loadedNotes : loadedTrash).add(new Models.NoteDocument(envelope, content));
+        }
+        loadedNotes.sort(Comparator.comparing(
+          document -> document.envelope.updatedAt == null ? "" : document.envelope.updatedAt,
+          Comparator.reverseOrder()
+        ));
+        loadedTrash.sort(Comparator.comparing(
+          (Models.NoteDocument document) -> document.envelope.deletedAt == null ? "" : document.envelope.deletedAt,
+          Comparator.reverseOrder()));
+        Models.ProtectionKeyring keyring = awaitRead(protectionTask);
+        if (syncSnapshot != null) syncStore.save(syncSnapshot, syncScope, key, syncGeneration);
+        return new LoadedData(key, keyring, loadedFolders, loadedNotes, loadedTrash, syncSnapshot != null);
+      } finally {
+        keyTask.cancel(true);
+        protectionTask.cancel(true);
+      }
     }, loaded -> {
       dataKey = loaded.dataKey;
+      try { keyFingerprint = NotesSnapshotStore.fingerprint(dataKey); }
+      catch (Exception error) { startupFailed(error); return; }
       protectionKeyring = loaded.keyring;
       folders.clear();
       folders.addAll(loaded.folders);
@@ -369,8 +504,76 @@ public final class MainActivity extends Activity {
       notes.addAll(loaded.notes);
       trash.clear();
       trash.addAll(loaded.trash);
+      trashLoaded = loaded.incremental;
+      notesReady = true;
+      syncInProgress = false;
+      startupSnapshot = null;
       renderHome();
+      if (LOCATION_TRASH.equals(location)) loadTrash();
+    }, this::startupFailed);
+  }
+
+  private static <T> T awaitRead(Future<T> future) throws Exception {
+    try { return future.get(); }
+    catch (ExecutionException error) {
+      if (error.getCause() instanceof Exception) throw (Exception) error.getCause();
+      throw error;
+    }
+  }
+
+  private void startupFailed(Exception error) {
+    syncInProgress = false;
+    if (error instanceof NotesApiClient.ApiException && ((NotesApiClient.ApiException) error).status == 401) {
+      authenticationExpired();
+      return;
+    }
+    if (user != null) {
+      notesReady = false;
+      syncMessage = "同步未完成 · 本机笔记只读，点刷新重试";
+      renderHome();
+    } else showError(error);
+  }
+
+  private void authenticationExpired() {
+    new SecureSessionStore(this).clearAuthentication();
+    if (cachedReader != null) cachedReader.dismiss();
+    clearState();
+    showLogin();
+  }
+
+  private boolean requireNotesReady() {
+    if (notesReady || demoMode) return true;
+    toast("本机笔记暂为只读，请等待登录验证和同步完成。");
+    return false;
+  }
+
+  private void loadTrash() {
+    if (demoMode || trashLoaded || trashLoading || !notesReady) return;
+    trashLoading = true;
+    renderHomeListOnly();
+    SecretKey key = dataKey;
+    runAsync(() -> decryptNotes(key, api.listNotes(true)), loaded -> {
+      trashLoading = false;
+      trashLoaded = true;
+      trash.clear();
+      trash.addAll(loaded);
+      if (!editorVisible && LOCATION_TRASH.equals(location)) renderHomeListOnly();
+    }, error -> {
+      trashLoading = false;
+      if (!editorVisible && LOCATION_TRASH.equals(location)) renderHomeListOnly();
+      toast("回收站加载失败，重新进入可重试。");
     });
+  }
+
+  private void persistSnapshot() {
+    if (demoMode || !notesReady || user == null || dirty || saving || isFinishing()) return;
+    try {
+      long generation = snapshotGeneration;
+      JSONObject captured = NotesSnapshotStore.capture(user, keyFingerprint, folders, notes);
+      cacheExecutor.submit(() -> snapshotStore.save(captured, generation));
+    } catch (Exception ignored) {
+      // Reading cache is optional; server writes retain their original error handling.
+    }
   }
 
   private List<Models.NoteDocument> decryptNotes(
@@ -472,7 +675,12 @@ public final class MainActivity extends Activity {
         user = loggedInUser;
         HermesChatConnectionManager.get(this).markAuthenticated();
         HermesChatConnectionService.startIfConfigured(this);
-        loadAllData();
+        snapshotStore.clear();
+        snapshotGeneration = snapshotStore.generation();
+        if (getIntent().getBooleanExtra(EXTRA_LOGIN_FOR_HERMES, false)) {
+          openHermesConversations();
+          finish();
+        } else loadAllData();
       }, error -> {
         loginButton.setEnabled(true);
         loginButton.setText(getString(R.string.login));
@@ -539,7 +747,10 @@ public final class MainActivity extends Activity {
     topBar.addView(heading, headingParams);
 
     ImageButton refresh = iconButton(R.drawable.ic_refresh, "刷新笔记", false);
-    refresh.setOnClickListener(view -> loadAllData());
+    refresh.setOnClickListener(view -> {
+      if (notesReady) loadAllData();
+      else restoreSession();
+    });
     topBar.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
     ImageButton profile = iconButton(R.drawable.ic_person, "账户与安全", true);
     profile.setOnClickListener(this::showAccountMenu);
@@ -547,6 +758,11 @@ public final class MainActivity extends Activity {
     profileParams.setMarginStart(dp(6));
     topBar.addView(profile, profileParams);
     column.addView(topBar, matchHeight(dp(landscape ? 60 : 68), 0, 0, 0, 0));
+    if (!notesReady && !demoMode) {
+      TextView status = text(syncMessage, 12, R.color.text_secondary);
+      status.setPadding(dp(18), 0, dp(18), dp(6));
+      column.addView(status, matchWrap(0, 0, 0, 0));
+    }
 
     EditText search = editText(getString(R.string.search_notes), false);
     search.setSingleLine(true);
@@ -680,9 +896,11 @@ public final class MainActivity extends Activity {
 
     Button trashButton = navigationButton("回收站", R.drawable.ic_trash, LOCATION_TRASH.equals(location));
     trashButton.setOnClickListener(view -> {
+      if (!requireNotesReady()) return;
       location = LOCATION_TRASH;
       searchQuery = "";
       renderHome();
+      loadTrash();
     });
     navigation.addView(trashButton, weightedNavigationParams());
 
@@ -802,6 +1020,13 @@ public final class MainActivity extends Activity {
   }
 
   private void populateListContainer(FrameLayout container) {
+    if (LOCATION_TRASH.equals(location) && !trashLoaded && !demoMode) {
+      TextView status = text(trashLoading ? "正在加载回收站…" : "点此加载回收站", 15, R.color.text_secondary);
+      status.setGravity(Gravity.CENTER);
+      status.setOnClickListener(view -> loadTrash());
+      container.addView(status, frameMatch());
+      return;
+    }
     if (visibleNotes.isEmpty()) {
       LinearLayout empty = verticalLayout(0);
       empty.setGravity(Gravity.CENTER);
@@ -853,7 +1078,20 @@ public final class MainActivity extends Activity {
       list = rows;
     }
     list.setOnItemClickListener((parent, view, position, id) -> {
-      selectedNote = visibleNotes.get(position);
+      Models.NoteDocument note = visibleNotes.get(position);
+      if (!notesReady && !demoMode) {
+        ScrollView scroll = new ScrollView(this);
+        TextView body = text(note.envelope.locked
+          ? "正文受保护，请同步完成后使用原有方式解锁。" : note.content.content, 16, R.color.text_primary);
+        body.setPadding(dp(24), dp(16), dp(24), dp(16));
+        body.setTextIsSelectable(true);
+        scroll.addView(body);
+        cachedReader = new AlertDialog.Builder(this).setTitle(note.title() + " · 只读")
+          .setView(scroll).setPositiveButton("关闭", null).create();
+        cachedReader.show();
+        return;
+      }
+      selectedNote = note;
       renderEditor();
     });
     container.addView((View) list, frameMatch());
@@ -910,6 +1148,7 @@ public final class MainActivity extends Activity {
     menu.getMenu().add(0, 7, 2, "修改登录密码").setIcon(R.drawable.ic_key);
     menu.getMenu().add(0, 5, 3, "退出登录").setIcon(R.drawable.ic_logout);
     menu.setOnMenuItemClickListener(item -> {
+      if (item.getItemId() != 5 && item.getItemId() != 9 && !requireNotesReady()) return true;
       if (item.getItemId() == 8) {
         if (fingerprintConfigured) disableBiometric();
         else enableBiometricFromSettings();
@@ -933,7 +1172,8 @@ public final class MainActivity extends Activity {
   }
 
   private void openHermesConversations() {
-    Intent intent = new Intent(this, HermesConversationsActivity.class).putExtra("demo", demoMode);
+    Intent intent = new Intent(this, HermesConversationsActivity.class).putExtra("demo", demoMode)
+      .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
     if (demoMode) {
       intent.putExtra(
         HermesChatActivity.EXTRA_DEMO_AWAITING,
@@ -965,6 +1205,7 @@ public final class MainActivity extends Activity {
     boolean focusTitle,
     Consumer<Models.NoteDocument> completion
   ) {
+    if (!requireNotesReady()) return;
     String id = UUID.randomUUID().toString();
     String targetFolder = location.startsWith(LOCATION_FOLDER_PREFIX)
       ? location.substring(LOCATION_FOLDER_PREFIX.length())
@@ -1639,6 +1880,7 @@ public final class MainActivity extends Activity {
   }
 
   private void startVoiceNote() {
+    if (!requireNotesReady()) return;
     if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
       requestPermissions(
         new String[] { Manifest.permission.RECORD_AUDIO },
@@ -1788,6 +2030,7 @@ public final class MainActivity extends Activity {
   }
 
   private void startPhotoNote() {
+    if (!requireNotesReady()) return;
     Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
     if (intent.resolveActivity(getPackageManager()) == null) {
       toast("没有找到可用的相机应用。");
@@ -2288,6 +2531,7 @@ public final class MainActivity extends Activity {
   }
 
   private void createFolder() {
+    if (!requireNotesReady()) return;
     EditText name = editText("文件夹名称", false);
     name.setSingleLine(true);
     int padding = dp(24);
@@ -2323,6 +2567,7 @@ public final class MainActivity extends Activity {
   }
 
   private void manageFolders() {
+    if (!requireNotesReady()) return;
     LinearLayout rows = verticalLayout(4);
     rows.setPadding(dp(12), dp(4), dp(12), dp(4));
     AlertDialog dialog = new AlertDialog.Builder(this)
@@ -2621,6 +2866,11 @@ public final class MainActivity extends Activity {
   }
 
   private void logout() {
+    stateGeneration++;
+    notesReady = false;
+    syncInProgress = false;
+    snapshotStore.clear();
+    if (cachedReader != null) cachedReader.dismiss();
     HermesChatConnectionService.stop(this);
     HermesChatConnectionManager.get(this).shutdown();
     new HermesChatProfileStore(this).clear();
@@ -2672,6 +2922,13 @@ public final class MainActivity extends Activity {
   }
 
   private void clearState() {
+    stateGeneration++;
+    notesReady = false;
+    syncInProgress = false;
+    trashLoaded = false;
+    trashLoading = false;
+    startupSnapshot = null;
+    keyFingerprint = "";
     user = null;
     dataKey = null;
     protectionKeyring = null;
@@ -2771,12 +3028,19 @@ public final class MainActivity extends Activity {
   }
 
   private <T> void runAsync(Callable<T> work, Consumer<T> success, Consumer<Exception> failure) {
+    long generation = stateGeneration;
     executor.submit(() -> {
       try {
         T result = work.call();
-        runOnUiThread(() -> success.accept(result));
+        runOnUiThread(() -> {
+          if (isFinishing() || isDestroyed() || generation != stateGeneration) return;
+          success.accept(result);
+          persistSnapshot();
+        });
       } catch (Exception error) {
-        runOnUiThread(() -> failure.accept(error));
+        runOnUiThread(() -> {
+          if (!isFinishing() && !isDestroyed() && generation == stateGeneration) failure.accept(error);
+        });
       }
     });
   }
@@ -3139,19 +3403,22 @@ public final class MainActivity extends Activity {
     final List<Models.FolderDocument> folders;
     final List<Models.NoteDocument> notes;
     final List<Models.NoteDocument> trash;
+    final boolean incremental;
 
     LoadedData(
       SecretKey dataKey,
       Models.ProtectionKeyring keyring,
       List<Models.FolderDocument> folders,
       List<Models.NoteDocument> notes,
-      List<Models.NoteDocument> trash
+      List<Models.NoteDocument> trash,
+      boolean incremental
     ) {
       this.dataKey = dataKey;
       this.keyring = keyring;
       this.folders = folders;
       this.notes = notes;
       this.trash = trash;
+      this.incremental = incremental;
     }
   }
 

@@ -26,12 +26,14 @@ final class SecureSessionStore {
 
   private final SharedPreferences preferences;
   private final String keyAlias;
+  private final Context context;
 
   SecureSessionStore(Context context) {
     this(context, PREFS, KEY_ALIAS);
   }
 
   SecureSessionStore(Context context, String preferencesName, String keyAlias) {
+    this.context = context.getApplicationContext();
     preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE);
     this.keyAlias = keyAlias;
   }
@@ -88,6 +90,8 @@ final class SecureSessionStore {
   }
 
   void clearAuthentication() {
+    new NotesSnapshotStore(context).clear();
+    new NotesSyncStore(context).clear();
     preferences.edit()
       .remove(COOKIE_KEY)
       .remove(TOKEN_KEY)

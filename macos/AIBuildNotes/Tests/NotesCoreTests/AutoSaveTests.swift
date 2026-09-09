@@ -94,6 +94,9 @@ private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
         ])
       case ("GET", "/api/admin/workspace-key"):
         responseBody = try json(["workspaceKey": ["key": Self.keyText]])
+      case ("GET", "/api/admin/notes-sync"):
+        statusCode = 404
+        responseBody = try json(["error": "Not found"])
       case ("GET", "/api/admin/encrypted-notes"):
         responseBody = try JSONEncoder().encode(NotesFixture(notes: [Self.note].compactMap { $0 }))
       case ("GET", "/api/admin/encrypted-notes-trash"):

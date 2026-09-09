@@ -114,6 +114,14 @@ APK 输出到 `android/MyNotes/app/build/outputs/apk/debug/app-debug.apk`。本�
 export ANDROID_HOME=/Users/star/Library/Android/sdk
 ```
 
+Android 默认先打开 Hermes 会话页，登录恢复在后台进行，不等待笔记同步。点会话页左上角笔记图标可进入笔记：先显示上次同步的本机加密阅读缓存，联网验证登录、并行加载工作区密钥和保护配置后按游标同步，完成后开放编辑。首次建立同步基线时分页获取正常笔记、回收站和文件夹，之后只下载变化记录；未变化的正常笔记复用已解密内容。旧服务端尚未提供增量接口时自动回退原有全量接口，并保留回收站按需加载。
+
+笔记阅读缓存使用 Android Keystore 和 AES-GCM，加密文件保存在不参与备份的私有目录；不保存工作区密钥、保护密码、解锁后的受保护正文或其附件密钥。离线或临时网络失败时保留只读缓存，确认登录失效、切换账号或退出登录时清理。受保护正文及附件需同步完成后按原有方式访问。
+
+启动专项模拟器验证：先运行 `./gradlew assembleDebug assembleDebugAndroidTest` 并安装两个 APK，再执行 `adb shell am instrument -w -e uiQa notes-startup io.qzz.superstar1014.mynotes.test/io.qzz.superstar1014.mynotes.CryptoTestRunner`。用例使用本机回环模拟服务，不需要真实账号；仅 debug 构建允许回环 HTTP。
+
+macOS 与 Android 的增量协议、缓存边界、故障恢复和部署顺序见 [笔记增量同步](docs/notes-incremental-sync.md)。Android 增量同步设备测试可用 `adb shell am instrument -w -e uiQa notes-sync io.qzz.superstar1014.mynotes.test/io.qzz.superstar1014.mynotes.CryptoTestRunner`；`notes-startup` 还覆盖真实启动流程从旧服务端切换到增量接口。
+
 ### Hermes 插件
 
 ```bash
@@ -166,3 +174,7 @@ npm run deploy
 - 修改 CSS 或 JavaScript 时使用新的指纹文件名，并同步更新引用页面。
 - 文档描述以当前代码和可执行检查为准；规划中的功能必须明确标为规划，不能写进“当前能力”。
 - 生产 secret、设备密钥、API Token 和本地生成产物始终留在仓库之外。
+
+### 2026-09-09 增量同步发布
+
+Worker 已上线，生产迁移 `0014` 已应用。macOS 1.16 (20) 和 Android 2.23 (34) 支持首次全量、后续游标增量同步。Mac 已完成本机更新；Android 安装包为 `output/My Notes-Android-2.23.apk`。详细验证与回滚边界见 [笔记增量同步](docs/notes-incremental-sync.md)。

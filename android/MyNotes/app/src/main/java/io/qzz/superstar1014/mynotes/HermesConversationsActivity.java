@@ -65,6 +65,7 @@ public final class HermesConversationsActivity extends Activity
   private boolean destroyed;
   private boolean firstResume = true;
   private long loadGeneration;
+  private long summaryGeneration;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -148,8 +149,12 @@ public final class HermesConversationsActivity extends Activity
     LinearLayout top = horizontal(Gravity.CENTER_VERTICAL);
     top.setPadding(dp(8), dp(8), dp(8), dp(6));
     top.setBackgroundColor(getColor(R.color.surface));
-    ImageButton back = iconButton(R.drawable.ic_arrow_back, "返回笔记");
-    back.setOnClickListener(view -> finish());
+    ImageButton back = iconButton(R.drawable.ic_note, "打开笔记");
+    back.setOnClickListener(view -> {
+      if (!isTaskRoot()) finish();
+      else startActivity(new Intent(this, MainActivity.class)
+        .putExtra(MainActivity.EXTRA_OPEN_NOTES, true).putExtra("demo", demoMode));
+    });
     top.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
     LinearLayout heading = vertical();
@@ -205,37 +210,44 @@ public final class HermesConversationsActivity extends Activity
 
   private void loadCachedProfiles() {
     List<Models.HermesChatProfile> cachedProfiles = profileStore.load();
-    if (cachedProfiles.isEmpty()) {
-      loadProfilesFromServer();
-      return;
-    }
-    applyProfiles(cachedProfiles, true);
+    boolean hasCredentials = !secureStore.load().isEmpty() || !secureStore.loadDeviceToken().isEmpty();
+    if (hasCredentials && !cachedProfiles.isEmpty()) applyProfiles(cachedProfiles, true);
+    loadProfilesFromServer();
   }
 
   private void loadProfilesFromServer() {
     long generation = ++loadGeneration;
-    profileCount.setText("正在同步聊天对象…");
+    profileCount.setText(profiles.isEmpty() ? "正在同步聊天对象…" : profiles.size() + " 个聊天对象 · 正在后台同步");
     executor.submit(() -> {
       try {
         NotesApiClient.SessionResult session = api.restoreSession();
-        if (!session.authenticated) throw new IllegalStateException("请先在 My Notes 登录。");
+        if (!session.authenticated) throw new NotesApiClient.ApiException(401, "请先在 My Notes 登录。");
         List<Models.HermesChatProfile> loadedProfiles = api.hermesChatProfiles();
         profileStore.save(loadedProfiles);
-        Map<String, ConversationSummary> loadedSummaries = loadSummaries(loadedProfiles);
         runOnUiThread(() -> {
           if (destroyed || generation != loadGeneration) return;
           profiles.clear();
           profiles.addAll(loadedProfiles);
-          summaries.clear();
-          summaries.putAll(loadedSummaries);
           profileCount.setText(profiles.size() + " 个聊天对象 · 端到端加密");
+          connection.markAuthenticated();
           connection.syncProfiles(profiles);
           HermesChatConnectionService.startIfConfigured(this);
           renderProfiles();
+          loadLocalSummaries();
         });
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (destroyed || generation != loadGeneration) return;
+          if (error instanceof NotesApiClient.ApiException && ((NotesApiClient.ApiException) error).status == 401) {
+            secureStore.clearAuthentication();
+            connection.shutdown();
+            HermesChatConnectionService.stop(this);
+            startActivity(new Intent(this, MainActivity.class)
+              .putExtra(MainActivity.EXTRA_OPEN_NOTES, true)
+              .putExtra(MainActivity.EXTRA_LOGIN_FOR_HERMES, true));
+            finish();
+            return;
+          }
           if (profiles.isEmpty()) {
             profileCount.setText("聊天对象加载失败 · 点右侧重试");
             showListMessage("无法加载 Hermes 会话\n" + safeMessage(error));
@@ -249,7 +261,7 @@ public final class HermesConversationsActivity extends Activity
   }
 
   private void applyProfiles(List<Models.HermesChatProfile> loadedProfiles, boolean cached) {
-    long generation = ++loadGeneration;
+    long generation = ++summaryGeneration;
     profiles.clear();
     profiles.addAll(loadedProfiles);
     profileCount.setText(
@@ -261,7 +273,7 @@ public final class HermesConversationsActivity extends Activity
     executor.submit(() -> {
       Map<String, ConversationSummary> loadedSummaries = loadSummaries(loadedProfiles);
       runOnUiThread(() -> {
-        if (destroyed || generation != loadGeneration) return;
+        if (destroyed || generation != summaryGeneration) return;
         summaries.clear();
         summaries.putAll(loadedSummaries);
         renderProfiles();
@@ -289,12 +301,12 @@ public final class HermesConversationsActivity extends Activity
   }
 
   private void loadLocalSummaries() {
-    long generation = ++loadGeneration;
+    long generation = ++summaryGeneration;
     List<Models.HermesChatProfile> currentProfiles = new ArrayList<>(profiles);
     executor.submit(() -> {
       Map<String, ConversationSummary> loadedSummaries = loadSummaries(currentProfiles);
       runOnUiThread(() -> {
-        if (destroyed || generation != loadGeneration) return;
+        if (destroyed || generation != summaryGeneration) return;
         summaries.clear();
         summaries.putAll(loadedSummaries);
         renderProfiles();

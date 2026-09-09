@@ -147,6 +147,31 @@ public actor NotesAPIClient {
     return response.notes
   }
 
+  public func notesSyncScope(username: String) -> String {
+    "notes-sync-v1:\(baseURL.absoluteString):\(username)"
+  }
+
+  public func syncNotes(from baseline: NotesSyncSnapshot?) async throws -> NotesSyncSnapshot {
+    var snapshot = baseline ?? NotesSyncSnapshot()
+    for pageNumber in 0..<10_000 {
+      let query = snapshot.cursor.isEmpty ? "" : "?cursor=\(snapshot.cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+      let page: NotesSyncPage
+      do {
+        page = try await request(path: "api/admin/notes-sync" + query)
+      } catch let error as NotesAPIError where error.status == 404 && pageNumber == 0 {
+        // Rolling upgrades: an older Worker still serves the original APIs.
+        var legacy = NotesSyncSnapshot()
+        for note in try await listNotes(inTrash: false) { legacy.notes[note.id] = note }
+        for note in try await listNotes(inTrash: true) { legacy.notes[note.id] = note }
+        for folder in try await listFolders() { legacy.folders[folder.id] = folder }
+        return legacy
+      }
+      try snapshot.apply(page)
+      if !page.hasMore { return snapshot }
+    }
+    throw NotesAPIError.invalidResponse
+  }
+
   public func listFolders() async throws -> [EncryptedFolderEnvelope] {
     let response: FoldersResponse = try await request(path: "api/admin/encrypted-note-folders")
     return response.folders

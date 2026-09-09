@@ -87,7 +87,7 @@ test("Android serializes remembered-device refresh without deleting Hermes keys"
   assert.match(api, /private static final Object SESSION_REFRESH_LOCK/);
   assert.match(
     api,
-    /private JSONObject refreshDeviceToken\(\) throws Exception \{\s*synchronized \(SESSION_REFRESH_LOCK\) \{[\s\S]*request\("GET", "api\/auth\/me", null, null\)/,
+    /SessionResult restoreSession\(\) throws Exception \{\s*synchronized \(SESSION_REFRESH_LOCK\) \{[\s\S]*request\("GET", "api\/auth\/me", null, null\)/,
   );
   assert.match(
     api,

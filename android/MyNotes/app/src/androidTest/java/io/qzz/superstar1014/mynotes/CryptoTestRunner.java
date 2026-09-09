@@ -47,6 +47,18 @@ public final class CryptoTestRunner extends Instrumentation {
   public void onStart() {
     Bundle result = new Bundle();
     try {
+      if ("notes-sync".equals(arguments.getString("uiQa"))) {
+        NotesIncrementalSyncTest.run(this);
+        result.putString(REPORT_KEY_STREAMRESULT, "Notes incremental sync, paging, deletion, retry and encrypted cache: PASS\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
+      if ("notes-startup".equals(arguments.getString("uiQa"))) {
+        NotesStartupTest.run(this);
+        result.putString(REPORT_KEY_STREAMRESULT, "Notes encrypted cache, parallel startup, read-only and auth recovery: PASS\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if ("chat-behavior".equals(arguments.getString("uiQa"))) {
         verifyHermesChatBehaviorForQa();
         result.putString(

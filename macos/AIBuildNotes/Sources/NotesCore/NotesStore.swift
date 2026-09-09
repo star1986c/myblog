@@ -21,19 +21,23 @@ public final class NotesStore: ObservableObject {
 
   private let api: NotesAPIClient
   private let attachmentCache: AttachmentDiskCache
+  private let syncCache: NotesSyncCache
   private var dataKey: SymmetricKey?
   private var protectionKey: SymmetricKey?
   private var autoSaveTasks: [String: Task<Void, Never>] = [:]
   private var dirtyNoteIDs: Set<String> = []
+  private var workspaceGeneration = 0
   private let autoSaveDelay: Duration
 
   public init(
     api: NotesAPIClient = NotesAPIClient(),
     attachmentCache: AttachmentDiskCache = AttachmentDiskCache(),
+    syncCache: NotesSyncCache = NotesSyncCache(),
     autoSaveDelay: Duration = .seconds(10)
   ) {
     self.api = api
     self.attachmentCache = attachmentCache
+    self.syncCache = syncCache
     self.autoSaveDelay = autoSaveDelay
   }
 
@@ -240,7 +244,11 @@ public final class NotesStore: ObservableObject {
   }
 
   public func logout() async {
+    workspaceGeneration += 1
     await flushPendingSaves()
+    if let username = user?.username {
+      syncCache.clear(scope: await api.notesSyncScope(username: username))
+    }
     await api.logout()
     clearSensitiveState()
   }
@@ -275,6 +283,8 @@ public final class NotesStore: ObservableObject {
   public func refresh() async {
     guard user != nil, !isWorking else { return }
     await flushPendingSaves()
+    guard dirtyNoteIDs.isEmpty else { return }
+    errorMessage = nil
     isWorking = true
     defer { isWorking = false }
     do {
@@ -725,26 +735,42 @@ public final class NotesStore: ObservableObject {
   }
 
   private func loadWorkspace() async throws {
+    let generation = workspaceGeneration
+    guard let username = user?.username else { throw NotesAPIError.invalidResponse }
     async let rawKey = api.workspaceKey()
-    async let activeEnvelopes = api.listNotes(inTrash: false)
-    async let trashEnvelopes = api.listNotes(inTrash: true)
-    async let folderEnvelopes = api.listFolders()
     async let remoteProtectionKeyring = api.protectionKeyring()
 
     let key = try NoteCrypto.importDataKey(await rawKey)
-    let active = try await activeEnvelopes
-    let trash = try await trashEnvelopes
-    let encryptedFolders = try await folderEnvelopes
-    protectionKeyring = try await remoteProtectionKeyring
-    activeNotes = try active.map {
+    let scope = await api.notesSyncScope(username: username)
+    let baseline = syncCache.load(scope: scope, key: key)
+    let snapshot = try await api.syncNotes(from: baseline)
+    let active = snapshot.notes.values.filter { $0.deletedAt == nil }.sorted {
+      ($0.updatedAt ?? "", $0.createdAt ?? "", $0.id) > ($1.updatedAt ?? "", $1.createdAt ?? "", $1.id)
+    }
+    let trash = snapshot.notes.values.filter { $0.deletedAt != nil }.sorted {
+      ($0.deletedAt ?? "", $0.updatedAt ?? "", $0.id) > ($1.deletedAt ?? "", $1.updatedAt ?? "", $1.id)
+    }
+    let encryptedFolders = snapshot.folders.values.sorted {
+      ($0.sortOrder ?? 0, $0.createdAt ?? "", $0.id) < ($1.sortOrder ?? 0, $1.createdAt ?? "", $1.id)
+    }
+    let nextKeyring = try await remoteProtectionKeyring
+    let nextActive = try active.map {
       NoteDocument(envelope: $0, content: try NoteCrypto.decrypt($0, using: key))
     }
-    trashedNotes = try trash.map {
+    let nextTrash = try trash.map {
       NoteDocument(envelope: $0, content: try NoteCrypto.decrypt($0, using: key))
     }
-    folders = try encryptedFolders.map {
+    let nextFolders = try encryptedFolders.map {
       NoteFolder(envelope: $0, content: try FolderCrypto.decrypt($0, using: key))
     }
+    guard generation == workspaceGeneration, user?.username == username else { throw CancellationError() }
+    // Do not advance the on-disk cursor before every page has been validated.
+    // A failed cache write simply replays changes from the last durable cursor.
+    try? syncCache.save(snapshot, scope: scope, key: key)
+    protectionKeyring = nextKeyring
+    activeNotes = nextActive
+    trashedNotes = nextTrash
+    folders = nextFolders
     dataKey = key
     protectionKey = nil
     unlockedProtectedNoteID = nil
@@ -895,6 +921,7 @@ public final class NotesStore: ObservableObject {
   }
 
   private func clearSensitiveState() {
+    workspaceGeneration += 1
     for task in autoSaveTasks.values { task.cancel() }
     autoSaveTasks.removeAll()
     dirtyNoteIDs.removeAll()

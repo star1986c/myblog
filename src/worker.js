@@ -44,6 +44,7 @@ import {
   updateNoteProtectionKeyring,
 } from "./note-protection-repository.js";
 import { readOrCreateWorkspaceDataKey } from "./workspace-key-repository.js";
+import { syncEncryptedNotes } from "./notes-sync-repository.js";
 import {
   bearerToken,
   issueDeviceToken,
@@ -984,6 +985,10 @@ async function handleAdminApi(request, env, path) {
         ),
       });
     }
+  }
+
+  if (path === "/api/admin/notes-sync" && request.method === "GET") {
+    return jsonResponse(await syncEncryptedNotes(db, new URL(request.url).searchParams.get("cursor") || ""));
   }
 
   if (path === "/api/admin/encrypted-notes") {

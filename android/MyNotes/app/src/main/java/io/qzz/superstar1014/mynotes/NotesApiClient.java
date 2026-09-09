@@ -28,7 +28,7 @@ final class NotesApiClient {
 
   private final SecureSessionStore sessionStore;
   private final String baseUrl;
-  private String csrfToken = "";
+  private volatile String csrfToken = "";
 
   NotesApiClient(Context context) {
     this(context, PRODUCTION_BASE_URL);
@@ -40,16 +40,23 @@ final class NotesApiClient {
   }
 
   SessionResult restoreSession() throws Exception {
-    JSONObject json = request("GET", "api/auth/me", null, null);
-    if (!json.optBoolean("authenticated") && !sessionStore.loadDeviceToken().isEmpty()) {
-      json = refreshDeviceToken();
+    synchronized (SESSION_REFRESH_LOCK) {
+      if (sessionStore.load().isEmpty() && sessionStore.loadDeviceToken().isEmpty()) {
+        csrfToken = "";
+        return new SessionResult(false, null);
+      }
+      JSONObject json = request("GET", "api/auth/me", null, null);
+      String token = sessionStore.loadDeviceToken();
+      if (!json.optBoolean("authenticated") && !token.isEmpty()) {
+        json = exchangeDeviceToken(token);
+      }
+      csrfToken = json.optString("csrfToken");
+      JSONObject user = json.optJSONObject("user");
+      return new SessionResult(
+        json.optBoolean("authenticated") && user != null,
+        user == null ? null : Models.User.fromJson(user)
+      );
     }
-    csrfToken = json.optString("csrfToken");
-    JSONObject user = json.optJSONObject("user");
-    return new SessionResult(
-      json.optBoolean("authenticated") && user != null,
-      user == null ? null : Models.User.fromJson(user)
-    );
   }
 
   Models.User login(String username, String password) throws Exception {
@@ -312,19 +319,6 @@ final class NotesApiClient {
     }
   }
 
-  private JSONObject refreshDeviceToken() throws Exception {
-    synchronized (SESSION_REFRESH_LOCK) {
-      // Another Activity or the background Hermes service may have refreshed while this
-      // caller waited. Re-check the shared Cookie before consuming a one-time token.
-      JSONObject currentSession = request("GET", "api/auth/me", null, null);
-      if (currentSession.optBoolean("authenticated")) return currentSession;
-
-      String token = sessionStore.loadDeviceToken();
-      if (token.isEmpty()) return currentSession;
-      return exchangeDeviceToken(token);
-    }
-  }
-
   private JSONObject exchangeDeviceToken(String token) throws Exception {
     HttpURLConnection connection = open("POST", "api/auth/token");
     connection.setRequestProperty("Accept", "application/json");
@@ -377,6 +371,13 @@ final class NotesApiClient {
       result.add(Models.NoteEnvelope.fromJson(values.getJSONObject(index)));
     }
     return result;
+  }
+
+  String notesSyncScope(String username) { return "notes-sync-v1:" + baseUrl + ":" + username; }
+
+  JSONObject notesSyncPage(String cursor) throws Exception {
+    String query = cursor.isEmpty() ? "" : "?cursor=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8);
+    return request("GET", "api/admin/notes-sync" + query, null, null);
   }
 
   List<Models.FolderEnvelope> listFolders() throws Exception {
