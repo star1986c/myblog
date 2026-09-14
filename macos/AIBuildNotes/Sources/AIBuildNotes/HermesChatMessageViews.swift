@@ -292,7 +292,14 @@ private struct HermesMarkdownText: View {
     }
   }
 
-  private func inlineText(_ value: String) -> Text {
+  private func inlineText(_ value: String) -> some View {
+    formattedText(value)
+      .lineLimit(nil)
+      // Selectable Text must reserve its wrapped height before it receives focus.
+      .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private func formattedText(_ value: String) -> Text {
     if let attributed = try? AttributedString(
       markdown: value,
       options: AttributedString.MarkdownParsingOptions(
