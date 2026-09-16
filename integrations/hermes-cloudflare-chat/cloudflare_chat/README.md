@@ -27,6 +27,43 @@ set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
 
+Version 0.3.6 adopts Hermes' current `ExecApprovalPrompt` interface. The adapter
+now implements `_send_exec_approval_prompt`; the inherited `send_exec_approval`
+builds the shared prompt text and permitted action set. This also makes the
+Gateway's `supports_exec_approval_buttons()` probe recognize the encrypted
+buttons again. Text, action labels, and approval tiers come from Hermes;
+an empty upstream button style maps to the clients' `default` style.
+The old adapter-owned approval entry point is removed. This release requires
+the current Hermes approval API (available in `v2026.9.14` and later).
+No Worker or Android/macOS update is required. Replace the plugin in every
+served profile and restart its owning Gateway. Existing text-only messages
+do not gain buttons retroactively; use a new approval request after restarting.
+
+Version 0.3.5 fixes application ACK timeouts caused by inline busy-session
+commands such as `/stop`, `/status`, and `/approve`. The WebSocket receiver now
+handles ACKs independently of ordered inbound message processing, so command
+replies and slow attachment downloads do not block their own acknowledgements.
+Messages and resume pagination remain ordered; in-flight dispatch survives
+transient reconnects, and the bounded inbox replays overflow via reconnect.
+Gateway shutdown cancels and joins both the receiver and inbox processor.
+This addresses the adapter's receive-loop stall; unrelated heartbeat, TLS, and
+HTTP connection failures still require separate diagnosis.
+
+Version 0.3.4 fixes configuration isolation when one Hermes Gateway serves
+multiple profiles (`gateway.multiplex_profiles: true`). All `HERMES_CF_*`
+settings now use Hermes' current-profile scope, including relay URL, space id,
+agent id, user authorization, media directory, and attachment limits/timeouts.
+Previously those settings could come from the launch profile while the chat
+key came from the served profile, causing wrong-room connections or a profile
+to fail enablement. Single-profile Gateways retain their environment fallback.
+
+Replace the complete plugin directory in every served profile's Hermes home;
+each profile must still enable `cloudflare_chat` and keep its own `.env`.
+For a multiplex Gateway, restart only the Gateway that serves all profiles
+(usually `hermes -p default gateway restart`), then check each profile's status.
+For separate Gateways, restart each owning Gateway. Existing chat keys and
+environment variables stay valid; no Worker or native-client update is needed.
+
 Version 0.3.3 explicitly clears the relay typing state with
 `active=false, terminal=true` when Hermes finishes a response. It also requires
 the matching Worker release, which keeps one Durable Object stub and one serial

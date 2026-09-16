@@ -11,6 +11,7 @@ import threading
 import types
 import unittest
 from io import BytesIO
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.error import HTTPError
 from unittest.mock import AsyncMock, call, patch
@@ -33,6 +34,17 @@ def install_hermes_stubs():
     platforms = types.ModuleType("gateway.platforms")
     base = types.ModuleType("gateway.platforms.base")
 
+    @dataclasses.dataclass
+    class ExecApprovalPrompt:
+        chat_id: str
+        session_key: str
+        text: str
+        actions: list
+        command: str
+        description: str
+        smart_denied: bool
+        metadata: dict | None = None
+
     class BasePlatformAdapter:
         def __init__(self, config, platform):
             self.config = config
@@ -44,6 +56,28 @@ def install_hermes_stubs():
 
         def _mark_disconnected(self):
             return None
+
+        @classmethod
+        def supports_exec_approval_buttons(cls):
+            return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
+
+        async def send_exec_approval(
+            self, chat_id, command, session_key, description="dangerous command",
+            metadata=None, allow_permanent=True, allow_session=True, smart_denied=False,
+        ):
+            choices = ["once"]
+            if not smart_denied and allow_session:
+                choices.append("session")
+                if allow_permanent:
+                    choices.append("always")
+            choices.append("deny")
+            return await self._send_exec_approval_prompt(ExecApprovalPrompt(
+                chat_id=chat_id, session_key=session_key, text=f"{command}\n{description}",
+                actions=[(choice, choice, "") for choice in choices], command=command,
+                description=description, smart_denied=smart_denied, metadata=metadata))
+
+        async def _send_exec_approval_prompt(self, prompt):
+            return SendResult(success=False, error="Not supported")
 
         async def handle_message(self, event):
             return None
@@ -124,6 +158,7 @@ def install_hermes_stubs():
         return url
 
     base.BasePlatformAdapter = BasePlatformAdapter
+    base.ExecApprovalPrompt = ExecApprovalPrompt
     base.MessageEvent = MessageEvent
     base.MessageType = MessageType
     base.SendResult = SendResult
@@ -144,6 +179,51 @@ def install_hermes_stubs():
         "gateway.platforms.base": base,
         "hermes_constants": hermes_constants,
     })
+
+
+class LoopbackRelaySocket:
+    """An offline relay that immediately queues ACKs on its receive side."""
+    def __init__(self):
+        self.incoming = asyncio.Queue()
+        self.sent = []
+        self.closes = []
+        self.ack_reads = 0
+        self.resumed = asyncio.Event()
+        self.paginated = asyncio.Event()
+
+    def feed(self, frame):
+        self.incoming.put_nowait(json.dumps(frame))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raw = await self.incoming.get()
+        if raw is None:
+            raise StopAsyncIteration
+        if json.loads(raw).get("type") == "ack":
+            self.ack_reads += 1
+        return raw
+
+    async def send(self, raw):
+        frame = json.loads(raw)
+        self.sent.append(frame)
+        if frame["type"] == "message":
+            self.feed({"type": "ack", "id": frame["id"], "seq": 100})
+        if frame["type"] == "resume":
+            self.resumed.set()
+            if frame["afterSeq"] > 0:
+                self.paginated.set()
+
+    async def close(self, code, reason):
+        self.closes.append((code, reason))
+        self.incoming.put_nowait(None)
 
 
 class AdapterContractTests(unittest.TestCase):
@@ -169,6 +249,133 @@ class AdapterContractTests(unittest.TestCase):
 
     def test_requirements_accept_the_production_contract(self):
         self.assertTrue(self.adapter.check_requirements())
+
+    def _profile_values(self, name="personal", key_byte=1):
+        return {
+            "HERMES_CF_RELAY_URL": f"wss://{name}.example.test/api/hermes-chat/ws",
+            "HERMES_CF_AGENT_SECRET": name.ljust(48, "x"),
+            "HERMES_CF_CHAT_KEY": base64.urlsafe_b64encode(
+                bytes([key_byte]) * 32
+            ).decode("ascii").rstrip("="),
+            "HERMES_CF_SPACE_ID": name,
+            "HERMES_CF_AGENT_ID": f"nas-{name}",
+        }
+
+    def test_concurrent_profiles_keep_route_identity_and_cipher_together(self):
+        scope = ContextVar("test_cloudflare_profile")
+
+        async def check_profile(name, key_byte):
+            values = self._profile_values(name, key_byte)
+            token = scope.set(values)
+            try:
+                await asyncio.sleep(0)
+                self.assertTrue(self.adapter.check_requirements())
+                seed = self.adapter._env_enablement()
+                self.assertEqual(seed["space_id"], name)
+                self.assertEqual(seed["home_channel"]["chat_id"], name)
+                config = types.SimpleNamespace(extra={"space_id": "primary"})
+                self.assertTrue(self.adapter.validate_config(config))
+                instance = self.adapter.CloudflareChatAdapter(config)
+                await asyncio.sleep(0)
+                self.assertEqual(instance.space_id, name)
+                self.assertEqual(instance.relay_url, values["HERMES_CF_RELAY_URL"])
+                self.assertEqual(instance.agent_id, values["HERMES_CF_AGENT_ID"])
+                headers = instance._http_headers()
+                self.assertEqual(headers["X-Hermes-Space"], name)
+                self.assertEqual(headers["X-Hermes-Agent-Id"], f"nas-{name}")
+                self.assertEqual(headers["Authorization"], "Bearer " + values["HERMES_CF_AGENT_SECRET"])
+                envelope = instance._cipher.encrypt_message(sender="agent", text=name)
+                own_cipher = self.adapter.ChatCipher(
+                    self.adapter.decode_chat_key(values["HERMES_CF_CHAT_KEY"])
+                )
+                self.assertEqual(
+                    own_cipher.decrypt_message(envelope, expected_sender="agent")["text"],
+                    name,
+                )
+            finally:
+                scope.reset(token)
+
+        async def scenario():
+            await asyncio.gather(check_profile("personal", 1), check_profile("work", 2))
+
+        with patch.object(
+            self.adapter, "_scoped_get_secret",
+            side_effect=lambda name, default="": scope.get().get(name, default),
+        ):
+            asyncio.run(scenario())
+        self.assertEqual(os.environ["HERMES_CF_SPACE_ID"], "primary")
+
+    def test_profile_enablement_works_without_process_cloudflare_variables(self):
+        values = self._profile_values()
+        process_env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_CF_")}
+        with patch.dict(os.environ, process_env, clear=True), patch.object(
+            self.adapter, "_scoped_get_secret", side_effect=values.get,
+        ):
+            self.assertTrue(self.adapter.check_requirements())
+            self.assertTrue(self.adapter.validate_config(types.SimpleNamespace(extra={})))
+            self.assertEqual(self.adapter._env_enablement()["space_id"], "personal")
+
+    def test_missing_profile_routing_never_borrows_process_configuration(self):
+        for missing in ("HERMES_CF_RELAY_URL", "HERMES_CF_SPACE_ID"):
+            with self.subTest(missing=missing):
+                values = self._profile_values()
+                values.pop(missing)
+                with patch.object(self.adapter, "_scoped_get_secret", side_effect=values.get):
+                    self.assertFalse(self.adapter.check_requirements())
+                    self.assertFalse(self.adapter.validate_config(types.SimpleNamespace(extra={})))
+                    self.assertIsNone(self.adapter._env_enablement())
+
+    def test_interaction_authorization_uses_only_current_profile(self):
+        os.environ["HERMES_CF_ALLOW_ALL_USERS"] = "true"
+        for policy, expected in (
+            ({}, False),
+            ({"HERMES_CF_ALLOW_ALL_USERS": "false", "HERMES_CF_ALLOWED_USERS": "someone-else"}, False),
+            ({"HERMES_CF_ALLOWED_USERS": "android-owner"}, True),
+            ({"HERMES_CF_ALLOW_ALL_USERS": "true"}, True),
+        ):
+            with self.subTest(policy=policy):
+                values = self._profile_values() | policy
+                with patch.object(self.adapter, "_scoped_get_secret", side_effect=values.get):
+                    instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+                    self.assertEqual(instance._logical_user_authorized(), expected)
+
+    def test_profile_attachment_settings_and_missing_optional_defaults_are_isolated(self):
+        os.environ.update({
+            "HERMES_CF_AGENT_ID": "nas-primary",
+            "HERMES_CF_MEDIA_DIR": "/primary/media",
+            "HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES": str(20 * 1024 * 1024),
+            "HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS": "60",
+        })
+        with tempfile.TemporaryDirectory() as home:
+            for custom in (True, False):
+                with self.subTest(custom=custom):
+                    values = self._profile_values()
+                    values.pop("HERMES_CF_AGENT_ID")
+                    media = Path(home) / "personal-media"
+                    if custom:
+                        values.update({
+                            "HERMES_CF_MEDIA_DIR": str(media),
+                            "HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES": str(30 * 1024 * 1024),
+                            "HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS": "120",
+                        })
+                    with patch.object(
+                        self.adapter, "_scoped_get_secret", side_effect=values.get,
+                    ), patch.object(self.adapter, "get_hermes_home", return_value=Path(home)):
+                        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+                        self.assertEqual(instance.agent_id, "nas-hermes")
+                        self.assertEqual(instance._media_directory, media if custom else Path(home) / "cache" / "cloudflare_chat")
+                        self.assertEqual(self.adapter._agent_attachment_max_bytes(), 30 * 1024 * 1024 if custom else self.adapter.MAX_AGENT_ATTACHMENT_BYTES)
+                        self.assertEqual(self.adapter._direct_upload_timeout_seconds(), 120 if custom else 900)
+
+    def test_unscoped_primary_startup_keeps_environment_fallback(self):
+        with patch.object(
+            self.adapter, "_scoped_get_secret", side_effect=self.adapter._UnscopedSecretError,
+        ):
+            self.assertTrue(self.adapter.check_requirements())
+            self.assertEqual(self.adapter._env_enablement()["space_id"], "primary")
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            self.assertEqual(instance.space_id, "primary")
+            self.assertTrue(instance._logical_user_authorized())
 
     def test_register_exposes_fail_closed_user_authorization(self):
         class Context:
@@ -198,7 +405,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.3")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.6")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -654,6 +861,62 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(final_payload["interaction"]["state"], "resolved")
         self.assertEqual(final_payload["interaction"]["status"], "已批准：仅本次")
 
+    def test_new_gateway_recognizes_native_approval_renderer(self):
+        # Hermes >= 2026.9.14 probes capability before calling send_exec_approval.
+        # The default probe rejects adapters that only override the legacy method.
+        self.assertTrue(self.adapter.CloudflareChatAdapter.supports_exec_approval_buttons())
+        self.assertNotIn("send_exec_approval", self.adapter.CloudflareChatAdapter.__dict__)
+
+    def test_approval_renderer_preserves_upstream_text_and_action_subset(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        prompt = self.adapter.ExecApprovalPrompt(
+            chat_id="primary", session_key="restricted-session", text="Upstream safety prompt",
+            actions=[("Reject this request", "deny", "danger")], command="unused raw command",
+            description="unused raw reason", smart_denied=True)
+
+        async def scenario():
+            send_prompt = AsyncMock(return_value=self.adapter.SendResult(success=True, message_id="73"))
+            with patch.object(instance, "_send_interaction_prompt", send_prompt):
+                await instance._send_exec_approval_prompt(prompt)
+            payload = send_prompt.await_args.kwargs
+            self.assertEqual(payload["text"], prompt.text)
+            self.assertEqual(payload["option_values"], {"deny": "deny"})
+            self.assertEqual(payload["options"], [self.adapter._interaction_option(
+                "deny", "Reject this request", style="danger", wide=True)])
+            self.assertEqual(payload["session_key"], prompt.session_key)
+
+        asyncio.run(scenario())
+
+    def test_approval_options_respect_gateway_restrictions(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        async def scenario():
+            for smart_denied in (False, True):
+                for allow_session in (False, True):
+                    for allow_permanent in (False, True):
+                        with self.subTest(smart_denied=smart_denied,
+                                          allow_session=allow_session,
+                                          allow_permanent=allow_permanent):
+                            send_prompt = AsyncMock(return_value=self.adapter.SendResult(
+                                success=True, message_id="73"))
+                            with patch.object(instance, "_send_interaction_prompt", send_prompt):
+                                await instance.send_exec_approval(
+                                    chat_id="primary", command="synthetic approval request",
+                                    session_key="approval-session", smart_denied=smart_denied,
+                                    allow_session=allow_session, allow_permanent=allow_permanent)
+                            expected = ["once"]
+                            if not smart_denied and allow_session:
+                                expected.append("session")
+                                if allow_permanent:
+                                    expected.append("always")
+                            expected.append("deny")
+                            payload = send_prompt.await_args.kwargs
+                            self.assertEqual([option["id"] for option in payload["options"]], expected)
+                            self.assertEqual(payload["option_values"], {key: key for key in expected})
+                            self.assertEqual(payload["session_key"], "approval-session")
+
+        asyncio.run(scenario())
+
     def test_approval_timeout_reads_live_current_profile_config(self):
         values = {"approvals": {"timeout": "720"}}
         hermes_cli = types.ModuleType("hermes_cli")
@@ -756,6 +1019,161 @@ class AdapterContractTests(unittest.TestCase):
 
         asyncio.run(scenario())
         self.assertNotIn(prompt_id, instance._pending_interactions)
+
+    def test_inline_reply_receives_ack_without_https_fallback(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            socket = LoopbackRelaySocket()
+            completed = asyncio.Event()
+            async def inline_reply(_event):
+                result = await instance._send_payload("status reply", [])
+                self.assertTrue(result.success)
+                completed.set()
+            envelope = instance._cipher.encrypt_message(sender="client", text="/status", attachments=[])
+            socket.feed({"type": "message", "seq": 1, "message": envelope})
+            with patch.object(self.adapter, "websocket_connect", return_value=socket), patch.object(
+                self.adapter, "APPLICATION_ACK_TIMEOUT_SECONDS", 0.1,
+            ), patch.object(instance, "_save_last_sequence"), patch.object(
+                instance, "handle_message", side_effect=inline_reply,
+            ), patch.object(instance, "_publish_message") as fallback:
+                connection = asyncio.create_task(instance._connection_loop())
+                try:
+                    await asyncio.wait_for(completed.wait(), 1)
+                    self.assertEqual(socket.ack_reads, 1)
+                    fallback.assert_not_called()
+                    self.assertEqual(socket.closes, [])
+                finally:
+                    connection.cancel()
+                    await asyncio.gather(connection, return_exceptions=True)
+        asyncio.run(scenario())
+
+    def test_slow_attachment_preserves_ack_order_dedup_and_resume_checkpoint(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            socket = LoopbackRelaySocket()
+            started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            delivered = []
+            downloads = []
+            async def prepare(envelope):
+                downloads.append(envelope["id"])
+                if envelope["id"] == "first":
+                    started.set()
+                    await release.wait()
+                return types.SimpleNamespace(text=envelope["id"], media_urls=[], metadata={})
+            async def handle(event):
+                delivered.append(event.text)
+                if event.text == "second":
+                    finished.set()
+            for seq, identity in [(1, "first"), (1, "first"), (2, "second")]:
+                socket.feed({"type": "message", "seq": seq, "message": {"id": identity}})
+            socket.feed({"type": "resume_complete", "hasMore": True})
+            with patch.object(self.adapter, "websocket_connect", return_value=socket), patch.object(
+                instance, "_prepare_inbound_message", side_effect=prepare,
+            ), patch.object(instance, "handle_message", side_effect=handle), patch.object(
+                instance, "_save_last_sequence",
+            ), patch.object(instance, "_publish_message") as fallback:
+                connection = asyncio.create_task(instance._connection_loop())
+                try:
+                    await asyncio.wait_for(started.wait(), 1)
+                    result = await asyncio.wait_for(instance._send_payload("background reply", []), 1)
+                    self.assertTrue(result.success)
+                    fallback.assert_not_called()
+                    self.assertEqual(delivered, [])
+                    self.assertEqual([f["afterSeq"] for f in socket.sent if f["type"] == "resume"], [0])
+                    release.set()
+                    await asyncio.wait_for(finished.wait(), 1)
+                    await asyncio.wait_for(socket.paginated.wait(), 1)
+                    self.assertEqual(delivered, ["first", "second"])
+                    self.assertEqual(downloads, ["first", "second"])
+                    self.assertEqual([f["afterSeq"] for f in socket.sent if f["type"] == "resume"], [0, 2])
+                finally:
+                    connection.cancel()
+                    await asyncio.gather(connection, return_exceptions=True)
+        asyncio.run(scenario())
+
+    def test_inflight_inbound_survives_reconnect_and_replay(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            first, second = LoopbackRelaySocket(), LoopbackRelaySocket()
+            started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            delivered = []
+            async def prepare(_envelope):
+                started.set()
+                await release.wait()
+                return types.SimpleNamespace(text="once", media_urls=[], metadata={})
+            async def handle(event):
+                delivered.append(event.text)
+                finished.set()
+            frame = {"type": "message", "seq": 1, "message": {"id": "replayed"}}
+            first.feed(frame)
+            second.feed(frame)
+            second.feed({"type": "resume_complete", "hasMore": True})
+            with patch.object(self.adapter, "websocket_connect", side_effect=[first, second]), patch.object(
+                instance, "_prepare_inbound_message", side_effect=prepare,
+            ), patch.object(instance, "handle_message", side_effect=handle), patch.object(instance, "_save_last_sequence"):
+                connection = asyncio.create_task(instance._connection_loop())
+                try:
+                    await asyncio.wait_for(started.wait(), 1)
+                    first.incoming.put_nowait(None)
+                    await asyncio.wait_for(second.resumed.wait(), 2)
+                    self.assertEqual(delivered, [])
+                    release.set()
+                    await asyncio.wait_for(finished.wait(), 1)
+                    await asyncio.wait_for(second.paginated.wait(), 1)
+                    self.assertEqual(delivered, ["once"])
+                    self.assertTrue(any(f.get("seq") == 1 and f["type"] == "received" for f in second.sent))
+                finally:
+                    connection.cancel()
+                    await asyncio.gather(connection, return_exceptions=True)
+        asyncio.run(scenario())
+
+    def test_disconnect_cancels_slow_inbound_and_receive_tasks(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            socket = LoopbackRelaySocket()
+            started, cancelled = asyncio.Event(), asyncio.Event()
+            baseline_tasks = asyncio.all_tasks()
+            async def prepare(_envelope):
+                started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+            socket.feed({"type": "message", "seq": 1, "message": {"id": "slow"}})
+            with patch.object(self.adapter, "websocket_connect", return_value=socket), patch.object(
+                instance, "_prepare_inbound_message", side_effect=prepare,
+            ):
+                instance._connection_task = asyncio.create_task(instance._connection_loop())
+                await asyncio.wait_for(started.wait(), 1)
+                await asyncio.wait_for(instance.disconnect(), 1)
+                self.assertTrue(cancelled.is_set())
+                self.assertEqual(instance._last_sequence, 0)
+                self.assertEqual(asyncio.all_tasks() - baseline_tasks, set())
+        asyncio.run(scenario())
+
+    def test_inbound_failure_propagates_and_full_queue_does_not_block_reader(self):
+        async def scenario(mode):
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            socket = LoopbackRelaySocket()
+            queue = asyncio.Queue(maxsize=1)
+            if mode == "failure":
+                worker = asyncio.create_task(instance._process_inbound_frames(queue))
+                socket.feed({"type": "message", "seq": 0})
+                expected = ValueError
+            else:
+                worker = asyncio.create_task(asyncio.Event().wait())
+                for seq in (1, 2):
+                    socket.feed({"type": "message", "seq": seq})
+                expected = ConnectionError
+            try:
+                with self.assertRaises(expected):
+                    await asyncio.wait_for(instance._receive_frames(socket, queue, worker), 1)
+            finally:
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+        for mode in ("failure", "overflow"):
+            with self.subTest(mode=mode):
+                asyncio.run(scenario(mode))
 
     def test_interaction_callback_does_not_block_the_websocket_receive_loop(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))

@@ -2,10 +2,12 @@
 
 ## 方案结论
 
-家庭 NAS 不开放公网入站端口。每个 Hermes profile 启动自己的 Gateway 和
-`cloudflare_chat` 插件，由插件主动连接
+家庭 NAS 不开放公网入站端口。每个 Hermes profile 的 `cloudflare_chat` 插件主动连接
 `wss://h.superstar1014.qzz.io/api/hermes-chat/ws`。Android 与 macOS 的 My Notes 登录现有
 账号后，动态读取可用 profile，并用 Telegram 风格的会话列表进入各自的独立聊天。
+
+可以为每个 profile 分别运行 Gateway，也可以由一个 Gateway 管理全部 profile。
+后一种 multiplex 模式需要插件 0.3.4 或更新版本，以便各 profile 独立读取连接配置。
 
 ```mermaid
 flowchart LR
@@ -197,7 +199,17 @@ HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS=900
 它与其他 profile 共用 relay URL 和 agent secret，但必须使用独立的
 `HERMES_CF_SPACE_ID`、`HERMES_CF_CHAT_KEY` 和 agent id。
 
-重启并检查每个 Gateway：
+如果使用一个 Gateway 管理全部 profile（`gateway.multiplex_profiles: true`），
+替换每个 profile 的完整插件目录后，只重启管理它们的 Gateway。默认 profile
+拥有这个 Gateway 时执行：
+
+```bash
+hermes -p default gateway restart
+hermes -p default status
+hermes -p personal status
+```
+
+如果每个 profile 分别运行 Gateway，则分别重启和检查：
 
 ```bash
 hermes gateway restart
@@ -205,6 +217,64 @@ hermes -p personal gateway restart
 hermes status
 hermes -p personal status
 ```
+
+### 插件 0.3.6：采用新版 Hermes 授权按钮接口
+
+Hermes 2026-09-13 的接口调整将 `send_exec_approval` 改为基类模板方法，并通过
+`supports_exec_approval_buttons()` 检测子类是否实现 `_send_exec_approval_prompt`。
+旧插件只覆盖旧入口，导致 Gateway 判定不支持按钮，向 Android 和 macOS 发送
+带 `/approve` 说明的纯文本授权提示。
+
+0.3.6 移除插件自己的 `send_exec_approval`，实现新版 `ExecApprovalPrompt` 渲染钩子。
+提示文本、按钮标签、允许的审批级别全部使用 Hermes 的 `prompt.text/actions`，
+不再在插件中重复推导权限。上游空按钮样式映射为现有客户端的 `default`。
+继续通过加密 interaction/action 和 `resolve_gateway_approval` 完成审批。
+要求新版 Hermes 授权 API（`v2026.9.14` 已具备），不保留旧授权入口兼容。
+
+本地回归包含插件测试，以及独立运行的真实 Hermes 验证脚本：
+
+```bash
+PYTHONPATH=/path/to/hermes:/path/to/myblog/integrations/hermes-cloudflare-chat \
+  python /path/to/myblog/integrations/hermes-cloudflare-chat/tests/verify_real_hermes_approval.py
+```
+
+脚本使用临时 profile、合成凭证和本地模拟 ACK，验证 Gateway 能力检测、共享提示、
+审批选项限制、加密按钮回调、真实审批队列与重复点击；不会执行待审批命令。
+
+由用户替换每个启用 profile 的完整插件目录，并重启其所属 Gateway。无需更新
+Worker、Android 或 macOS。重启后触发新的审批验证按钮；历史纯文本提示不会补出按钮。
+本地测试不代表 NAS 已完成部署或实际 App 验收。
+
+### 插件 0.3.5：命令回复与慢附件导致的 ACK 超时修复
+
+旧版在 WebSocket 接收循环中直接等待入站处理。会话忙碌时，Hermes 会内联执行
+`/stop`、`/status`、`/approve` 等命令并等待回复发送完成；回复的 ACK 又需要同一个
+接收循环读取，导致即使中继立即确认也会触发 15 秒超时、断连和 HTTPS 补发。
+附件下载同样可能阻塞 ACK 接收。
+
+0.3.5 将 ACK 接收和入站处理分开：普通消息与 `resume_complete` 进入同一个有界
+顺序队列，ACK 和交互 action 保持即时处理。队列跨短暂重连保留，防止中途取消
+正在执行的命令；队列满时重连，通过 checkpoint 补收尚未接受的消息。Gateway
+退出时取消并回收接收和入站任务。原有消息去重、typing epoch 和 0.3.4 profile
+配置隔离保持生效。
+
+本地验证覆盖真实 Hermes 基类下两个 profile 的忙碌命令，以及慢附件、消息顺序、
+重复补收、分页 checkpoint、重连和退出清理。此修复不代表历史心跳、TLS、HTTP
+错误都已解决，也不代表 NAS 已完成运行验证。
+
+替换所有启用该通道的 profile 中的完整插件目录，保留各自 `.env`、密钥和启用
+配置；由用户重启管理这些 profile 的 Gateway。Worker 和原生客户端无需更新。
+
+### 插件 0.3.4：单 Gateway 多 profile 兼容修复
+
+0.3.3 在 multiplex 模式下仍从进程环境读取部分 `HERMES_CF_*` 参数，可能把
+其他 profile 的连接指向主 profile 的 space，或在启动环境缺少参数时跳过启用。
+0.3.4 将这些读取统一交给 Hermes 的 profile scope，覆盖 relay URL、space id、
+agent id、允许用户、媒体目录和附件大小/超时设置；chat key 和 agent secret 继续
+按当前 profile 读取。独立 Gateway 的环境变量行为保持兼容。
+
+本次只需替换各 profile 的插件并按上述启动方式重启 Gateway。现有 `.env` 和
+聊天密钥继续使用，无需更新 Worker、Android 或 macOS 客户端。
 
 ### 多 profile 定时任务投递
 

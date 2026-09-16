@@ -25,6 +25,7 @@ from gateway.config import Platform
 from hermes_constants import get_hermes_home
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    ExecApprovalPrompt,
     MessageEvent,
     MessageType,
     SendResult,
@@ -55,7 +56,7 @@ MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
 APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.3"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.6"
 TYPING_EPOCH_METADATA_KEY = "_cloudflare_chat_typing_epoch"
 DIRECT_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024
 DIRECT_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -167,7 +168,7 @@ class _FileChunkIterable:
 
 
 def _agent_attachment_max_bytes() -> int:
-    raw = str(os.getenv("HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES") or "").strip()
+    raw = str(_get_secret("HERMES_CF_AGENT_ATTACHMENT_MAX_BYTES") or "").strip()
     try:
         configured = int(raw)
     except ValueError:
@@ -178,7 +179,7 @@ def _agent_attachment_max_bytes() -> int:
 
 
 def _direct_upload_timeout_seconds() -> int:
-    raw = str(os.getenv("HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS") or "").strip()
+    raw = str(_get_secret("HERMES_CF_DIRECT_UPLOAD_TIMEOUT_SECONDS") or "").strip()
     try:
         configured = int(raw)
     except ValueError:
@@ -231,6 +232,7 @@ def _sha256_file(path: Path, expected_size: int) -> str:
 
 
 def _get_secret(name: str, default: str = "") -> str:
+    """Read a profile setting, retaining the unscoped primary startup fallback."""
     try:
         value = _scoped_get_secret(name, default)
     except _UnscopedSecretError:
@@ -245,16 +247,16 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=Platform("cloudflare_chat"))
         extra = getattr(config, "extra", {}) or {}
         self.relay_url = str(
-            os.getenv("HERMES_CF_RELAY_URL") or extra.get("relay_url") or ""
+            _get_secret("HERMES_CF_RELAY_URL") or extra.get("relay_url") or ""
         ).strip()
         self.agent_secret = _get_secret("HERMES_CF_AGENT_SECRET") or str(
             extra.get("agent_secret") or ""
         )
         self.agent_id = str(
-            os.getenv("HERMES_CF_AGENT_ID") or extra.get("agent_id") or "nas-hermes"
+            _get_secret("HERMES_CF_AGENT_ID") or extra.get("agent_id") or "nas-hermes"
         ).strip()
         self.space_id = str(
-            os.getenv("HERMES_CF_SPACE_ID") or extra.get("space_id") or ""
+            _get_secret("HERMES_CF_SPACE_ID") or extra.get("space_id") or ""
         ).strip()
         if ChatCipher is None or decode_chat_key is None:
             raise RuntimeError("Cloudflare Chat Python dependencies are not installed")
@@ -286,7 +288,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         self._typing_unbound_stop_epochs: dict[asyncio.Task, int] = {}
         self._lock_key: str | None = None
         self._media_directory = Path(
-            os.getenv("HERMES_CF_MEDIA_DIR")
+            _get_secret("HERMES_CF_MEDIA_DIR")
             or get_hermes_home() / "cache" / "cloudflare_chat"
         )
 
@@ -821,57 +823,21 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             logger.warning("Cloudflare Chat attachment send failed: %s", error)
             return SendResult(success=False, error=str(error), retryable=False)
 
-    async def send_exec_approval(
-        self,
-        chat_id: str,
-        command: str,
-        session_key: str,
-        description: str = "dangerous command",
-        metadata: dict[str, Any] | None = None,
-        allow_permanent: bool = True,
-        allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        options = [
-            _interaction_option("once", "仅本次允许", style="primary"),
-        ]
-        values: dict[str, Any] = {"once": "once"}
-        if not smart_denied and allow_session:
-            options.append(_interaction_option("session", "本会话允许"))
-            values["session"] = "session"
-            if allow_permanent:
-                options.append(_interaction_option(
-                    "always",
-                    "始终允许",
-                    style="warning",
-                    wide=True,
-                ))
-                values["always"] = "always"
-        options.append(_interaction_option(
-            "deny",
-            "拒绝",
-            style="danger",
-            wide=True,
-        ))
-        values["deny"] = "deny"
-        preview = str(command or "")
-        if len(preview) > 1500:
-            preview = preview[:1500] + "..."
-        text = (
-            "**需要授权执行命令**\n\n"
-            f"```shell\n{preview}\n```\n"
-            f"原因：{description}"
-        )
-        if smart_denied:
-            text += "\n\n此操作只允许进行一次所有者授权。"
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Render Hermes' shared approval text and permitted actions as encrypted buttons."""
         return await self._send_interaction_prompt(
-            chat_id=chat_id,
+            chat_id=prompt.chat_id,
             kind="approval",
-            text=text,
-            options=options,
-            option_values=values,
+            text=prompt.text,
+            options=[
+                _interaction_option(
+                    choice, label, style=style or "default", wide=choice in {"always", "deny"},
+                )
+                for label, choice, style in prompt.actions
+            ],
+            option_values={choice: choice for _, choice, _ in prompt.actions},
             timeout_seconds=_approval_timeout_seconds(),
-            session_key=session_key,
+            session_key=prompt.session_key,
         )
 
     async def send_slash_confirm(
@@ -1625,13 +1591,13 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         return providers[index]
 
     def _logical_user_authorized(self) -> bool:
-        if str(os.getenv("HERMES_CF_ALLOW_ALL_USERS") or "").strip().lower() in {
+        if str(_get_secret("HERMES_CF_ALLOW_ALL_USERS") or "").strip().lower() in {
             "1", "true", "yes", "on",
         }:
             return True
         allowed = {
             value.strip()
-            for value in str(os.getenv("HERMES_CF_ALLOWED_USERS") or "").split(",")
+            for value in str(_get_secret("HERMES_CF_ALLOWED_USERS") or "").split(",")
             if value.strip()
         }
         return "android-owner" in allowed
@@ -1651,52 +1617,113 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         return {"name": "Android Notes", "type": "dm", "chat_id": chat_id}
 
     async def _connection_loop(self) -> None:
+        # Keep one ordered inbox across transient socket reconnects. In particular,
+        # do not cancel a /stop handler halfway through its reply and session cleanup.
+        inbound_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
+        inbound_task: asyncio.Task | None = None
         delay = 1.0
-        while not self._closing:
-            try:
-                async with websocket_connect(
-                    self.relay_url,
-                    additional_headers={
-                        "Authorization": f"Bearer {self.agent_secret}",
-                        "X-Hermes-Role": "agent",
-                        "X-Hermes-Agent-Id": self.agent_id,
-                        "X-Hermes-Space": self.space_id,
-                    },
-                    max_size=MAX_FRAME_BYTES,
-                    open_timeout=20,
-                    ping_interval=20,
-                    ping_timeout=20,
-                    close_timeout=10,
-                ) as socket:
-                    self._socket = socket
-                    self._mark_connected()
-                    self._ready.set()
-                    delay = 1.0
-                    if self._last_sequence > 0:
+        try:
+            while not self._closing:
+                if inbound_task is None or inbound_task.done():
+                    if inbound_task is not None:
+                        # Dispatch can also fail during reconnect backoff, when no
+                        # receiver is waiting on this task. Retrieve that exception.
+                        error = inbound_task.exception()
+                        if error is not None:
+                            logger.warning("Cloudflare Chat inbound processing failed: %s", error)
+                    inbound_task = asyncio.create_task(self._process_inbound_frames(inbound_queue))
+                try:
+                    async with websocket_connect(
+                        self.relay_url,
+                        additional_headers={
+                            "Authorization": f"Bearer {self.agent_secret}",
+                            "X-Hermes-Role": "agent",
+                            "X-Hermes-Agent-Id": self.agent_id,
+                            "X-Hermes-Space": self.space_id,
+                        },
+                        max_size=MAX_FRAME_BYTES,
+                        open_timeout=20,
+                        ping_interval=20,
+                        ping_timeout=20,
+                        close_timeout=10,
+                    ) as socket:
+                        self._socket = socket
+                        self._mark_connected()
+                        self._ready.set()
+                        delay = 1.0
+                        if self._last_sequence > 0:
+                            await self._send_frame({
+                                "v": 1,
+                                "type": "received",
+                                "seq": self._last_sequence,
+                            })
                         await self._send_frame({
                             "v": 1,
-                            "type": "received",
-                            "seq": self._last_sequence,
+                            "type": "resume",
+                            "afterSeq": self._last_sequence,
                         })
-                    await self._send_frame({
-                        "v": 1,
-                        "type": "resume",
-                        "afterSeq": self._last_sequence,
-                    })
-                    async for raw in socket:
-                        await self._handle_frame(raw)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
+                        await self._receive_frames(socket, inbound_queue, inbound_task)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    if not self._closing:
+                        logger.warning("Cloudflare Chat connection lost: %s", error)
+                finally:
+                    self._socket = None
+                    self._ready.clear()
+                    self._mark_disconnected()
                 if not self._closing:
-                    logger.warning("Cloudflare Chat connection lost: %s", error)
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+
+        finally:
+            if inbound_task is not None:
+                inbound_task.cancel()
+                await asyncio.gather(inbound_task, return_exceptions=True)
+
+    async def _process_inbound_frames(self, inbound_queue: asyncio.Queue) -> None:
+        while True:
+            raw = await inbound_queue.get()
+            try:
+                await self._handle_frame(raw)
             finally:
-                self._socket = None
-                self._ready.clear()
-                self._mark_disconnected()
-            if not self._closing:
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30.0)
+                inbound_queue.task_done()
+
+    async def _receive_frames(
+        self, socket: Any, inbound_queue: asyncio.Queue, inbound_task: asyncio.Task,
+    ) -> None:
+        async def receive() -> None:
+            async for raw in socket:
+                if isinstance(raw, bytes):
+                    raise ValueError("binary WebSocket frames are not supported")
+                frame = json.loads(raw)
+                if frame.get("type") in {"message", "resume_complete"}:
+                    # Pagination must wait for the preceding messages' checkpoints.
+                    # Never wait on a full inbox here: that would block ACKs again.
+                    # Closing the socket on overflow lets resume replay unaccepted data.
+                    try:
+                        inbound_queue.put_nowait(raw)
+                    except asyncio.QueueFull as error:
+                        raise ConnectionError(
+                            "Cloudflare Chat inbound queue is full; reconnecting for replay"
+                        ) from error
+                else:
+                    # ACKs and interaction actions must remain live while an inline
+                    # command reply or attachment download is awaiting completion.
+                    await self._handle_frame(raw)
+
+        receive_task = asyncio.create_task(receive())
+        try:
+            done, _ = await asyncio.wait(
+                {receive_task, inbound_task}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if inbound_task in done:
+                inbound_task.result()  # Surface dispatch failures to reconnect logic.
+            if receive_task in done:
+                receive_task.result()
+        finally:
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
 
     async def _handle_frame(self, raw: str | bytes) -> None:
         if isinstance(raw, bytes):
@@ -2708,18 +2735,18 @@ def check_requirements() -> bool:
     except Exception:
         return False
     return _valid_configuration(
-        os.getenv("HERMES_CF_RELAY_URL", ""),
+        _get_secret("HERMES_CF_RELAY_URL", ""),
         _get_secret("HERMES_CF_AGENT_SECRET"),
-        os.getenv("HERMES_CF_AGENT_ID", "nas-hermes"),
-        os.getenv("HERMES_CF_SPACE_ID", ""),
+        _get_secret("HERMES_CF_AGENT_ID", "nas-hermes"),
+        _get_secret("HERMES_CF_SPACE_ID", ""),
     )
 
 
 def validate_config(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
-    relay_url = os.getenv("HERMES_CF_RELAY_URL") or extra.get("relay_url", "")
-    agent_id = os.getenv("HERMES_CF_AGENT_ID") or extra.get("agent_id", "nas-hermes")
-    space_id = os.getenv("HERMES_CF_SPACE_ID") or extra.get("space_id", "")
+    relay_url = _get_secret("HERMES_CF_RELAY_URL") or extra.get("relay_url", "")
+    agent_id = _get_secret("HERMES_CF_AGENT_ID") or extra.get("agent_id", "nas-hermes")
+    space_id = _get_secret("HERMES_CF_SPACE_ID") or extra.get("space_id", "")
     try:
         if decode_chat_key is None:
             return False
@@ -2737,10 +2764,10 @@ def validate_config(config) -> bool:
 def _env_enablement() -> dict[str, Any] | None:
     if not check_requirements():
         return None
-    space_id = os.getenv("HERMES_CF_SPACE_ID", "").strip()
+    space_id = _get_secret("HERMES_CF_SPACE_ID", "").strip()
     return {
-        "relay_url": os.getenv("HERMES_CF_RELAY_URL", "").strip(),
-        "agent_id": os.getenv("HERMES_CF_AGENT_ID", "nas-hermes").strip() or "nas-hermes",
+        "relay_url": _get_secret("HERMES_CF_RELAY_URL", "").strip(),
+        "agent_id": _get_secret("HERMES_CF_AGENT_ID", "nas-hermes").strip() or "nas-hermes",
         "space_id": space_id,
         "home_channel": {"chat_id": space_id, "name": "Android Notes"},
     }
