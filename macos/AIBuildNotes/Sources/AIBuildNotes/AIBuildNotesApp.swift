@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import NotesCore
 import SwiftUI
 
@@ -28,6 +30,7 @@ struct AIBuildNotesApp: App {
         .environmentObject(hermesStore)
         .environmentObject(cloudflareBillingStore)
         .frame(minWidth: 820, minHeight: 560)
+        .onAppear { HermesDockBadgeObserver.shared.observe(hermesStore) }
         .task { await store.start() }
         .task(id: store.user?.username) {
           if store.user == nil { await hermesStore.stop() }
@@ -72,6 +75,23 @@ struct AIBuildNotesApp: App {
         .keyboardShortcut("r", modifiers: .command)
         .disabled(store.user == nil)
       }
+    }
+  }
+}
+
+@MainActor
+private final class HermesDockBadgeObserver {
+  static let shared = HermesDockBadgeObserver()
+
+  private var observedStore: ObjectIdentifier?
+  private var subscription: AnyCancellable?
+
+  func observe(_ store: HermesChatStore) {
+    guard observedStore != ObjectIdentifier(store) else { return }
+    observedStore = ObjectIdentifier(store)
+    subscription = store.$unreadByProfile.sink { counts in
+      let unread = counts.values.reduce(0, +)
+      NSApp.dockTile.badgeLabel = unread == 0 ? nil : (unread > 99 ? "99+" : "\(unread)")
     }
   }
 }
