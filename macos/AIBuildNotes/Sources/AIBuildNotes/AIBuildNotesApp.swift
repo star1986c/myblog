@@ -5,6 +5,7 @@ import SwiftUI
 
 @main
 struct AIBuildNotesApp: App {
+  @NSApplicationDelegateAdaptor(MyNotesApplicationDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var store: NotesStore
   @StateObject private var hermesStore: HermesChatStore
@@ -24,13 +25,12 @@ struct AIBuildNotesApp: App {
   }
 
   var body: some Scene {
-    WindowGroup("My Notes") {
-      RootView()
+    WindowGroup("My Notes", id: "main") {
+      MyNotesMainWindow()
         .environmentObject(store)
         .environmentObject(hermesStore)
         .environmentObject(cloudflareBillingStore)
         .frame(minWidth: 820, minHeight: 560)
-        .onAppear { HermesDockBadgeObserver.shared.observe(hermesStore) }
         .task { await store.start() }
         .task(id: store.user?.username) {
           if store.user == nil { await hermesStore.stop() }
@@ -76,6 +76,77 @@ struct AIBuildNotesApp: App {
         .disabled(store.user == nil)
       }
     }
+  }
+}
+
+private struct MyNotesMainWindow: View {
+  @Environment(\.openWindow) private var openWindow
+  @EnvironmentObject private var hermesStore: HermesChatStore
+
+  var body: some View {
+    RootView()
+      .onAppear {
+        HermesDockBadgeObserver.shared.observe(hermesStore)
+        MyNotesWindowRestorer.shared.register { [openWindow] in
+          openWindow(id: "main")
+        }
+      }
+  }
+}
+
+private final class MyNotesApplicationDelegate: NSObject, NSApplicationDelegate {
+  func applicationShouldHandleReopen(
+    _ sender: NSApplication,
+    hasVisibleWindows flag: Bool
+  ) -> Bool {
+    !MyNotesWindowRestorer.shared.restoreWindowIfNeeded()
+  }
+}
+
+@MainActor
+private final class MyNotesWindowRestorer {
+  static let shared = MyNotesWindowRestorer()
+
+  private var openWindow: (() -> Void)?
+  private var activationSubscription: AnyCancellable?
+  private var openingWindow = false
+
+  func register(openWindow: @escaping () -> Void) {
+    self.openWindow = openWindow
+    openingWindow = false
+    if activationSubscription == nil {
+      activationSubscription = NotificationCenter.default.publisher(
+        for: NSApplication.didBecomeActiveNotification,
+        object: NSApp
+      ).sink { [weak self] _ in
+        self?.restoreWindowIfNeeded()
+      }
+    }
+  }
+
+  @discardableResult
+  func restoreWindowIfNeeded() -> Bool {
+    guard NSApp.isActive else { return false }
+    let mainWindows = NSApp.windows.filter {
+      $0.canBecomeMain && $0.frame.width >= 820 && $0.frame.height >= 560
+    }
+    if mainWindows.contains(where: { $0.isVisible && !$0.isMiniaturized }) {
+      return true
+    }
+    if let window = mainWindows.first {
+      NSApp.unhide(nil)
+      if window.isMiniaturized { window.deminiaturize(nil) }
+      window.makeKeyAndOrderFront(nil)
+      return true
+    }
+    guard !openingWindow, let openWindow else { return false }
+    openingWindow = true
+    openWindow()
+    Task { @MainActor in
+      try? await Task.sleep(for: .seconds(2))
+      openingWindow = false
+    }
+    return true
   }
 }
 
