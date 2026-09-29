@@ -237,8 +237,8 @@ struct HermesChatView: View {
   @State private var selectedMessageIDs = Set<String>()
   @State private var selectionMode = false
   @State private var pendingDelete: [HermesChatMessage] = []
-  @State private var visibleMessageLimit = 160
-  @State private var visibleSearchResultLimit = 160
+  @State private var visibleMessageLimit = 40
+  @State private var visibleSearchResultLimit = 40
   @State private var composerFocused = false
 
   private var profile: HermesChatProfile? { store.selectedProfile }
@@ -330,12 +330,12 @@ struct HermesChatView: View {
       selectedMessageIDs = []
       selectionMode = false
       searchText = ""
-      visibleMessageLimit = 160
-      visibleSearchResultLimit = 160
+      visibleMessageLimit = 40
+      visibleSearchResultLimit = 40
       Task { @MainActor in composerFocused = true }
     }
     .onChange(of: searchText) { _, _ in
-      visibleSearchResultLimit = 160
+      visibleSearchResultLimit = 40
     }
     .onAppear {
       HermesTemporaryAttachmentFiles.cleanupExpired()
@@ -472,9 +472,9 @@ struct HermesChatView: View {
             if hiddenLocalMessageCount > 0 {
               Button {
                 if hasSearchQuery {
-                  visibleSearchResultLimit += 160
+                  visibleSearchResultLimit += 40
                 } else {
-                  visibleMessageLimit += 160
+                  visibleMessageLimit += 40
                 }
               } label: {
                 Label(
@@ -515,16 +515,18 @@ struct HermesChatView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
       }
+      // Let the scroll view establish its initial position during layout.
+      // An onAppear scrollTo forces the lazy stack to measure distant selectable text.
+      .defaultScrollAnchor(.bottom)
       .background(HermesChatBackground())
       .onAppear {
-        scrollToBottom(proxy, animated: false)
         Task { @MainActor in composerFocused = true }
       }
       .onChange(of: messageScrollToken) { _, _ in
         guard !showsSearch else { return }
         scrollToBottom(proxy, animated: true)
       }
-      .onChange(of: store.typingProfiles) { _, _ in
+      .onChange(of: store.typingProfiles.contains(profile.id)) { _, _ in
         guard !showsSearch else { return }
         scrollToBottom(proxy, animated: true)
       }
