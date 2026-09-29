@@ -450,7 +450,9 @@ struct HermesChatView: View {
   private func messageTimeline(_ profile: HermesChatProfile) -> some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(spacing: 10) {
+        // The explicit message window bounds this stack. Measuring its real heights
+        // avoids lazy estimated offsets leaving a blank viewport after profile changes.
+        VStack(spacing: 10) {
           securityBanner
             .padding(.bottom, 4)
 
@@ -516,7 +518,7 @@ struct HermesChatView: View {
         .padding(.vertical, 14)
       }
       // Let the scroll view establish its initial position during layout.
-      // An onAppear scrollTo forces the lazy stack to measure distant selectable text.
+      // Avoid an extra imperative scroll while selectable text is being laid out.
       .defaultScrollAnchor(.bottom)
       .background(HermesChatBackground())
       .onAppear {

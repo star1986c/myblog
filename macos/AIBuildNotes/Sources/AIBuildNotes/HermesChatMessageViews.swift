@@ -234,7 +234,7 @@ private struct HermesMarkdownMessage: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
-      ForEach(HermesMarkdownParser.parse(text)) { segment in
+      ForEach(HermesMarkdownParser.cached(text)) { segment in
         switch segment.kind {
         case .markdown(let source):
           HermesMarkdownText(source: source, isClient: isClient)
@@ -252,7 +252,7 @@ private struct HermesMarkdownText: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
-      ForEach(HermesMarkdownBlockParser.parse(source)) { block in
+      ForEach(HermesMarkdownBlockParser.cached(source)) { block in
         switch block.kind {
         case .paragraph(let value):
           inlineText(value)
@@ -300,17 +300,7 @@ private struct HermesMarkdownText: View {
   }
 
   private func formattedText(_ value: String) -> Text {
-    if let attributed = try? AttributedString(
-      markdown: value,
-      options: AttributedString.MarkdownParsingOptions(
-        interpretedSyntax: .inlineOnlyPreservingWhitespace,
-        failurePolicy: .returnPartiallyParsedIfPossible
-      )
-    ) {
-      return Text(attributed)
-        .foregroundColor(isClient ? .white : .primary)
-    }
-    return Text(value)
+    Text(HermesInlineMarkdownCache.value(for: value))
       .foregroundColor(isClient ? .white : .primary)
   }
 
@@ -325,6 +315,12 @@ private struct HermesMarkdownText: View {
 }
 
 private enum HermesMarkdownBlockParser {
+  @MainActor private static let cache = HermesRenderCache<[Block]>()
+
+  @MainActor static func cached(_ source: String) -> [Block] {
+    cache.value(for: source) { parse(source) }
+  }
+
   struct Block: Identifiable {
     enum Kind {
       case paragraph(String)
@@ -454,6 +450,12 @@ private struct HermesCodeBlock: View {
 }
 
 private enum HermesMarkdownParser {
+  @MainActor private static let cache = HermesRenderCache<[Segment]>()
+
+  @MainActor static func cached(_ source: String) -> [Segment] {
+    cache.value(for: source) { parse(source) }
+  }
+
   struct Segment: Identifiable {
     enum Kind {
       case markdown(String)
@@ -511,7 +513,7 @@ private struct HermesChatAttachmentView: View {
   let spaceID: String
   let isClient: Bool
 
-  @State private var imageURL: URL?
+  @State private var thumbnail: CGImage?
   @State private var isLoading = false
   @State private var localError: String?
   @State private var preview: HermesAttachmentPreview?
@@ -526,8 +528,8 @@ private struct HermesChatAttachmentView: View {
   var body: some View {
     Button(action: openAttachment) {
       VStack(alignment: .leading, spacing: 8) {
-        if kind == .image, let imageURL, let image = NSImage(contentsOf: imageURL) {
-          Image(nsImage: image)
+        if kind == .image, let thumbnail {
+          Image(decorative: thumbnail, scale: 2)
             .resizable()
             .scaledToFit()
             .frame(maxWidth: 420, maxHeight: 300)
@@ -654,7 +656,6 @@ private struct HermesChatAttachmentView: View {
         switch kind {
         case .image:
           let url = try await materialize()
-          imageURL = url
           preview = HermesAttachmentPreview(kind: .image(url))
         case .audio, .video:
           let url = try await materialize()
@@ -671,7 +672,10 @@ private struct HermesChatAttachmentView: View {
 
   private func loadImagePreview() async {
     do {
-      imageURL = try await materialize()
+      let url = try await materialize()
+      let image = await HermesThumbnailCache.shared.image(at: url)
+      guard !Task.isCancelled else { return }
+      thumbnail = image
     } catch {
       // Keep the file card available; an explicit open/save will surface the error.
     }
