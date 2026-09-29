@@ -39,7 +39,7 @@ test("deployment config binds the Hermes chat Durable Object", () => {
   ]);
   assert.equal(
     wrangler.vars.HERMES_CHAT_PROFILES,
-    "primary:Hermes 主助手,personal:Hermes 个人助手",
+    "primary:Hermes 主助手,personal:Hermes 个人助手,mkwork:Hermes 工作助手",
   );
   assert.equal(wrangler.vars.HERMES_CHAT_CLOUD_RETENTION_DAYS, "30");
   assert.equal(wrangler.vars.HERMES_CHAT_R2_BUCKET_NAME, "notes");
