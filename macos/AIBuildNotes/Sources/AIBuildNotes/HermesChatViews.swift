@@ -171,7 +171,7 @@ private struct HermesConversationRow: View {
     guard store.isConfigured(spaceID: profile.id) else { return "尚未设置聊天密钥" }
     guard let lastMessage else { return "聊天已就绪" }
     if !lastMessage.text.isEmpty {
-      return lastMessage.text.replacingOccurrences(of: "\n", with: " ")
+      return String(lastMessage.text.prefix(160)).replacingOccurrences(of: "\n", with: " ")
     }
     if let attachment = lastMessage.attachments.first {
       return "附件：\(attachment.name)"
@@ -257,9 +257,10 @@ struct HermesChatView: View {
 
   private var visibleMessages: [HermesChatMessage] {
     if hasSearchQuery {
-      return Array(matchingMessages.suffix(visibleSearchResultLimit))
+      let matches = matchingMessages
+      return Array(matches.suffix(HermesMessageWindow.visibleCount(in: matches, limit: visibleSearchResultLimit)))
     }
-    return Array(messages.suffix(visibleMessageLimit))
+    return Array(messages.suffix(HermesMessageWindow.visibleCount(in: messages, limit: visibleMessageLimit)))
   }
 
   private var hiddenLocalMessageCount: Int {
@@ -323,16 +324,6 @@ struct HermesChatView: View {
       Button("取消", role: .cancel) { pendingDelete = [] }
     } message: {
       Text("附件密文也会从 Cloudflare 删除，此操作无法撤销。")
-    }
-    .onChange(of: store.selectedProfileID) { _, _ in
-      draft = ""
-      selectedFiles = []
-      selectedMessageIDs = []
-      selectionMode = false
-      searchText = ""
-      visibleMessageLimit = 40
-      visibleSearchResultLimit = 40
-      Task { @MainActor in composerFocused = true }
     }
     .onChange(of: searchText) { _, _ in
       visibleSearchResultLimit = 40

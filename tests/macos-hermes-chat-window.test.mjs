@@ -12,8 +12,8 @@ test("macOS bounds normal and local-search message rendering with explicit load-
 
   assert.match(source, /@State private var visibleMessageLimit = 40/);
   assert.match(source, /@State private var visibleSearchResultLimit = 40/);
-  assert.match(source, /Array\(messages\.suffix\(visibleMessageLimit\)\)/);
-  assert.match(source, /Array\(matchingMessages\.suffix\(visibleSearchResultLimit\)\)/);
+  assert.match(source, /HermesMessageWindow.visibleCount\(in: messages, limit: visibleMessageLimit\)/);
+  assert.match(source, /HermesMessageWindow.visibleCount\(in: matches, limit: visibleSearchResultLimit\)/);
   assert.match(source, /visibleMessageLimit \+= 40/);
   assert.match(source, /visibleSearchResultLimit \+= 40/);
   assert.match(source, /加载更早的本地消息/);

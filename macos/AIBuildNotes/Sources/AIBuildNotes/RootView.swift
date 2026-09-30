@@ -107,6 +107,7 @@ struct RootView: View {
           NoteEditorView()
         } else {
           HermesChatView()
+            .id(hermesStore.selectedProfileID)
         }
       }
       .navigationSplitViewStyle(.balanced)

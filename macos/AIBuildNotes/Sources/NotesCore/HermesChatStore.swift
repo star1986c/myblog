@@ -157,10 +157,7 @@ public final class HermesChatStore: ObservableObject {
       started = true
       return
     }
-    guard !started else {
-      await refreshProfiles()
-      return
-    }
+    guard !started else { return }
     started = true
     openingSync = HermesChatOpeningSync()
     eventTask = Task { [weak self, client] in
@@ -263,8 +260,8 @@ public final class HermesChatStore: ObservableObject {
   }
 
   public func selectProfile(_ spaceID: String?) {
-    selectedProfileID = spaceID
-    if let spaceID { unreadByProfile[spaceID] = 0 }
+    if selectedProfileID != spaceID { selectedProfileID = spaceID }
+    if let spaceID, unreadCount(spaceID: spaceID) > 0 { unreadByProfile[spaceID] = 0 }
   }
 
   public func setApplicationActive(_ active: Bool) {

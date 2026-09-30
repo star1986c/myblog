@@ -25,7 +25,7 @@ struct AIBuildNotesApp: App {
   }
 
   var body: some Scene {
-    WindowGroup("My Notes", id: "main") {
+    Window("My Notes", id: "main") {
       MyNotesMainWindow()
         .environmentObject(store)
         .environmentObject(hermesStore)
@@ -85,6 +85,7 @@ private struct MyNotesMainWindow: View {
 
   var body: some View {
     RootView()
+      .background(MyNotesWindowReader())
       .onAppear {
         HermesDockBadgeObserver.shared.observe(hermesStore)
         MyNotesWindowRestorer.shared.register { [openWindow] in
@@ -110,10 +111,15 @@ private final class MyNotesWindowRestorer {
   private var openWindow: (() -> Void)?
   private var activationSubscription: AnyCancellable?
   private var openingWindow = false
+  private weak var mainWindow: NSWindow?
+
+  func attach(_ window: NSWindow) {
+    mainWindow = window
+    openingWindow = false
+  }
 
   func register(openWindow: @escaping () -> Void) {
     self.openWindow = openWindow
-    openingWindow = false
     if activationSubscription == nil {
       activationSubscription = NotificationCenter.default.publisher(
         for: NSApplication.didBecomeActiveNotification,
@@ -127,13 +133,7 @@ private final class MyNotesWindowRestorer {
   @discardableResult
   func restoreWindowIfNeeded() -> Bool {
     guard NSApp.isActive else { return false }
-    let mainWindows = NSApp.windows.filter {
-      $0.canBecomeMain && $0.frame.width >= 820 && $0.frame.height >= 560
-    }
-    if mainWindows.contains(where: { $0.isVisible && !$0.isMiniaturized }) {
-      return true
-    }
-    if let window = mainWindows.first {
+    if let window = mainWindow, NSApp.windows.contains(where: { $0 === window }) {
       NSApp.unhide(nil)
       if window.isMiniaturized { window.deminiaturize(nil) }
       window.makeKeyAndOrderFront(nil)
@@ -142,11 +142,20 @@ private final class MyNotesWindowRestorer {
     guard !openingWindow, let openWindow else { return false }
     openingWindow = true
     openWindow()
-    Task { @MainActor in
-      try? await Task.sleep(for: .seconds(2))
-      openingWindow = false
-    }
     return true
+  }
+}
+
+/// Capture the actual scene window; size, title and focus are not window identity.
+private struct MyNotesWindowReader: NSViewRepresentable {
+  func makeNSView(context: Context) -> WindowView { WindowView() }
+  func updateNSView(_ view: WindowView, context: Context) {}
+
+  final class WindowView: NSView {
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      if let window { MyNotesWindowRestorer.shared.attach(window) }
+    }
   }
 }
 
