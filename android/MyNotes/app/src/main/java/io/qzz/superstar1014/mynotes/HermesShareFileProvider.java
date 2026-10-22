@@ -60,6 +60,8 @@ public final class HermesShareFileProvider extends ContentProvider {
       .authority(AUTHORITY)
       .appendPath("file")
       .appendPath(file.getName())
+      // Some receiving apps use the URI's last segment instead of DISPLAY_NAME.
+      .appendPath(name)
       .appendQueryParameter("name", name)
       .build();
   }
@@ -100,7 +102,11 @@ public final class HermesShareFileProvider extends ContentProvider {
       Object[] row = new Object[columns.length];
       for (int index = 0; index < columns.length; index++) {
         if (OpenableColumns.DISPLAY_NAME.equals(columns[index])) {
-          row[index] = safeDisplayName(uri.getQueryParameter("name"), file.getName());
+          row[index] = safeDisplayName(
+            uri.getPathSegments().size() == 3
+              ? uri.getLastPathSegment() : uri.getQueryParameter("name"),
+            file.getName()
+          );
         } else if (OpenableColumns.SIZE.equals(columns[index])) {
           row[index] = file.length();
         }
@@ -127,7 +133,8 @@ public final class HermesShareFileProvider extends ContentProvider {
 
   private File resolve(Uri uri) throws IOException {
     String kind = uri.getPathSegments().isEmpty() ? "" : uri.getPathSegments().get(0);
-    if (!AUTHORITY.equals(uri.getAuthority()) || uri.getPathSegments().size() != 2
+    int segmentCount = uri.getPathSegments().size();
+    if (!AUTHORITY.equals(uri.getAuthority()) || (segmentCount != 2 && segmentCount != 3)
         || !("file".equals(kind) || "image".equals(kind))) {
       throw new IOException("Invalid Hermes share URI");
     }

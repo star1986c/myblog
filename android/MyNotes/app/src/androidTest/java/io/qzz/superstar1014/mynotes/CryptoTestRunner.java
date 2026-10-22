@@ -47,6 +47,12 @@ public final class CryptoTestRunner extends Instrumentation {
   public void onStart() {
     Bundle result = new Bundle();
     try {
+      if ("attachment-share".equals(arguments.getString("uiQa"))) {
+        verifyHermesImageShareProvider();
+        result.putString(REPORT_KEY_STREAMRESULT, "Hermes attachment share names, content and read-only access: PASS\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if ("notes-sync".equals(arguments.getString("uiQa"))) {
         NotesIncrementalSyncTest.run(this);
         result.putString(REPORT_KEY_STREAMRESULT, "Notes incremental sync, paging, deletion, retry and encrypted cache: PASS\n");
@@ -911,6 +917,7 @@ public final class CryptoTestRunner extends Instrumentation {
         output.write(image);
       }
       Uri uri = HermesShareFileProvider.uriFor(context, file, "Hermes 测试图片.png");
+      verifyShareName(uri, "Hermes 测试图片.png", image.length);
       require("content".equals(uri.getScheme()), "Hermes share URI was not a content URI");
       require(
         "image/png".equals(context.getContentResolver().getType(uri)),
@@ -941,6 +948,35 @@ public final class CryptoTestRunner extends Instrumentation {
         output.write(document);
       }
       Uri uri = HermesShareFileProvider.uriFor(context, documentFile, "Hermes 测试文档.pdf");
+      verifyShareName(uri, "Hermes 测试文档.pdf", document.length);
+      Uri specialName = HermesShareFileProvider.uriFor(
+        context, documentFile, "报告 #1 & 进度 100% ?.pdf"
+      );
+      verifyShareName(specialName, "报告 #1 & 进度 100% ?.pdf", document.length);
+      Uri sanitizedName = HermesShareFileProvider.uriFor(
+        context, documentFile, "目录/报告\\修订\n.pdf"
+      );
+      verifyShareName(sanitizedName, "目录_报告_修订_.pdf", document.length);
+      File secondFile = HermesShareFileProvider.createAttachmentFile(context, "pdf");
+      try {
+        try (FileOutputStream output = new FileOutputStream(secondFile)) {
+          output.write(42);
+        }
+        Uri secondUri = HermesShareFileProvider.uriFor(context, secondFile, "Hermes 测试文档.pdf");
+        require(!uri.equals(secondUri), "Same-name attachments shared the same URI");
+        verifyShareName(secondUri, "Hermes 测试文档.pdf", 1);
+        try (InputStream input = context.getContentResolver().openInputStream(secondUri)) {
+          require(input != null && input.read() == 42, "Same-name attachment content was replaced");
+        }
+      } finally {
+        secondFile.delete();
+      }
+      Uri legacyUri = new Uri.Builder().scheme("content")
+        .authority(HermesShareFileProvider.AUTHORITY).appendPath("file")
+        .appendPath(documentFile.getName()).appendQueryParameter("name", "旧附件.pdf").build();
+      try (InputStream input = context.getContentResolver().openInputStream(legacyUri)) {
+        require(input != null && input.read() == document[0], "Existing share URI stopped working");
+      }
       require(
         "application/pdf".equals(context.getContentResolver().getType(uri)),
         "Hermes attachment share provider returned the wrong MIME type"
@@ -953,6 +989,18 @@ public final class CryptoTestRunner extends Instrumentation {
       require(Arrays.equals(document, opened), "Hermes shared attachment bytes changed");
     } finally {
       documentFile.delete();
+    }
+  }
+
+  private void verifyShareName(Uri uri, String name, long size) throws Exception {
+    require(name.equals(uri.getLastPathSegment()), "Share URI lost the chat attachment name");
+    try (android.database.Cursor cursor = getTargetContext().getContentResolver().query(
+      uri, new String[] { android.provider.OpenableColumns.DISPLAY_NAME,
+        android.provider.OpenableColumns.SIZE }, null, null, null
+    )) {
+      require(cursor != null && cursor.moveToFirst(), "Share metadata was missing");
+      require(name.equals(cursor.getString(0)), "Share display name differed from the chat name");
+      require(size == cursor.getLong(1), "Share size was incorrect");
     }
   }
 
