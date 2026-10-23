@@ -9,10 +9,12 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import time
 import uuid
 from contextvars import ContextVar
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -56,8 +58,11 @@ MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
 APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.6"
-TYPING_EPOCH_METADATA_KEY = "_cloudflare_chat_typing_epoch"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.10"
+RECONNECT_STABLE_SECONDS = 60.0
+RECONNECT_MAX_SECONDS = 30.0
+MAX_STREAM_EDIT_CACHE = 128
+TYPING_EPOCH_ATTRIBUTE = "_cloudflare_chat_typing_epoch"
 DIRECT_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024
 DIRECT_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _SUPPORTED_FILE_TYPES: dict[str, tuple[str, str]] = {
@@ -270,6 +275,8 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         )
         self._last_sequence = self._load_last_sequence()
         self._pending_acks: dict[str, asyncio.Future] = {}
+        # A pending entry also invalidates older ACKs for the same target.
+        self._stream_edits: OrderedDict = OrderedDict()
         self._pending_interactions: dict[str, dict[str, Any]] = {}
         self._interaction_tasks: set[asyncio.Task] = set()
         self._interaction_expiry_tasks: dict[str, asyncio.Task] = {}
@@ -331,6 +338,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        self._stream_edits.clear()
         self._ready.clear()
         self._mark_disconnected()
         if self._socket is not None:
@@ -398,13 +406,29 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         finalize: bool = False,
         metadata: dict[str, Any] | None = None,
     ):
+        cache_key = None
+        pending = None
         try:
             target_seq = int(str(message_id))
             if target_seq < 1 or str(target_seq) != str(message_id):
                 raise ValueError("stream message id must be a positive relay sequence")
+            text = str(content or "")
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            cache_key = (chat_id, target_seq)
+            socket = self._socket
+            previous = self._stream_edits.get(cache_key)
+            if (not finalize and socket is not None and previous is not None
+                    and previous[0] is socket and previous[1] == digest):
+                self._stream_edits.move_to_end(cache_key)
+                return SendResult(success=True, message_id=str(target_seq))
+            pending = (socket, None)
+            self._stream_edits[cache_key] = pending
+            self._stream_edits.move_to_end(cache_key)
+            while len(self._stream_edits) > MAX_STREAM_EDIT_CACHE:
+                self._stream_edits.popitem(last=False)
             envelope = self._cipher.encrypt_message(
                 sender="agent",
-                text=str(content or ""),
+                text=text,
                 attachments=[],
                 replace_seq=target_seq,
                 final=bool(finalize),
@@ -417,11 +441,18 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                 "message": envelope,
             }
             await self._send_and_wait_for_ack(frame, envelope["id"])
+            if (not finalize and socket is not None and self._socket is socket
+                    and self._stream_edits.get(cache_key) is pending):
+                self._stream_edits[cache_key] = (socket, digest)
             return SendResult(success=True, message_id=str(target_seq))
         except ValueError as error:
             return SendResult(success=False, error=str(error), retryable=False)
         except Exception as error:
             return SendResult(success=False, error=str(error), retryable=True)
+        finally:
+            # Failed/cancelled/final edits never establish a duplicate suppression entry.
+            if pending is not None and self._stream_edits.get(cache_key) is pending:
+                self._stream_edits.pop(cache_key, None)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         caller_epoch = self._current_typing_task_epoch()
@@ -628,18 +659,13 @@ class CloudflareChatAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _set_event_typing_epoch(event: MessageEvent, epoch: int) -> None:
-        metadata = getattr(event, "metadata", None)
-        if not isinstance(metadata, dict):
-            metadata = {}
-            event.metadata = metadata
-        metadata[TYPING_EPOCH_METADATA_KEY] = epoch
+        # This fence belongs to the adapter's live tasks, not the durable input.
+        # Hermes' canonical admission rejects custom event.metadata keys.
+        setattr(event, TYPING_EPOCH_ATTRIBUTE, epoch)
 
     @staticmethod
     def _event_typing_epoch(event: MessageEvent) -> int | None:
-        metadata = getattr(event, "metadata", None)
-        if not isinstance(metadata, dict):
-            return None
-        epoch = metadata.get(TYPING_EPOCH_METADATA_KEY)
+        epoch = getattr(event, TYPING_EPOCH_ATTRIBUTE, None)
         if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
             return None
         return epoch
@@ -1632,6 +1658,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                         if error is not None:
                             logger.warning("Cloudflare Chat inbound processing failed: %s", error)
                     inbound_task = asyncio.create_task(self._process_inbound_frames(inbound_queue))
+                connected_at = None
                 try:
                     async with websocket_connect(
                         self.relay_url,
@@ -1648,9 +1675,10 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                         close_timeout=10,
                     ) as socket:
                         self._socket = socket
+                        self._stream_edits.clear()
+                        connected_at = time.monotonic()
                         self._mark_connected()
                         self._ready.set()
-                        delay = 1.0
                         if self._last_sequence > 0:
                             await self._send_frame({
                                 "v": 1,
@@ -1670,11 +1698,17 @@ class CloudflareChatAdapter(BasePlatformAdapter):
                         logger.warning("Cloudflare Chat connection lost: %s", error)
                 finally:
                     self._socket = None
+                    self._stream_edits.clear()
                     self._ready.clear()
                     self._mark_disconnected()
                 if not self._closing:
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, 30.0)
+                    if (connected_at is not None
+                            and time.monotonic() - connected_at >= RECONNECT_STABLE_SECONDS):
+                        delay = 1.0
+                    # Short-lived handshakes must not reset backoff. Jitter spreads
+                    # profile retries without ever exceeding the 30 second ceiling.
+                    await asyncio.sleep(random.uniform(delay * 0.75, delay))
+                    delay = min(delay * 2, RECONNECT_MAX_SECONDS)
 
         finally:
             if inbound_task is not None:
@@ -2428,23 +2462,21 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         os.replace(temporary, self._state_path)
 
     def _acquire_lock(self) -> bool:
-        try:
-            from gateway.status import acquire_scoped_lock
-            digest = hashlib.sha256(
-                f"{self.relay_url}|{self.agent_id}|{self.space_id}".encode("utf-8")
-            ).hexdigest()
-            if not acquire_scoped_lock("cloudflare_chat", digest):
-                return False
-            self._lock_key = digest
-        except ImportError:
-            self._lock_key = None
+        from gateway.status import acquire_scoped_lock
+        digest = hashlib.sha256(
+            f"{self.relay_url}|{self.agent_id}|{self.space_id}".encode("utf-8")
+        ).hexdigest()
+        acquired, _ = acquire_scoped_lock("cloudflare_chat", digest)
+        if not acquired:
+            return False
+        self._lock_key = digest
         return True
 
     def _release_lock(self) -> None:
         if not self._lock_key:
             return
         try:
-            from gateway.status import release_scoped_lock
+            from gateway.status_scoped_locks import release_scoped_lock
             release_scoped_lock("cloudflare_chat", self._lock_key)
         except Exception:
             logger.debug("Cloudflare Chat scoped lock release failed", exc_info=True)

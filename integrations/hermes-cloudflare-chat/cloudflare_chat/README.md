@@ -19,13 +19,83 @@ The plugin connects outbound to:
 wss://h.superstar1014.qzz.io/api/hermes-chat/ws
 ```
 
-It requires Python packages listed in `requirements.txt`. Install them into the
-same interpreter or virtual environment that owns the `hermes` executable.
+Version 0.3.10 targets Hermes `v0.22.4` and declares
+`requires_hermes: ">=0.22.4"`. Python dependencies are declared in
+`plugin.yaml` (`python_dependencies`) for Hermes' native dependency management;
+`requirements.txt` contains the same requirements for manual installation into
+the interpreter or virtual environment that owns the `hermes` executable.
+Simply copying the directory does not install dependencies. An already upgraded
+Hermes v0.22.4 environment satisfies them with cryptography 50.0.1 and
+websockets 15.0.1; do not reinstall the older plugin's requirements.
 Each profile has its own `.env`. The default profile uses `/root/.hermes/.env`;
 a named profile uses `/root/.hermes/profiles/<name>/.env`. Every profile must
 set a unique `HERMES_CF_SPACE_ID` and `HERMES_CF_CHAT_KEY`.
 
 ## Upgrade notes
+
+Version 0.3.10 fixes connection-lock handling against Hermes v0.22.4:
+
+- Read the acquired flag from the upstream `(acquired, existing)` result, so a
+  lock held by another live process prevents opening a second relay connection.
+- Release locks through `gateway.status_scoped_locks.release_scoped_lock`.
+  Disconnect now removes the actual lock file, not just the adapter's key.
+- A missing lock backend no longer silently permits an unlocked connection.
+
+Upgrade Hermes to v0.22.4 before installing this plugin. Replace the complete
+plugin directory in every enabled profile, retain each profile's outer `.env`,
+keys and enablement, and restart the shared Gateway once. Keep
+`plugins.isolation: in_process`. No Worker, Android or macOS update is required.
+The 0.3.9 reconnect backoff and stream deduplication remain unchanged. Local
+checks cover actual lock files and a competing process as well as messaging,
+approval, attachments and profile isolation; they do not prove NAS networking.
+
+Version 0.3.9 reduces avoidable relay work without changing the protocol:
+
+- Reconnect delay grows exponentially, with 75–100% jitter and a 30-second ceiling.
+  Only a connection lasting at least 60 seconds resets it; brief successful
+  handshakes no longer produce a continuous one-second reconnect loop.
+- Identical intermediate stream edits are skipped only after their ACK on the
+  same connection. The memory-only cache holds at most 128 chat/target entries
+  and stores content digests. Failed, cancelled, concurrent superseded and old
+  connection ACKs do not establish cache entries. Final edits always transmit.
+- Existing encryption, durable final messages, ACK/HTTP fallback, checkpoint
+  replay, attachments, commands and interaction cards remain in place.
+
+No Worker deployment, paid service or polling endpoint is added. Android 2.24
+separately adds foreground health checks and network recovery; install that APK
+for the Android improvement. The plugin remains compatible with existing clients.
+These changes reduce unnecessary work; future usage still depends on traffic and
+all services sharing the account's free allowances.
+
+Version 0.3.9 retains the 0.3.8 fix for ordinary-message admission in Hermes v0.22.1's unified
+Gateway. The adapter's typing epoch now lives on the in-process event object
+instead of in `MessageEvent.metadata`: canonical durable admission accepts a
+closed metadata schema and rejected the old custom field with `invalid_params`.
+The epoch stays out of the persisted input and model context; existing typing,
+queued-message and cancellation behavior is retained. Dependencies and the
+Cloudflare wire protocol are unchanged. Keep `plugins.isolation: in_process`;
+platform adapters do not support `host` isolation. Replace the plugin in every
+enabled profile, keep its parent `.env` and keys, and restart the owning Gateway
+once. The local verification includes the real GatewayRunner and SQLite session
+authority with synthetic model execution and transport; NAS networking is not
+covered by that check.
+
+Version 0.3.7 fixes installation compatibility with Hermes `v2026.9.24`.
+The cryptography requirement is now `>=50,<51`, which includes Hermes' pinned
+50.0.0 instead of forcing a downgrade below 48. The existing websockets range
+`>=14,<17` includes Hermes' pinned 15.0.1. The manifest declares both packages,
+so Hermes can check them against core and other enabled plugins during managed
+installation and reapply them after a Hermes update rebuilds the environment.
+The minimum Hermes version is declared as 0.21.5; releases below that are outside
+this plugin release's supported range.
+
+Replace the complete `cloudflare_chat` directory in every served profile,
+preserve each profile's `.env`, keys and enablement, and restart its owning
+Gateway. For a multiplex Gateway, restart the single owner after replacing all
+served profiles. No Worker or Android/macOS update is required. In-flight
+interactive prompts do not survive a Gateway restart; send a new request after
+upgrading. Validation uses the exact Hermes tag in an isolated local environment;
+NAS networking and installed-client checks remain deployment checks.
 
 Version 0.3.6 adopts Hermes' current `ExecApprovalPrompt` interface. The adapter
 now implements `_send_exec_approval_prompt`; the inherited `send_exec_approval`

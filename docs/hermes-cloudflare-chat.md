@@ -154,8 +154,12 @@ hermes profile list
 ```
 
 把仓库 `integrations/hermes-cloudflare-chat/cloudflare_chat/` 的完整内容复制到每个
-需要聊天能力的 profile。将 `requirements.txt` 安装到运行 `hermes` 的同一个
-Python/虚拟环境中；不要在插件目录保存 secret。
+需要聊天能力的 profile。0.3.10 面向 Hermes `v0.22.4`，清单声明最低
+Hermes 版本及 `python_dependencies`，由 Hermes 的原生插件安装/更新流程管理依赖。
+手工复制目录不会自动安装依赖；如需手工补装，用运行 `hermes` 的同一个 Python/
+虚拟环境安装本版 `requirements.txt`。正确升级的目标 Hermes 环境已有满足要求的
+cryptography 50.0.1 和 websockets 15.0.1，无需强制重装，也不要再安装旧版插件的
+requirements。不要在插件目录保存 secret。
 
 每个 profile 都有独立的插件启用配置。复制完成后为 `personal` 单独启用，并授予
 适配器注册消息工具所需的 override 权限：
@@ -217,6 +221,60 @@ hermes -p personal gateway restart
 hermes status
 hermes -p personal status
 ```
+
+### 插件 0.3.10：Hermes v0.22.4 连接锁适配
+
+最低 Hermes 版本为 `0.22.4`。修正上游获取锁的二元组判断，并从新的
+`gateway.status_scoped_locks` 模块释放锁；锁冲突时停止连接，断开时删除实际锁文件。
+缺少锁接口时不再静默跳过锁保护。保留 0.3.9 的重连退避与流式去重。
+
+先升级 Hermes，再替换每个已启用 profile 的完整插件目录，保留外层 `.env`、密钥和
+启用配置，保持 `plugins.isolation: in_process`，最后统一重启共享 Gateway 一次。
+无需更新 Worker 或 Android/macOS 客户端。
+交付包和验证边界见 [0.3.10 发布记录](hermes-cloudflare-chat-0.3.10-release.md)。
+
+### 插件 0.3.9 / Android 2.24：连接恢复与免费额度优化
+
+- Android 恢复前台时检查共享连接；健康连接仅发送一次字符串 `ping`，由现有 Hub 的 Hibernation 自动回复 `pong`。10 秒内合并重复检查，8 秒无响应即退休旧连接并走现有退避重连。
+- 监听默认网络及验证状态；断网暂停重试，网络恢复或切换后重新连接。合并进行中的认证/连接请求，保持原有密钥、profile 隔离与按序号补拉。
+- 插件断线后按 1、2、4、8、16、30 秒上限退避，每次使用上限的 75–100% 随机延迟；连接稳定至少 60 秒后才重置。
+- 插件只跳过同一连接上已 ACK 的相同中间流式内容。缓存最多 128 项且不落盘；final 始终发送，失败、取消、连接变化及过期并发 ACK 不建立去重记录。
+
+保留 WebSocket、加密格式、最终回复持久化、消息 ACK/HTTP 兜底、附件、命令、审批和澄清。无需更新 Worker，不新增 HTTP 轮询或付费资源；不改变账号套餐。安卓后台进程受系统暂停/终止时，仍需进程恢复后才能重连，不承诺锁屏永远在线。
+
+插件继续要求 Hermes >=0.22.1，并保留 0.3.8 统一网关修复。各 profile 替换完整目录、保留外层 `.env`/密钥/启用配置后，统一重启共享 Gateway 一次。安卓恢复优化需另行安装 2.24 APK；macOS 客户端无需更新。
+
+验证与交付见 [0.3.9 发布记录](hermes-cloudflare-chat-0.3.9-release.md)。
+
+### 插件 0.3.8：适配 Hermes v0.22.1 的统一网关
+
+0.3.7 将输入轮次的 typing epoch 放在 `MessageEvent.metadata` 中。Hermes v0.22.1
+的统一网关只接受规定的持久化 metadata 字段，因此普通消息在进入队列时会被
+`invalid_params` 拒绝；只用合成消息 handler 的测试无法发现这个问题。
+
+0.3.8 把该状态移到 event 的进程内属性，不进入持久队列或模型上下文；保留原有
+输入状态轮次隔离、取消、排队和重连机制。最低 Hermes 版本改为 `>=0.22.1`，
+依赖范围、加密格式、Worker 和客户端协议不变。保持 `plugins.isolation: in_process`，
+不要为该平台适配器开启 `host` 隔离。
+
+替换每个已启用 profile 的完整插件目录，保留 profile 外层的 `.env`、密钥及启用配置；
+全部替换后重启共同的 Gateway 一次。验证范围和复现命令见
+[v0.22.1 兼容性报告](hermes-cloudflare-chat-v0.22.1-compatibility.md)。
+
+### 插件 0.3.7：对齐 Hermes v2026.9.24 的依赖管理
+
+Hermes `v2026.9.24` 固定要求 cryptography 50.0.0，而 0.3.6 的依赖上限 `<48`
+会造成联合解析失败，或在单独安装插件依赖时触发降级。0.3.7 将范围修正为
+`cryptography>=50,<51`，保留与 Hermes websockets 15.0.1 匹配的 `>=14,<17`。
+
+`plugin.yaml` 新增与 `requirements.txt` 一致的 `python_dependencies`，让 Hermes
+在安装插件及更新后重建环境时能读取这些依赖，并与 core/其他已启用插件联合检查。
+同时声明 `requires_hermes: ">=0.21.5"`，明确本版支持的最低 Hermes 版本。
+
+用户替换每个已启用 profile 的完整插件目录，保留 profile 外层的 `.env`、密钥及
+启用配置，再重启所属 Gateway；multiplex 模式替换全部目录后只重启拥有者一次。
+重启后用新请求检查聊天、长回复、审批按钮和附件。无需部署 Worker 或更新客户端。
+本版修复安装/依赖管理问题，聊天与加密协议沿用 0.3.6 的实现。
 
 ### 插件 0.3.6：采用新版 Hermes 授权按钮接口
 

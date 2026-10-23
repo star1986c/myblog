@@ -1,9 +1,13 @@
 name: cloudflare_chat
 label: Cloudflare Chat
 kind: platform
-version: 0.3.6
+version: 0.3.10
+requires_hermes: ">=0.22.4"
 description: End-to-end encrypted Cloudflare chat with rich files and media for a private Hermes NAS.
 author: superstar1014
+python_dependencies:
+  - "cryptography>=50,<51"
+  - "websockets>=14,<17"
 requires_env:
   - name: HERMES_CF_RELAY_URL
     description: Cloudflare relay WebSocket URL.

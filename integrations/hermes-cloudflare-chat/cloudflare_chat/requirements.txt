@@ -1,2 +1,2 @@
-cryptography>=45,<48
+cryptography>=50,<51
 websockets>=14,<17

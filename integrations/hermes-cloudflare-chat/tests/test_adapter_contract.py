@@ -166,6 +166,10 @@ def install_hermes_stubs():
     platforms.base = base
     gateway.config = config
     gateway.platforms = platforms
+    status = types.ModuleType("gateway.status")
+    status.acquire_scoped_lock = lambda scope, identity: (True, None)
+    scoped_locks = types.ModuleType("gateway.status_scoped_locks")
+    scoped_locks.release_scoped_lock = lambda scope, identity: None
 
     hermes_constants = types.ModuleType("hermes_constants")
     hermes_constants.get_hermes_home = lambda: __import__("pathlib").Path.home() / ".hermes"
@@ -174,6 +178,8 @@ def install_hermes_stubs():
         "agent": agent,
         "agent.secret_scope": secret_scope,
         "gateway": gateway,
+        "gateway.status": status,
+        "gateway.status_scoped_locks": scoped_locks,
         "gateway.config": config,
         "gateway.platforms": platforms,
         "gateway.platforms.base": base,
@@ -249,6 +255,35 @@ class AdapterContractTests(unittest.TestCase):
 
     def test_requirements_accept_the_production_contract(self):
         self.assertTrue(self.adapter.check_requirements())
+
+    def test_lock_conflict_prevents_connecting_to_relay(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        with patch("gateway.status.acquire_scoped_lock", return_value=(False, {"pid": 12345})), \
+                patch.object(instance, "_connection_loop", new_callable=AsyncMock) as connect, \
+                patch.object(instance, "_set_fatal_error", create=True) as fatal:
+            self.assertFalse(asyncio.run(instance.connect()))
+        connect.assert_not_called()
+        self.assertIsNone(instance._lock_key)
+        self.assertEqual(fatal.call_args.args[0], "lock_conflict")
+
+    def test_lock_is_released_through_current_upstream_module_once(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        with patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+                patch("gateway.status_scoped_locks.release_scoped_lock") as release:
+            self.assertTrue(instance._acquire_lock())
+            key = instance._lock_key
+            self.assertIsNotNone(key)
+            instance._release_lock()
+            instance._release_lock()
+        release.assert_called_once_with("cloudflare_chat", key)
+        self.assertIsNone(instance._lock_key)
+
+    def test_missing_lock_backend_does_not_allow_unlocked_connection(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        with patch.dict(sys.modules, {"gateway.status": None}):
+            with self.assertRaises(ImportError):
+                instance._acquire_lock()
+        self.assertIsNone(instance._lock_key)
 
     def _profile_values(self, name="personal", key_byte=1):
         return {
@@ -405,7 +440,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.6")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.10")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -659,6 +694,134 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(payload["text"], "日报附件")
         self.assertEqual(payload["attachments"][0]["name"], "daily-report.pdf")
         self.assertEqual(payload["attachments"][0]["contentType"], "application/pdf")
+
+    def test_stream_dedup_only_skips_acknowledged_intermediate_and_never_final(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._socket = object()
+            sent = []
+            async def ack(frame, _identity):
+                sent.append(frame)
+            with patch.object(instance, "_send_and_wait_for_ack", side_effect=ack):
+                for content, final in [("part", False), ("part", False), ("more", False),
+                                       ("more", True), ("more", True), ("more", False)]:
+                    result = await instance.edit_message("primary", "42", content, finalize=final)
+                    self.assertTrue(result.success)
+                    self.assertEqual(result.message_id, "42")
+            self.assertEqual(len(sent), 5)
+            self.assertEqual([f["final"] for f in sent], [False, False, True, True, False])
+            self.assertEqual(instance._cipher.decrypt_message(sent[2]["message"],
+                             expected_sender="agent")["text"], "more")
+        asyncio.run(scenario())
+
+    def test_stream_failed_ack_reconnect_and_profile_targets_do_not_dedup(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._socket = object()
+            with patch.object(instance, "_send_and_wait_for_ack", new_callable=AsyncMock) as ack:
+                ack.side_effect = TimeoutError("no ack")
+                self.assertFalse((await instance.edit_message("primary", "42", "part")).success)
+                ack.side_effect = None
+                await instance.edit_message("primary", "42", "part")
+                await instance.edit_message("primary", "42", "part")
+                self.assertEqual(ack.await_count, 2)
+                instance._socket = object()
+                await instance.edit_message("primary", "42", "part")
+                await instance.edit_message("primary", "43", "part")
+                await instance.edit_message("other", "42", "part")
+                self.assertEqual(ack.await_count, 5)
+                instance._socket = None
+                await instance.edit_message("primary", "42", "part")
+                self.assertEqual(ack.await_count, 6)
+        asyncio.run(scenario())
+
+    def test_stream_cache_is_bounded_and_old_ack_cannot_replace_newer_update(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._socket = object()
+            first_started, release = asyncio.Event(), asyncio.Event()
+            calls = []
+            async def ack(frame, _identity):
+                content = instance._cipher.decrypt_message(frame["message"], expected_sender="agent")["text"]
+                calls.append(content)
+                if len(calls) == 1:
+                    first_started.set()
+                    await release.wait()
+            with patch.object(instance, "_send_and_wait_for_ack", side_effect=ack):
+                first = asyncio.create_task(instance.edit_message("primary", "42", "old"))
+                await first_started.wait()
+                await instance.edit_message("primary", "42", "new")
+                release.set()
+                await first
+                await instance.edit_message("primary", "42", "new")
+                self.assertEqual(calls, ["old", "new"])
+                for seq in range(1, self.adapter.MAX_STREAM_EDIT_CACHE + 20):
+                    await instance.edit_message("primary", str(seq), "part")
+                self.assertEqual(len(instance._stream_edits), self.adapter.MAX_STREAM_EDIT_CACHE)
+                before = len(calls)
+                await instance.edit_message("primary", "1", "part")
+                self.assertEqual(len(calls), before + 1)
+        asyncio.run(scenario())
+
+    def test_stream_ack_from_retired_socket_and_cancelled_edit_are_not_cached(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            instance._socket = object()
+            async def reconnect(*_args):
+                instance._socket = object()
+            with patch.object(instance, "_send_and_wait_for_ack", side_effect=reconnect):
+                self.assertTrue((await instance.edit_message("primary", "42", "part")).success)
+            self.assertFalse(instance._stream_edits)
+            with patch.object(instance, "_send_and_wait_for_ack", side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await instance.edit_message("primary", "42", "part")
+            self.assertFalse(instance._stream_edits)
+        asyncio.run(scenario())
+
+    def test_reconnect_backoff_survives_short_connections_and_resets_after_stability(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            clock = [0.0]
+            delays = []
+            connects = [0]
+            socket = LoopbackRelaySocket()
+            async def receive(*_args):
+                connects[0] += 1
+                clock[0] += 61 if connects[0] == 7 else 0.1
+            async def sleep(delay):
+                delays.append(delay)
+                if len(delays) == 8:
+                    instance._closing = True
+            with patch.object(self.adapter, "websocket_connect", return_value=socket), patch.object(
+                instance, "_receive_frames", side_effect=receive
+            ), patch.object(self.adapter.time, "monotonic", side_effect=lambda: clock[0]), patch.object(
+                self.adapter.random, "uniform", side_effect=lambda lower, upper: upper
+            ) as jitter, patch.object(self.adapter.asyncio, "sleep", side_effect=sleep):
+                await instance._connection_loop()
+            self.assertEqual(delays, [1, 2, 4, 8, 16, 30, 1, 2])
+            self.assertEqual(jitter.call_args_list[5], call(22.5, 30.0))
+            self.assertFalse(instance._ready.is_set())
+            self.assertIsNone(instance._socket)
+        asyncio.run(scenario())
+
+    def test_connection_failures_back_off_and_cancellation_stops_retry(self):
+        async def scenario():
+            instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+            delays = []
+            async def sleep(delay):
+                delays.append(delay)
+                if len(delays) == 4:
+                    raise asyncio.CancelledError
+            with patch.object(self.adapter, "websocket_connect", side_effect=OSError("offline")) as connect, patch.object(
+                self.adapter.random, "uniform", side_effect=lambda lower, upper: lower
+            ), patch.object(self.adapter.asyncio, "sleep", side_effect=sleep):
+                with self.assertRaises(asyncio.CancelledError):
+                    await instance._connection_loop()
+            self.assertEqual(delays, [0.75, 1.5, 3, 6])
+            self.assertEqual(connect.call_count, 4)
+            self.assertIsNone(instance._socket)
+            self.assertFalse(instance._stream_edits)
+        asyncio.run(scenario())
 
     def test_edit_message_sends_encrypted_update_and_keeps_original_message_id(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
