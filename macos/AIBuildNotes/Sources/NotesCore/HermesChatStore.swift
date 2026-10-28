@@ -44,6 +44,7 @@ public final class HermesChatStore: ObservableObject {
   private var nextTypingGeneration: UInt64 = 0
   private var started = false
   private var applicationActive = true
+  public private(set) var isTransportSuspended = false
   private var reconnectAttempt = 0
   private var configurationGeneration = 0
   private var recentRefreshProfileID: String?
@@ -269,16 +270,39 @@ public final class HermesChatStore: ObservableObject {
     if active, let selectedProfileID { unreadByProfile[selectedProfileID] = 0 }
   }
 
+  /// iOS suspends sockets in the background. Preserve history/checkpoints while
+  /// explicitly cancelling transport work; macOS callers keep their current behavior.
+  public func suspendTransport() async {
+    isTransportSuspended = true
+    applicationActive = false
+    cancelScheduledReconnect()
+    clearTyping()
+    isRefreshingMessages = false
+    recentRefreshProfileID = nil
+    // Flush accepted events before invalidating their generation. Otherwise the
+    // in-memory resume cursor could skip a message never written to history.
+    await flushPendingMessages()
+    guard isTransportSuspended else { return }
+    configurationGeneration += 1
+    await client.disconnect()
+    if isTransportSuspended { connectionState = .idle }
+  }
+
+  public func resumeTransport() async {
+    isTransportSuspended = false
+    await reconnect()
+  }
+
   public func reconnect() async {
     cancelScheduledReconnect()
     reconnectAttempt = 0
     await connectConfiguredProfiles()
   }
 
-  public func refreshRecentMessages(days: Int? = nil) async {
+  public func refreshRecentMessages(days: Int? = nil, spaceID requestedSpaceID: String? = nil) async {
     let requestedDays = Self.normalizedRefreshLookbackDays(days ?? refreshLookbackDays)
     guard !isRefreshingMessages,
-      let spaceID = selectedProfileID,
+      let spaceID = requestedSpaceID ?? selectedProfileID,
       configuredProfileIDs.contains(spaceID)
     else { return }
     let now = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -294,9 +318,10 @@ public final class HermesChatStore: ObservableObject {
 
   public func send(
     text: String,
-    fileURLs: [URL] = []
+    fileURLs: [URL] = [],
+    spaceID requestedSpaceID: String? = nil
   ) async -> Bool {
-    guard let spaceID = selectedProfileID,
+    guard let spaceID = requestedSpaceID ?? selectedProfileID,
       let crypto = cryptos[spaceID],
       !isSending
     else {
@@ -380,9 +405,10 @@ public final class HermesChatStore: ObservableObject {
 
   public func chooseInteractionOption(
     message: HermesChatMessage,
-    option: HermesChatInteractionOption
+    option: HermesChatInteractionOption,
+    spaceID requestedSpaceID: String? = nil
   ) async {
-    guard let spaceID = selectedProfileID, let interaction = message.interaction,
+    guard let spaceID = requestedSpaceID ?? selectedProfileID, let interaction = message.interaction,
       interaction.state == "pending", !option.disabled
     else { return }
     let now = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -568,6 +594,7 @@ public final class HermesChatStore: ObservableObject {
   private func connectConfiguredProfiles(
     recentSyncSinceByProfile: [String: Int64] = [:]
   ) async {
+    guard !isTransportSuspended, !previewsOnly else { return }
     clearTyping()
     let generation = configurationGeneration
     guard started, !configuredProfileIDs.isEmpty else {
@@ -579,7 +606,7 @@ public final class HermesChatStore: ObservableObject {
     do {
       let ids = profiles.map(\.id).filter(configuredProfileIDs.contains)
       let ticket = try await api.hermesChatMultiplexTicket(spaceIDs: ids)
-      guard generation == configurationGeneration else { return }
+      guard generation == configurationGeneration, !isTransportSuspended else { return }
       let configurations = try ids.map { id in
         guard let crypto = cryptos[id] else { throw HermesChatCryptoError.invalidKey }
         let recentSince = recentSyncSinceByProfile[id] ?? openingSync.sinceMilliseconds(spaceID: id)
@@ -598,7 +625,7 @@ public final class HermesChatStore: ObservableObject {
   }
 
   func handle(_ event: HermesChatClientEvent) async {
-    guard started else { return }
+    guard started, !isTransportSuspended else { return }
     switch event {
     case .ready(let eventGeneration):
       guard eventGeneration == configurationGeneration else { return }
@@ -860,7 +887,7 @@ public final class HermesChatStore: ObservableObject {
   }
 
   private func handleDisconnect(reason: String) {
-    guard started else { return }
+    guard started, !isTransportSuspended else { return }
     clearTyping()
     connectionState = .disconnected(reason)
     recentRefreshProfileID = nil

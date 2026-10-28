@@ -54,6 +54,23 @@ struct NotesSyncTests {
     #expect(cache.load(scope: await api().notesSyncScope(username: "admin"), key: key) == nil)
   }
 
+  @Test @MainActor func refreshKeepsTheOpenNoteSelected() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    NotesSyncURLProtocol.configure([
+      (200, try page("e:1", reset: true, changes: [change(note("one")), change(note("two"))])),
+      (200, try page("e:2", changes: [change(note("two", body: "remote update"))])),
+    ])
+    let store = NotesStore(api: api(), syncCache: NotesSyncCache(directory: directory))
+    await store.login(username: "admin", password: "test-password")
+    store.selectedID = "one" // This is not the first row (sorted by descending ID).
+    await store.refresh()
+    #expect(store.selectedID == "one")
+    store.updateSelectedContent("local edit")
+    #expect(store.activeNotes.first { $0.id == "one" }?.content.content == "local edit")
+    #expect(store.activeNotes.first { $0.id == "two" }?.content.content == "remote update")
+  }
+
   @Test func paginationDeletionAndEpochReset() async throws {
     NotesSyncURLProtocol.configure([
       (200, try page("e:1", reset: true, more: true, changes: [change(note("one")), change(note("old"))])),

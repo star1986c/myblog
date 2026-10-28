@@ -6,6 +6,63 @@ import Testing
 
 @Suite("Automatic note saving", .serialized)
 struct AutoSaveTests {
+  @Test("A failed background save keeps unlocked protected edits for retry")
+  @MainActor
+  func failedRelockPreservesEdits() async throws {
+    let password = "protected-test-password"
+    let keyText = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    let key = try NoteCrypto.importDataKey(keyText)
+    let protection = try NoteProtectionCrypto.createKeyring(password: password)
+    let noteID = "protected-background-note"
+    let protected = try NoteProtectionCrypto.encryptBody("original", noteID: noteID, using: protection.key)
+    let payload = try NoteCrypto.encrypt(NoteContent(title: "Protected", content: "", protectedContent: protected), id: noteID, using: key)
+    AutoSaveURLProtocol.configure(keyText: keyText, note: EncryptedNoteEnvelope(id: noteID, version: 1, ciphertext: payload.ciphertext, nonce: payload.nonce, isLocked: true))
+    AutoSaveURLProtocol.protectionKeyring = NoteProtectionKeyring(iterations: protection.payload.iterations, salt: protection.payload.salt, wrappedKey: protection.payload.wrappedKey, nonce: protection.payload.nonce)
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [AutoSaveURLProtocol.self]
+    let store = NotesStore(api: NotesAPIClient(baseURL: URL(string: "https://notes.test/")!, session: URLSession(configuration: config)), autoSaveDelay: .seconds(3600))
+    await store.login(username: "admin", password: "test-password")
+    try store.unlockSelected(password: password)
+    store.updateSelectedContent("unsaved private edit")
+    AutoSaveURLProtocol.rejectUpdates = true
+    await store.relock()
+    #expect(store.selectedDocument?.content.content == "unsaved private edit")
+    #expect(store.unlockedProtectedNoteID == noteID)
+    #expect(store.saveState == .failed)
+    AutoSaveURLProtocol.rejectUpdates = false
+    await store.relock()
+    #expect(store.unlockedProtectedNoteID == nil)
+    #expect(store.selectedDocument?.content.content == "")
+    try store.unlockSelected(password: password)
+    #expect(store.selectedDocument?.content.content == "unsaved private edit")
+  }
+
+  @Test("Manual and background saves coalesce instead of racing the same revision")
+  @MainActor
+  func simultaneousSavesUseOneRequest() async throws {
+    let keyText = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    let key = try NoteCrypto.importDataKey(keyText)
+    let payload = try NoteCrypto.encrypt(NoteContent(title: "Concurrent", content: "initial"), id: "save-race", using: key)
+    AutoSaveURLProtocol.configure(keyText: keyText, note: EncryptedNoteEnvelope(id: "save-race", version: 1, ciphertext: payload.ciphertext, nonce: payload.nonce))
+    AutoSaveURLProtocol.updateDelay = 0.08
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [AutoSaveURLProtocol.self]
+    let store = NotesStore(api: NotesAPIClient(baseURL: URL(string: "https://notes.test/")!, session: URLSession(configuration: config)), autoSaveDelay: .seconds(3600))
+    await store.login(username: "admin", password: "test-password")
+    store.updateSelectedContent("edited")
+    async let manual = store.saveSelected()
+    async let background = store.saveSelected()
+    let results = await (manual, background)
+    #expect(results.0 && results.1)
+    #expect(AutoSaveURLProtocol.updateRequestCount == 1)
+    #expect(store.saveState == .saved)
+    #expect(store.selectedDocument?.envelope.revision == 2)
+
+    // A failed attachment upload is observable by the UI, which keeps its local recording.
+    #expect(!(await store.addImage(data: Data([1, 2]), contentType: "audio/mp4", pixelWidth: 1, pixelHeight: 1, durationMillis: 1000)))
+    #expect(store.errorMessage != nil)
+  }
+
   @Test("Manual save is immediate while automatic save waits for a quiet period")
   @MainActor
   func debouncedSaveCompletes() async throws {
@@ -60,12 +117,18 @@ struct AutoSaveTests {
 }
 
 private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
+  nonisolated(unsafe) static var protectionKeyring: NoteProtectionKeyring?
+  nonisolated(unsafe) static var rejectUpdates = false
+  nonisolated(unsafe) static var updateDelay: TimeInterval = 0
   nonisolated(unsafe) private static var keyText = ""
   nonisolated(unsafe) private static var note: EncryptedNoteEnvelope?
   nonisolated(unsafe) private(set) static var updateRequestCount = 0
   nonisolated(unsafe) private(set) static var loginRequestCount = 0
 
   static func configure(keyText: String, note: EncryptedNoteEnvelope) {
+    protectionKeyring = nil
+    rejectUpdates = false
+    updateDelay = 0
     self.keyText = keyText
     self.note = note
     updateRequestCount = 0
@@ -104,8 +167,10 @@ private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
       case ("GET", "/api/admin/encrypted-note-folders"):
         responseBody = try json(["folders": []])
       case ("GET", "/api/admin/note-protection-keyring"):
-        responseBody = try json(["keyring": NSNull()])
+        if let keyring = Self.protectionKeyring { responseBody = try JSONEncoder().encode(ProtectionFixture(keyring: keyring)) }
+        else { responseBody = try json(["keyring": NSNull()]) }
       case ("PUT", let path) where path == "/api/admin/encrypted-notes/\(Self.note?.id ?? "")":
+        if Self.rejectUpdates { throw URLError(.notConnectedToInternet) }
         Self.updateRequestCount += 1
         if request.value(forHTTPHeaderField: "X-CSRF-Token") != "test-csrf-token" {
           statusCode = 403
@@ -126,9 +191,14 @@ private final class AutoSaveURLProtocol: URLProtocol, @unchecked Sendable {
         httpVersion: "HTTP/1.1",
         headerFields: ["Content-Type": "application/json"]
       )!
-      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-      client?.urlProtocol(self, didLoad: responseBody)
-      client?.urlProtocolDidFinishLoading(self)
+      let deliver: @Sendable () -> Void = { [self] in
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: responseBody)
+        client?.urlProtocolDidFinishLoading(self)
+      }
+      if request.httpMethod == "PUT", Self.updateDelay > 0 {
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.updateDelay, execute: deliver)
+      } else { deliver() }
     } catch {
       client?.urlProtocol(self, didFailWithError: error)
     }
@@ -148,3 +218,5 @@ private struct NotesFixture: Encodable {
 private struct NoteFixture: Encodable {
   let note: EncryptedNoteEnvelope
 }
+
+private struct ProtectionFixture: Encodable { let keyring: NoteProtectionKeyring }

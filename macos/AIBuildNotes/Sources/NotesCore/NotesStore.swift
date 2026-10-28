@@ -25,6 +25,11 @@ public final class NotesStore: ObservableObject {
   private var dataKey: SymmetricKey?
   private var protectionKey: SymmetricKey?
   private var autoSaveTasks: [String: Task<Void, Never>] = [:]
+  private struct SaveIdentity: Hashable {
+    let generation: Int
+    let noteID: String
+  }
+  private var inFlightSaves: [SaveIdentity: Task<Bool, Never>] = [:]
   private var dirtyNoteIDs: Set<String> = []
   private var workspaceGeneration = 0
   private let autoSaveDelay: Duration
@@ -244,8 +249,8 @@ public final class NotesStore: ObservableObject {
   }
 
   public func logout() async {
-    workspaceGeneration += 1
     await flushPendingSaves()
+    workspaceGeneration += 1
     if let username = user?.username {
       syncCache.clear(scope: await api.notesSyncScope(username: username))
     }
@@ -481,7 +486,9 @@ public final class NotesStore: ObservableObject {
     guard let unlockedID = unlockedProtectedNoteID,
       noteID == nil || noteID == unlockedID
     else { return }
-    _ = await save(id: unlockedID)
+    // Keep unsaved protected content in memory if the network save fails.
+    // Mobile callers cover the UI while inactive and retry before leaving.
+    guard await save(id: unlockedID), !dirtyNoteIDs.contains(unlockedID) else { return }
     if let index = activeNotes.firstIndex(where: { $0.id == unlockedID }) {
       activeNotes[index].content.content = ""
       activeNotes[index].content.attachmentKey = nil
@@ -609,21 +616,23 @@ public final class NotesStore: ObservableObject {
     }
   }
 
+  @discardableResult
   public func addImage(
     data: Data,
     contentType: String,
     pixelWidth: Int,
-    pixelHeight: Int
-  ) async {
+    pixelHeight: Int,
+    durationMillis: Int? = nil
+  ) async -> Bool {
     guard !location.isTrash,
       !isAttachmentWorking,
       let noteID = selectedID,
       let index = activeNotes.firstIndex(where: { $0.id == noteID })
-    else { return }
-    if activeNotes[index].isProtected && !isUnlocked(activeNotes[index]) { return }
+    else { return false }
+    if activeNotes[index].isProtected && !isUnlocked(activeNotes[index]) { return false }
     guard selectedAttachments.count < 20 else {
-      errorMessage = "每篇笔记最多可以添加 20 张图片。"
-      return
+      errorMessage = "每篇笔记最多可以添加 20 个附件。"
+      return false
     }
 
     isAttachmentWorking = true
@@ -632,12 +641,12 @@ public final class NotesStore: ObservableObject {
       if activeNotes[index].content.attachmentKey == nil {
         activeNotes[index].content.attachmentKey = AttachmentCrypto.createMediaKey()
         dirtyNoteIDs.insert(noteID)
-        guard await save(id: noteID) else { return }
+        guard await save(id: noteID) else { return false }
       }
       guard selectedID == noteID,
         let current = activeNotes.firstIndex(where: { $0.id == noteID }),
         let mediaKey = activeNotes[current].content.attachmentKey
-      else { return }
+      else { return false }
       let attachmentID = UUID().uuidString.lowercased()
       let isLocked = activeNotes[current].isProtected
       let encrypted = try await Task.detached {
@@ -649,7 +658,8 @@ public final class NotesStore: ObservableObject {
           noteID: noteID,
           attachmentID: attachmentID,
           isLocked: isLocked,
-          mediaKeyValue: mediaKey
+          mediaKeyValue: mediaKey,
+          durationMillis: durationMillis
         )
       }.value
       let envelope = try await api.uploadAttachment(
@@ -657,12 +667,16 @@ public final class NotesStore: ObservableObject {
         encryptedBody: encrypted.body
       )
       await attachmentCache.store(encrypted.body, for: envelope)
-      guard selectedID == noteID else { return }
+      guard selectedID == noteID, let document = selectedDocument,
+        !document.isProtected || isUnlocked(document)
+      else { return true } // The upload succeeded even if its editor closed or locked.
       selectedAttachments.append(
         NoteAttachment(envelope: envelope, metadata: encrypted.metadata, imageData: data)
       )
+      return true
     } catch {
       errorMessage = friendlyMessage(error)
+      return false
     }
   }
 
@@ -777,7 +791,9 @@ public final class NotesStore: ObservableObject {
     if case .folder(let id) = location, !folders.contains(where: { $0.id == id }) {
       location = .allNotes
     }
-    selectedID = visibleNotes.first?.id
+    if !visibleNotes.contains(where: { $0.id == selectedID }) {
+      selectedID = visibleNotes.first?.id
+    }
     saveState = .idle
     selectedAttachments.removeAll()
   }
@@ -840,14 +856,38 @@ public final class NotesStore: ObservableObject {
 
   @discardableResult
   private func performSave(id: String) async -> Bool {
+    // Debounced, manual and background saves must not send the same revision twice.
+    guard dataKey != nil else { return true } // Local preview has no remote workspace.
+    guard dirtyNoteIDs.contains(id) else { return true }
+    let identity = SaveIdentity(generation: workspaceGeneration, noteID: id)
+    let task: Task<Bool, Never>
+    if let existing = inFlightSaves[identity] {
+      task = existing
+    } else {
+      task = Task { [weak self] in
+        guard let self else { return false }
+        defer { self.inFlightSaves.removeValue(forKey: identity) }
+        return await self.performSaveSnapshot(id: id)
+      }
+      inFlightSaves[identity] = task
+    }
+    let succeeded = await task.value
+    guard identity.generation == workspaceGeneration else { return false }
+    // Edits made during an upload need the returned revision before their own save.
+    if succeeded && dirtyNoteIDs.contains(id) { return await performSave(id: id) }
+    return succeeded
+  }
+
+  private func performSaveSnapshot(id: String) async -> Bool {
     guard let dataKey,
       let index = activeNotes.firstIndex(where: { $0.id == id })
-    else { return true }
+    else { return false }
 
+    let generation = workspaceGeneration
     var snapshot = activeNotes[index].content
     let isLocked = activeNotes[index].envelope.isLocked
     if isLocked {
-      guard unlockedProtectedNoteID == id, let protectionKey else { return true }
+      guard unlockedProtectedNoteID == id, let protectionKey else { return false }
       do {
         snapshot.protectedContent = try NoteProtectionCrypto.encryptBody(
           snapshot.content,
@@ -865,12 +905,17 @@ public final class NotesStore: ObservableObject {
     do {
       let payload = try NoteCrypto.encrypt(snapshot, id: id, using: dataKey)
       let envelope = try await api.update(payload, revision: revision)
+      guard generation == workspaceGeneration else { return false }
       guard let currentIndex = activeNotes.firstIndex(where: { $0.id == id }) else {
         return true
       }
+      let currentLocked = activeNotes[currentIndex].envelope.isLocked
       activeNotes[currentIndex].envelope = envelope
+      activeNotes[currentIndex].envelope.isLocked = currentLocked
       if activeNotes[currentIndex].content.title == snapshot.title
         && activeNotes[currentIndex].content.content == snapshot.content
+        && activeNotes[currentIndex].content.attachmentKey == snapshot.attachmentKey
+        && currentLocked == isLocked
       {
         activeNotes[currentIndex].content.protectedContent = snapshot.protectedContent
         dirtyNoteIDs.remove(id)
@@ -881,6 +926,7 @@ public final class NotesStore: ObservableObject {
       }
       return true
     } catch {
+      guard generation == workspaceGeneration else { return false }
       handleMutationError(error)
       return false
     }
@@ -922,6 +968,8 @@ public final class NotesStore: ObservableObject {
 
   private func clearSensitiveState() {
     workspaceGeneration += 1
+    for task in inFlightSaves.values { task.cancel() }
+    inFlightSaves.removeAll()
     for task in autoSaveTasks.values { task.cancel() }
     autoSaveTasks.removeAll()
     dirtyNoteIDs.removeAll()

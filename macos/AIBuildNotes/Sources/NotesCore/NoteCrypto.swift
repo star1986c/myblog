@@ -156,13 +156,19 @@ public enum AttachmentCrypto {
     noteID: String,
     attachmentID: String,
     isLocked: Bool,
-    mediaKeyValue: String
+    mediaKeyValue: String,
+    durationMillis: Int? = nil
   ) throws -> EncryptedImage {
     guard allowedContentTypes.contains(contentType) else {
       throw AttachmentCryptoError.unsupportedImage
     }
     guard !imageData.isEmpty, imageData.count <= maxPlaintextBytes else {
       throw AttachmentCryptoError.imageTooLarge
+    }
+    if contentType == "audio/mp4" {
+      guard let durationMillis, (1...300_000).contains(durationMillis) else {
+        throw AttachmentCryptoError.invalidEnvelope
+      }
     }
     let mediaKey = try NoteCrypto.importDataKey(mediaKeyValue)
     let attachmentKey = SymmetricKey(size: .bits256)
@@ -181,7 +187,7 @@ public enum AttachmentCrypto {
       pixelWidth: max(1, pixelWidth),
       pixelHeight: max(1, pixelHeight),
       plaintextBytes: imageData.count,
-      durationMillis: nil,
+      durationMillis: contentType == "audio/mp4" ? durationMillis : nil,
       objectNonce: NoteCrypto.encodeBase64URL(Data(objectNonce)),
       dataKey: NoteCrypto.encodeBase64URL(attachmentKey.withUnsafeBytes { Data($0) })
     )

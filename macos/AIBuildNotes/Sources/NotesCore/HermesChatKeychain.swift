@@ -12,7 +12,7 @@ public enum HermesChatKeychainError: LocalizedError, Sendable {
   public var errorDescription: String? {
     switch self {
     case .unexpectedStatus(let status):
-      "无法访问 macOS 钥匙串（错误 \(status)）。"
+      "无法访问系统钥匙串（错误 \(status)）。"
     }
   }
 }
@@ -47,9 +47,14 @@ public final class HermesChatKeychain: HermesChatKeyStoring, @unchecked Sendable
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
+    #if os(iOS)
+      let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    #else
+      let accessibility = kSecAttrAccessibleAfterFirstUnlock
+    #endif
     let attributes: [String: Any] = [
       kSecValueData as String: data,
-      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+      kSecAttrAccessible as String: accessibility,
     ]
     let update = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     if update == errSecSuccess { return }

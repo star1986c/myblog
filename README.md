@@ -2,7 +2,7 @@
 
 这是个人主要的移动办公与 AI 工具集成目录。仓库以 **My Notes** 原生客户端为入口，把端到端加密笔记、Hermes AI 助手、Cloudflare 云中继与账单观察整合在同一套 macOS / Android 工作流中；同时保留 AI Build Lab 公共站点和浏览器端小工具。
 
-这已经不再是一个单纯的个人博客项目。当前代码包含两个原生客户端、Cloudflare Worker 后端、NAS 端 Hermes 插件、数据迁移、公共静态站点和跨端一致性测试。
+这已经不再是一个单纯的个人博客项目。当前代码包含 macOS、Android 原生客户端和首版 iPhone 工程、Cloudflare Worker 后端、NAS 端 Hermes 插件、数据迁移、公共静态站点和跨端一致性测试。
 
 ## 当前能力
 
@@ -50,7 +50,8 @@ flowchart LR
 | 路径 | 职责 |
 | --- | --- |
 | `android/MyNotes/` | Android 16 原生客户端，Java 17 + OkHttp |
-| `macos/AIBuildNotes/` | macOS 14+ SwiftUI 客户端与 `NotesCore` |
+| `macos/AIBuildNotes/` | macOS 14+ SwiftUI 客户端与 macOS/iOS 共享的 `NotesCore` |
+| `ios/MyNotes/` | iOS 17+ SwiftUI 个人客户端，免费账号签名安装，暂不含后台推送 |
 | `src/` | Worker 路由、认证、加密笔记仓储与 Hermes Durable Objects |
 | `integrations/hermes-cloudflare-chat/` | 部署到 NAS 各 Hermes profile 的 Python 插件 |
 | `migrations/` | D1 账号、笔记、文件夹、附件与设备令牌迁移 |
@@ -100,6 +101,10 @@ release App 会输出到 `output/My Notes.app`。传入 `debug` 可生成 `outpu
 Mac 应用启动后默认进入 Hermes 聊天，并为每个已配置密钥的会话自动同步最近 24 小时的消息，与本地历史合并去重。同步中断会继续重试，完成后恢复按序号增量同步；手动刷新仍使用原有的时间范围设置。
 
 Mac 登录成功后会自动记住本机，设备令牌保存在本机钥匙串，不保存密码。7 天会话过期或 Cookie 丢失时自动恢复登录，并重试认证失败的请求；设备令牌每次续期后有效 90 天。首次升级需登录一次以登记设备；主动退出会清除本机令牌并尝试在服务器撤销。连续 90 天未续期或令牌被撤销时仍需重新登录。
+
+### iPhone（个人版）
+
+用 Xcode 打开 `ios/MyNotes/MyNotes.xcodeproj`，选择 `MyNotes` scheme。主要笔记、Hermes、媒体与保护功能已接入；免费账号安装、与安卓的差异及验证边界见 [iPhone 使用说明](ios/MyNotes/README.md)。当前尚未真机安装，不需要部署后端。
 
 ### Android
 
@@ -169,6 +174,7 @@ npm run deploy
 
 ## 维护约定
 
+- iPhone 首版的能力、平台例外与验证边界单独记录在 `ios/MyNotes/README.md`；后续修改共享核心时也需构建并测试 iOS。
 - Hermes 新功能只有在 Android、macOS、[`docs/hermes-native-client-capabilities.json`](docs/hermes-native-client-capabilities.json) 和仓库级 parity tests 同步更新后才算完成。
 - 修改密文结构、AAD、revision、缓存键或 profile id 前必须先设计兼容迁移；这些标识可能已绑定现有生产数据。
 - 修改 CSS 或 JavaScript 时使用新的指纹文件名，并同步更新引用页面。

@@ -6,6 +6,7 @@
 
 | 文档 | 用途 | 维护时机 |
 | --- | --- | --- |
+| [`../ios/MyNotes/README.md`](../ios/MyNotes/README.md) | iPhone 个人版、免费签名安装、平台差异和验证边界 | iOS 功能、安装流程或验证状态变化时 |
 | [`../README.md`](../README.md) | 工作区定位、系统结构、模块地图、安全边界与常用命令 | 模块职责、平台支持或主工作流变化时 |
 | [`hermes-cloudflare-chat.md`](hermes-cloudflare-chat.md) | Hermes Cloudflare 中继架构、NAS 多 profile 部署、密钥配置、清理和回滚 | Worker、插件、原生端协议或部署流程变化时 |
 | [`hermes-native-client-capabilities.json`](hermes-native-client-capabilities.json) | Android / macOS Hermes 功能完成契约，由测试读取 | 任一端新增、删除或改变 Hermes 能力时 |
