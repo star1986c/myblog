@@ -207,7 +207,7 @@ class HermesChatRoom extends DurableObject {
       if (frame.type === "edit") {
         const edit = validateHermesChatEdit(frame, attachment.role);
         this.ensureEditableTarget(edit.targetSeq);
-        const stored = edit.final ? this.storeStreamEdit(edit) : null;
+        const stored = edit.final ? this.storeStreamEdit(edit, attachment.spaceId) : null;
         if (stored && !stored.duplicate) await this.ensureCleanupAlarm();
         socket.send(JSON.stringify({
           v: CHAT_PROTOCOL_VERSION,
@@ -495,16 +495,29 @@ class HermesChatRoom extends DurableObject {
 
   storeMessage(envelope, spaceId) {
     // Notification metadata is persisted with the incoming event before ACK.
-    // Streaming edits never enqueue another notification for the same message.
+    // Preview/progress messages are silent; authorization prompts remain immediate.
     return this.ctx.storage.transactionSync(() => {
       const stored = this.storeEvent(envelope.id, envelope.sender, envelope);
-      if (!stored.duplicate && envelope.sender === "agent") queueBarkNotification(this.ctx, this.env, envelope.id, spaceId);
+      if (!stored.duplicate && envelope.sender === "agent" &&
+          !["stream", "silent"].includes(envelope.notification)) {
+        queueBarkNotification(this.ctx, this.env, envelope.id, spaceId);
+      }
       return stored;
     });
   }
 
-  storeStreamEdit(edit) {
-    return this.storeEvent(edit.message.id, "agent", edit);
+  storeStreamEdit(edit, spaceId) {
+    return this.ctx.storage.transactionSync(() => {
+      // Read before storeEvent can prune the original at the retention boundary.
+      const target = this.ctx.storage.sql.exec("SELECT id, envelope FROM messages WHERE seq = ?", edit.targetSeq).toArray()[0];
+      const stored = this.storeEvent(edit.message.id, "agent", edit);
+      if (!stored.duplicate && edit.final && target &&
+          JSON.parse(target.envelope).notification === "stream") {
+        // All final revisions/retries use the original ID for per-device deduplication.
+        queueBarkNotification(this.ctx, this.env, target.id, spaceId);
+      }
+      return stored;
+    });
   }
 
   storeEvent(id, senderRole, event) {

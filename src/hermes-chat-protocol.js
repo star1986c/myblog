@@ -230,6 +230,10 @@ function normalizeHermesChatReplaySince(value, now = Date.now()) {
 }
 
 function validateHermesChatMessage(frame, expectedSender) {
+  if (frame.notification !== undefined &&
+      (expectedSender !== "agent" || !["stream", "silent", "approval"].includes(frame.notification))) {
+    throw new ServiceError("Invalid Hermes chat notification hint.", 400);
+  }
   if (frame.v !== CHAT_PROTOCOL_VERSION || frame.type !== "message") {
     throw new ServiceError("Unsupported Hermes chat message.", 400);
   }
@@ -267,6 +271,7 @@ function validateHermesChatMessage(frame, expectedSender) {
     type: "message",
     id: frame.id,
     sender: frame.sender,
+    ...(frame.notification === undefined ? {} : { notification: frame.notification }),
     sentAt: frame.sentAt,
     encrypted: {
       alg: "A256GCM",

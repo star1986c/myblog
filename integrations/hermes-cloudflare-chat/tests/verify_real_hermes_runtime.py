@@ -280,6 +280,7 @@ class RealHermesCompatibility(unittest.IsolatedAsyncioTestCase):
         messages = [f for f in relay.sent if f["type"] == "message"]
         edits = [f for f in relay.sent if f["type"] == "edit"]
         self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].get("notification"), "stream")
         self.assertTrue(edits[-1]["final"])
         self.assertTrue(all(f["targetSeq"] == 101 for f in edits))
         self.assertEqual(self.payloads(adapter, relay)[-1]["text"], "First second.")

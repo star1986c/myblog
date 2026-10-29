@@ -58,7 +58,7 @@ MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
 APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.10"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.11"
 RECONNECT_STABLE_SECONDS = 60.0
 RECONNECT_MAX_SECONDS = 30.0
 MAX_STREAM_EDIT_CACHE = 128
@@ -380,6 +380,14 @@ class CloudflareChatAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         text = str(content or "")
+        # Hermes marks editable previews and interim tool/progress output. Keep
+        # these hints outside ciphertext so the relay never needs message keys.
+        hints = {}
+        if isinstance(metadata, dict):
+            if metadata.get("_interim_send") is True:
+                hints["notification"] = "silent"
+            elif metadata.get("expect_edits") is True and metadata.get("notify") is not True:
+                hints["notification"] = "stream"
         attachments: list[dict[str, Any]] = []
         delivered_spans: list[tuple[int, int]] = []
         for start, end, source in _inline_image_candidates(text):
@@ -395,6 +403,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         return await self._send_payload(
             _remove_delivered_spans(text, delivered_spans),
             attachments,
+            **hints,
         )
 
     async def edit_message(
@@ -1950,6 +1959,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
         attachments: list[dict[str, Any]],
         *,
         interaction: dict[str, Any] | None = None,
+        notification: str | None = None,
     ):
         envelope = self._cipher.encrypt_message(
             sender="agent",
@@ -1957,6 +1967,12 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             attachments=attachments,
             interaction=interaction,
         )
+        if interaction is not None:
+            # Approval, slash confirmations and other choices must not wait for
+            # a final reply that cannot happen until the user responds.
+            envelope["notification"] = "approval"
+        elif notification is not None:
+            envelope["notification"] = notification
         try:
             ack = await self._send_and_wait_for_ack(envelope, envelope["id"])
             return SendResult(success=True, message_id=str(ack.get("seq") or envelope["id"]))

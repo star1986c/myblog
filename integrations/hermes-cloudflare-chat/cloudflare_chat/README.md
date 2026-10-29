@@ -1,5 +1,11 @@
 # Cloudflare Chat Hermes plugin
 
+## 0.3.11: Bark notification timing
+
+Requires the matching relay update for notification hints. Hermes editable previews (`expect_edits`) and interim progress (`_interim_send`) are silent; a durable final edit notifies once using the original message ID. Final standalone replies and files retain normal notifications. Approval/confirmation/choice cards are marked for immediate notification and never wait for the reply they block. Only the notification category is visible to the relay; text, files and authorization details remain encrypted.
+
+Update every enabled NAS profile and restart the shared gateway once. Do not restart with pending approvals. Older plugin versions remain protocol-compatible but cannot suppress the first streaming notification reliably. Tested against Hermes v0.22.5; notification classification relies on its streaming metadata contract.
+
 Deploy this directory to:
 
 ```text

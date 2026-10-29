@@ -177,11 +177,16 @@ test('persistent queue retries with bounded backoff and recovers after object re
   assert.equal(nextBarkAlarm(ctx.storage.sql), null);
 });
 
-test('real Hermes room enqueues WebSocket and HTTP replies once, not clients, edits or retries', async t => {
+async function roomClass() {
   let source = await readFile(new URL('../src/hermes-chat-room.js', import.meta.url), 'utf8');
   source = source.replace('import { DurableObject } from "cloudflare:workers";', 'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }');
   source = source.replace(/from "(\.\/[^"]+)"/g, (_, path) => `from "${new URL('../src/' + path.slice(2), import.meta.url).href}"`);
   const { HermesChatRoom } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  return HermesChatRoom;
+}
+
+test('real Hermes room enqueues WebSocket and HTTP replies once, not clients, edits or retries', async t => {
+  const HermesChatRoom = await roomClass();
   const env = environment(t), pending = [];
   const ctx = { storage: storage(t), blockConcurrencyWhile: fn => fn(), getWebSockets: () => [], waitUntil: p => pending.push(p) };
   const room = new HermesChatRoom(ctx, env), sent = [];
@@ -198,4 +203,52 @@ test('real Hermes room enqueues WebSocket and HTTP replies once, not clients, ed
   assert.ok(await ctx.storage.getAlarm());
   await room.purgeHistory(); assert.equal(nextBarkAlarm(ctx.storage.sql), null);
   await Promise.all(pending);
+});
+
+
+test('stream previews and interim progress stay silent; final and authorization each notify once', async t => {
+  const HermesChatRoom = await roomClass();
+  const env = environment(t), pending = [];
+  const ctx = { storage: storage(t), blockConcurrencyWhile: fn => fn(), getWebSockets: () => [], waitUntil: p => pending.push(p) };
+  let room = new HermesChatRoom(ctx, env), sent = [];
+  const socket = { deserializeAttachment: () => ({ role: 'agent', spaceId: 'primary' }), send: s => sent.push(JSON.parse(s)) };
+  const frame = { v: 1, type: 'message', id: crypto.randomUUID(), sender: 'agent', sentAt: Date.now(), notification: 'stream', encrypted: { alg: 'A256GCM', nonce: 'AQIDBAUGBwgJCgsM', ciphertext: 'AQIDBAUGBwgJCgsMDQ4PEA' } };
+  const queued = () => ctx.storage.sql.exec('SELECT * FROM bark_pending').toArray();
+  await room.webSocketMessage(socket, JSON.stringify(frame));
+  const targetSeq = sent[0].seq;
+  await room.publishAgentMessage('primary', JSON.stringify(frame)); // ACK loss / HTTP confirmation
+  const edit = { v: 1, type: 'edit', targetSeq, final: false, message: { ...frame, notification: undefined, id: crypto.randomUUID() } };
+  await room.webSocketMessage(socket, JSON.stringify(edit));
+  await room.publishAgentMessage('primary', JSON.stringify({ ...frame, notification: 'silent', id: crypto.randomUUID() }));
+  assert.equal(queued().length, 0);
+  await flushBarkQueue(ctx, env, Date.now() + 60_000, async () => assert.fail('must not infer completion from silence'));
+  room = new HermesChatRoom(ctx, env); // Durable state survives hibernation/reconnect.
+  const approval = { ...frame, notification: 'approval', id: crypto.randomUUID() };
+  await room.webSocketMessage(socket, JSON.stringify(approval));
+  await room.publishAgentMessage('primary', JSON.stringify(approval));
+  assert.deepEqual(queued().map(e => e.message_id), [approval.id]);
+  const final = { ...edit, final: true, message: { ...edit.message, id: crypto.randomUUID() } };
+  await room.webSocketMessage(socket, JSON.stringify(final));
+  await room.webSocketMessage(socket, JSON.stringify(final));
+  await room.webSocketMessage(socket, JSON.stringify({ ...final, message: { ...final.message, id: crypto.randomUUID() } }));
+  assert.deepEqual(new Set(queued().map(e => e.message_id)), new Set([approval.id, frame.id]));
+  const key = await register(env);
+  // Queue events predate registration: align the synthetic fixture, never production data.
+  await env.BLOG_DB.prepare('UPDATE bark_devices SET created_at = ? WHERE device_key = ?').bind(0, key).run();
+  let deliveries = 0;
+  const send = (env, event) => sendHermesBark(env, event, async () => { deliveries++; return { code: 200, retry: false }; });
+  await flushBarkQueue(ctx, env, Date.now() + 2000, send);
+  assert.equal(deliveries, 2);
+  await room.webSocketMessage(socket, JSON.stringify({ ...final, message: { ...final.message, id: crypto.randomUUID() } }));
+  await flushBarkQueue(ctx, env, Date.now() + 2000, send);
+  assert.equal(deliveries, 2);
+  await Promise.all(pending);
+});
+
+test('only authenticated agents can supply a supported notification hint', async () => {
+  const { validateHermesChatMessage } = await import('../src/hermes-chat-protocol.js');
+  assert.throws(() => validateHermesChatMessage({ notification: 'approval' }, 'client'), /notification hint/);
+  for (const hint of [null, true, 'unknown', {}]) {
+    assert.throws(() => validateHermesChatMessage({ notification: hint }, 'agent'), /notification hint/);
+  }
 });

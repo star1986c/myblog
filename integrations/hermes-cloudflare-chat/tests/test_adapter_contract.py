@@ -253,6 +253,34 @@ class AdapterContractTests(unittest.TestCase):
         os.environ.clear()
         os.environ.update(self.previous)
 
+    def test_bark_metadata_marks_streams_and_progress_but_not_final_replies(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        async def exercise():
+            for metadata, expected in [({"expect_edits": True}, "stream"),
+                    ({"_interim_send": True}, "silent"),
+                    ({"expect_edits": True, "notify": True}, None),
+                    ({"notify": True}, None), (None, None)]:
+                with patch.object(instance, "_send_and_wait_for_ack", new=AsyncMock(return_value={"seq": 42})) as send:
+                    result = await instance.send("primary", "reply", metadata=metadata)
+                    self.assertTrue(result.success)
+                    envelope = send.call_args.args[0]
+                    self.assertEqual(envelope.get("notification"), expected)
+                    self.assertEqual(instance._cipher.decrypt_message(envelope, expected_sender="agent")["text"], "reply")
+        asyncio.run(exercise())
+
+    def test_bark_approval_overrides_silence_and_http_fallback_preserves_hint(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+        interaction = {"id": "550e8400-e29b-41d4-a716-446655440099", "kind": "approval", "state": "pending",
+            "expiresAt": 2000000000000, "options": [{"id": "once", "label": "允许一次"}]}
+        with patch.object(instance, "_send_and_wait_for_ack", new=AsyncMock(side_effect=ConnectionError("lost ACK"))) as ws, \
+             patch.object(instance, "_publish_message", return_value={"seq": 42}) as http:
+            result = asyncio.run(instance._send_payload("authorize", [], interaction=interaction, notification="silent"))
+        self.assertTrue(result.success)
+        self.assertIs(ws.call_args.args[0], http.call_args.args[0])
+        self.assertEqual(http.call_args.args[0]["notification"], "approval")
+        payload = instance._cipher.decrypt_message(http.call_args.args[0], expected_sender="agent")
+        self.assertEqual(payload["interaction"]["kind"], "approval")
+
     def test_requirements_accept_the_production_contract(self):
         self.assertTrue(self.adapter.check_requirements())
 
@@ -440,7 +468,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.10")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.11")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 

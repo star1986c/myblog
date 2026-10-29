@@ -9,6 +9,6 @@ test("relay persists only final stream edits and broadcasts intermediate edits",
 
   assert.match(source, /validateHermesChatEdit/);
   assert.match(source, /ensureEditableTarget\(edit\.targetSeq\)/);
-  assert.match(source, /edit\.final\s*\?\s*this\.storeStreamEdit\(edit\)/);
+  assert.match(source, /edit\.final\s*\?\s*this\.storeStreamEdit\(edit, attachment\.spaceId\)/);
   assert.match(source, /buildHermesChatDeliveryFrame/);
 });
