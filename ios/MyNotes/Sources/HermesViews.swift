@@ -289,7 +289,7 @@ private struct ChatView: View {
         Spacer()
         Text(Date(timeIntervalSince1970: Double(message.sentAt) / 1000), style: .time).font(.caption2).foregroundStyle(.secondary)
       }
-      if !message.text.isEmpty { MessageMarkdown(text: message.text) }
+      if !message.text.isEmpty { MessageMarkdown(text: message.text).equatable() }
       ForEach(message.attachments) { attachment in
         MobileChatAttachment(descriptor: attachment, isOpening: openingID == attachment.id,
           loadThumbnail: { try await thumbnail(attachment) },
@@ -482,7 +482,7 @@ struct MobileMarkdownBlock: Equatable {
   }
 }
 
-struct MessageMarkdown: View {
+struct MessageMarkdown: View, Equatable {
   let text: String
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {

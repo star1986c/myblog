@@ -49,16 +49,16 @@ public actor HermesChatHistoryStore {
   @discardableResult
   public func recordBatch(_ incomingMessages: [HermesChatMessage]) -> HermesChatHistorySnapshot {
     var snapshot = loadSnapshot()
-    var changed = false
-    for incoming in incomingMessages {
-      if incoming.replaceSequence > 0 && !incoming.finalUpdate { continue }
-
-      HermesChatMessageMerge.apply(incoming, to: &snapshot.messages)
+    let durable = incomingMessages.filter { $0.replaceSequence == 0 || $0.finalUpdate }
+    guard !durable.isEmpty else { return snapshot }
+    let previous = snapshot
+    _ = HermesChatMessageMerge.applyBatch(durable, to: &snapshot.messages)
+    for incoming in durable {
       snapshot.lastSequence = max(snapshot.lastSequence, max(0, incoming.sequence))
-      changed = true
     }
-
-    guard changed else { return snapshot }
+    guard snapshot.messages != previous.messages || snapshot.lastSequence != previous.lastSequence else {
+      return snapshot
+    }
     snapshot.messages.sort(by: Self.messageOrder)
     if snapshot.messages.count > Self.maximumMessages {
       snapshot.messages.removeFirst(snapshot.messages.count - Self.maximumMessages)

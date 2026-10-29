@@ -64,6 +64,44 @@ enum HermesChatMessageMerge {
     return false
   }
 
+  /// Index once per batch; reuse the single-message conflict rules on matching
+  /// slots only. Tombstones preserve ordering without shifting every index.
+  static func applyBatch(_ incoming: [HermesChatMessage], to messages: inout [HermesChatMessage]) -> [Bool] {
+    var slots = messages.map(Optional.some)
+    var ids: [String: Set<Int>] = [:]
+    var sequences: [Int64: Set<Int>] = [:]
+    func index(_ message: HermesChatMessage, at slot: Int) {
+      ids[message.id, default: []].insert(slot)
+      if message.sequence > 0 { sequences[message.sequence, default: []].insert(slot) }
+    }
+    for (slot, message) in messages.enumerated() { index(message, at: slot) }
+    var inserted: [Bool] = []
+    for message in incoming {
+      let target = message.replaceSequence > 0 ? message.replaceSequence : message.sequence
+      var matches = ids[message.id] ?? []
+      if target > 0 { matches.formUnion(sequences[target] ?? []) }
+      if message.replaceSequence > 0 && message.finalUpdate && message.sequence > 0 {
+        matches.formUnion(sequences[message.sequence] ?? [])
+      }
+      let ordered = matches.sorted()
+      var candidates = ordered.compactMap { slots[$0] }
+      inserted.append(apply(message, to: &candidates))
+      for slot in ordered {
+        guard let old = slots[slot] else { continue }
+        ids[old.id]?.remove(slot)
+        sequences[old.sequence]?.remove(slot)
+        slots[slot] = nil
+      }
+      if let merged = candidates.first {
+        let slot = ordered.first ?? slots.count
+        if slot == slots.count { slots.append(merged) } else { slots[slot] = merged }
+        index(merged, at: slot)
+      }
+    }
+    messages = slots.compactMap { $0 }
+    return inserted
+  }
+
   /// Repair legacy repeated IDs/sequences on load without comparing text.
   /// Group first to avoid quadratic work on a large, otherwise healthy cache.
   static func normalize(_ messages: [HermesChatMessage]) -> [HermesChatMessage] {

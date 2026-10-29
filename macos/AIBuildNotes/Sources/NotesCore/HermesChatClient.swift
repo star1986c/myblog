@@ -39,6 +39,7 @@ public enum HermesChatClientEvent: Sendable {
     sequence: Int64,
     configurationGeneration: Int
   )
+  case replayPage(spaceID: String, transportGeneration: Int, configurationGeneration: Int)
   case resumed(
     spaceID: String,
     latestSequence: Int64,
@@ -103,11 +104,29 @@ public actor HermesChatClient {
       configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
       self.session = URLSession(configuration: configuration)
     }
-    let stream = AsyncStream<HermesChatClientEvent>.makeStream(
-      bufferingPolicy: .bufferingNewest(1_000)
-    )
+    let stream = Self.makeEventStream()
     events = stream.stream
     continuation = stream.continuation
+  }
+
+  static func makeEventStream() -> (stream: AsyncStream<HermesChatClientEvent>, continuation: AsyncStream<HermesChatClientEvent>.Continuation) {
+    // History pages are consumer-paced; live durable events must never be evicted.
+    AsyncStream.makeStream(bufferingPolicy: .unbounded)
+  }
+
+  public func continueReplay(spaceID: String, transportGeneration: Int) async {
+    guard generation == transportGeneration, !closing, profiles[spaceID] != nil else { return }
+    do { try await sendResume(spaceID: spaceID) } catch {
+      guard generation == transportGeneration, !closing else { return }
+      continuation.yield(.disconnected(reason: Self.errorMessage(error),
+        configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1))
+    }
+  }
+
+  private func deliver(_ event: HermesChatClientEvent, spaceID: String, replayed: Bool = false) {
+    if profiles[spaceID]?.delivery.enqueue(event, replayed: replayed) == true {
+      continuation.yield(event)
+    }
   }
 
   deinit {
@@ -374,24 +393,28 @@ public actor HermesChatClient {
           message.finalUpdate == final
         else { throw HermesChatCryptoError.invalidMessage }
       }
+      profile.replayCursor.receive(sequence: sequence, replayed: frame["replayed"] as? Bool == true)
       if sequence > 0 {
         profile.lastSequence = max(profile.lastSequence, sequence)
         profiles[spaceID] = profile
       }
-      continuation.yield(
+      deliver(
         .message(
           spaceID: spaceID,
           message: message,
           configurationGeneration: profile.configurationGeneration
-        )
+        ), spaceID: spaceID, replayed: frame["replayed"] as? Bool == true
       )
     case "resume_complete":
       if frame["hasMore"] as? Bool == true {
-        try await sendResume(spaceID: spaceID)
+        continuation.yield(.replayPage(spaceID: spaceID, transportGeneration: generation,
+          configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1))
       } else {
         let latestSequence = max(0, Self.int64(frame["latestSeq"]) ?? 0)
         let configurationGeneration = profiles[spaceID]?.configurationGeneration ?? -1
+        var deferred: [HermesChatClientEvent] = []
         if var profile = profiles[spaceID] {
+          deferred = profile.delivery.complete()
           profile.lastSequence = max(profile.lastSequence, latestSequence)
           profile.resumeSinceMilliseconds = nil
           profiles[spaceID] = profile
@@ -403,6 +426,7 @@ public actor HermesChatClient {
             configurationGeneration: configurationGeneration
           )
         )
+        for event in deferred { continuation.yield(event) }
       }
     case "ack":
       let durable = frame["durable"] as? Bool ?? true
@@ -413,13 +437,13 @@ public actor HermesChatClient {
           profile.lastSequence = max(profile.lastSequence, sequence)
           profiles[spaceID] = profile
         }
-        continuation.yield(
+        deliver(
           .acknowledged(
             spaceID: spaceID,
             messageID: id,
             sequence: sequence,
             configurationGeneration: profiles[spaceID]?.configurationGeneration ?? -1
-          )
+          ), spaceID: spaceID
         )
       } else {
         continuation.yield(
@@ -462,7 +486,7 @@ public actor HermesChatClient {
     try await sendRouted(
       spaceID: spaceID,
       frame: Self.resumeFrame(
-        afterSequence: profile.lastSequence,
+        afterSequence: profile.replayCursor.sequence,
         sinceMilliseconds: profile.resumeSinceMilliseconds
       )
     )
@@ -613,6 +637,8 @@ public actor HermesChatClient {
     let crypto: HermesChatCrypto
     let configurationGeneration: Int
     var lastSequence: Int64
+    var delivery = HermesChatReplayDelivery()
+    var replayCursor: HermesChatReplayCursor
     var lastTypingActive: Bool?
     var resumeSinceMilliseconds: Int64?
 
@@ -625,6 +651,7 @@ public actor HermesChatClient {
       self.crypto = crypto
       self.configurationGeneration = configurationGeneration
       self.lastSequence = max(0, lastSequence)
+      self.replayCursor = HermesChatReplayCursor(sequence: lastSequence)
       self.resumeSinceMilliseconds = resumeSinceMilliseconds
     }
   }

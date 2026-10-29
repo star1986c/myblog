@@ -609,7 +609,7 @@ public final class HermesChatStore: ObservableObject {
       guard generation == configurationGeneration, !isTransportSuspended else { return }
       let configurations = try ids.map { id in
         guard let crypto = cryptos[id] else { throw HermesChatCryptoError.invalidKey }
-        let recentSince = recentSyncSinceByProfile[id] ?? openingSync.sinceMilliseconds(spaceID: id)
+        let recentSince = recentSyncSinceByProfile[id] ?? openingSync.sinceMilliseconds(spaceID: id, lastSequence: lastSequences[id] ?? 0)
         return HermesChatClientProfile(
           spaceID: id,
           crypto: crypto,
@@ -655,6 +655,13 @@ public final class HermesChatStore: ObservableObject {
       if let history = histories[spaceID] {
         _ = await history.acknowledge(messageID: messageID, sequence: sequence)
       }
+    case .replayPage(let spaceID, let transportGeneration, let eventGeneration):
+      guard eventGeneration == configurationGeneration else { return }
+      messageFlushTask?.cancel()
+      messageFlushTask = nil
+      await flushPendingMessages()
+      guard eventGeneration == configurationGeneration, !isTransportSuspended else { return }
+      await client.continueReplay(spaceID: spaceID, transportGeneration: transportGeneration)
     case .resumed(let spaceID, let latestSequence, let eventGeneration):
       guard eventGeneration == configurationGeneration else { return }
       messageFlushTask?.cancel()
@@ -767,11 +774,11 @@ public final class HermesChatStore: ObservableObject {
     guard !incomingMessages.isEmpty else { return }
     var messages = messagesByProfile[spaceID] ?? []
     var unreadDelta = 0
-    for pending in incomingMessages {
-      let incoming = pending.message
-      let inserted = HermesChatMessageMerge.apply(incoming, to: &messages)
-      if inserted && pending.countUnread { unreadDelta += 1 }
+    let inserted = HermesChatMessageMerge.applyBatch(incomingMessages.map(\.message), to: &messages)
+    for (pending, wasInserted) in zip(incomingMessages, inserted) {
+      if wasInserted && pending.countUnread { unreadDelta += 1 }
     }
+    guard messages != messagesByProfile[spaceID] else { return }
     messages.sort(by: Self.messageOrder)
     if messages.count > 20_000 { messages.removeFirst(messages.count - 20_000) }
     messagesByProfile[spaceID] = messages
