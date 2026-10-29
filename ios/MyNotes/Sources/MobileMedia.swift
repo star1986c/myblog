@@ -171,7 +171,30 @@ private struct CameraPicker: UIViewControllerRepresentable {
   }
 }
 
-struct FilePreview: UIViewControllerRepresentable {
+struct FilePreview: View {
+  @Environment(\.dismiss) private var dismiss
+  let url: URL
+
+  var body: some View {
+    NavigationStack {
+      QuickLookContent(url: url)
+        .navigationTitle(url.lastPathComponent)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            ShareLink(item: url) { Label("共享附件", systemImage: "square.and.arrow.up") }
+              .accessibilityIdentifier("attachment.preview.share")
+          }
+          ToolbarItem(placement: .confirmationAction) {
+            Button("完成") { dismiss() }.accessibilityIdentifier("attachment.preview.done")
+          }
+        }
+    }
+    .presentationDragIndicator(.visible)
+  }
+}
+
+private struct QuickLookContent: UIViewControllerRepresentable {
   let url: URL
   func makeCoordinator() -> Coordinator { Coordinator(url) }
   func makeUIViewController(context: Context) -> QLPreviewController {

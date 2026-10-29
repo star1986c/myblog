@@ -149,9 +149,18 @@ private struct ChatView: View {
   @State private var preview: MobileFile?
   @State private var previewURL: URL?
   @State private var openingID: String?
+  @State private var openingTask: Task<Void, Never>?
+  @State private var thumbnails = MobileThumbnailCache()
 
   private var draft: MobileDraft { model.chatDrafts[profile.id] ?? MobileDraft() }
-  private var allMessages: [HermesChatMessage] { chat.messages(spaceID: profile.id) }
+  private var allMessages: [HermesChatMessage] {
+    #if DEBUG
+    if model.isPreview && ProcessInfo.processInfo.arguments.contains("--preview-attachments") {
+      return MobileAttachmentFixtures.messages(spaceID: profile.id)
+    }
+    #endif
+    return chat.messages(spaceID: profile.id)
+  }
   private var matchingMessages: [HermesChatMessage] {
     search.isEmpty ? allMessages : allMessages.filter { $0.text.localizedCaseInsensitiveContains(search) || $0.attachments.contains { $0.name.localizedCaseInsensitiveContains(search) } }
   }
@@ -199,6 +208,7 @@ private struct ChatView: View {
     .sheet(isPresented: $configuring) { ProfileKeyView(profile: profile) }
     .sheet(isPresented: $commands) { CommandPicker { command in updateText(command.invocation + (command.arguments.isEmpty ? "" : " ")); commands = false } }
     .sheet(item: $preview, onDismiss: { if let url = previewURL { MobileFiles.remove(url) }; previewURL = nil }) { file in FilePreview(url: file.url) }
+    .onDisappear { openingTask?.cancel() }
     .alert("删除所选消息？", isPresented: $deleting) {
       Button("取消", role: .cancel) {}
       Button("删除", role: .destructive) {
@@ -270,17 +280,10 @@ private struct ChatView: View {
       }
       if !message.text.isEmpty { MessageMarkdown(text: message.text) }
       ForEach(message.attachments) { attachment in
-        Button { Task { await open(attachment) } } label: {
-          HStack {
-            Image(systemName: attachment.contentType.hasPrefix("image/") ? "photo" : attachment.contentType.hasPrefix("audio/") ? "waveform" : attachment.contentType.hasPrefix("video/") ? "play.rectangle" : "doc")
-            VStack(alignment: .leading) {
-              Text(attachment.name).lineLimit(2)
-              Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.plaintextBytes), countStyle: .file)).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if openingID == attachment.id { ProgressView() } else { Image(systemName: "arrow.down.circle") }
-          }.padding(10).background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
-        }.buttonStyle(.plain).disabled(openingID != nil)
+        MobileChatAttachment(descriptor: attachment, isOpening: openingID == attachment.id,
+          loadThumbnail: { try await thumbnail(attachment) },
+          open: { openingTask = Task { await open(attachment) } })
+          .disabled(openingID != nil)
       }
       if let interaction = message.interaction {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -371,17 +374,47 @@ private struct ChatView: View {
     var value = draft; value.files += urls; model.chatDrafts[profile.id] = value
   }
   private func open(_ descriptor: HermesChatAttachmentDescriptor) async {
+    guard openingID == nil else { return }
     openingID = descriptor.id
     defer { openingID = nil }
     do {
-      let source = try await chat.attachmentFile(descriptor, spaceID: profile.id)
+      let source = try await attachmentFile(descriptor)
+      defer { if !descriptor.isPrivateR2 { try? FileManager.default.removeItem(at: source) } }
+      try Task.checkCancellation()
       // QL may keep a file alive while sharing; isolate previews from the encrypted cache.
       let url = try await Task.detached {
         try MobileFiles.copyPreview(source, name: descriptor.name)
       }.value
+      guard !Task.isCancelled, model.chatPath.last?.id == profile.id else { MobileFiles.remove(url); return }
       previewURL = url; preview = MobileFile(url: url)
-      if !descriptor.isPrivateR2 { try? FileManager.default.removeItem(at: source) }
-    } catch { model.error = error.localizedDescription }
+    } catch is CancellationError { }
+    catch { if !Task.isCancelled { model.error = error.localizedDescription } }
+  }
+
+  private func attachmentFile(_ descriptor: HermesChatAttachmentDescriptor) async throws -> URL {
+    #if DEBUG
+    if model.isPreview { return try MobileAttachmentFixtures.file(descriptor) }
+    #endif
+    return try await chat.attachmentFile(descriptor, spaceID: profile.id)
+  }
+
+  private func thumbnail(_ descriptor: HermesChatAttachmentDescriptor) async throws -> CGImage? {
+    let key = "\(profile.id)/\(descriptor.id)/\(descriptor.sha256 ?? descriptor.nonce ?? "")"
+    if let image = await thumbnails.cached(key: key) { return image }
+    try Task.checkCancellation()
+    #if DEBUG
+    if model.isPreview {
+      return await thumbnails.image(data: try MobileAttachmentFixtures.data(descriptor), key: key)
+    }
+    #endif
+    if descriptor.isPrivateR2 {
+      let url = try await chat.attachmentFile(descriptor, spaceID: profile.id)
+      try Task.checkCancellation()
+      return await thumbnails.image(at: url, key: key)
+    }
+    let data = try await chat.attachmentData(descriptor, spaceID: profile.id)
+    try Task.checkCancellation()
+    return await thumbnails.image(data: data, key: key)
   }
 }
 

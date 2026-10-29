@@ -2,6 +2,44 @@ import XCTest
 
 @MainActor
 final class MyNotesUITests: XCTestCase {
+  func testImageThumbnailsAndAttachmentPreviewsReturnToTheSameChat() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview", "--preview-attachments"]
+    app.launch()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    app.buttons["profile.primary"].tap()
+    let photo = app.buttons["attachment.open.preview-photo"]
+    XCTAssertTrue(photo.waitForExistence(timeout: 5))
+    let loaded = NSPredicate(format: "value == %@", "图片预览已加载")
+    expectation(for: loaded, evaluatedWith: photo)
+    waitForExpectations(timeout: 10)
+    let screenshot = XCTAttachment(screenshot: app.screenshot())
+    screenshot.name = "iPhone-inline-image"; screenshot.lifetime = .keepAlways; add(screenshot)
+    for id in ["preview-photo", "preview-document", "preview-photo"] {
+      app.buttons["attachment.open.\(id)"].tap()
+      let done = app.buttons["attachment.preview.done"]
+      XCTAssertTrue(done.waitForExistence(timeout: 5))
+      XCTAssertTrue(done.isHittable)
+      XCTAssertTrue(app.buttons["attachment.preview.share"].isHittable)
+      let preview = XCTAttachment(screenshot: app.screenshot())
+      preview.name = "iPhone-preview-\(id)"; preview.lifetime = .keepAlways; add(preview)
+      done.tap()
+      XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+      XCTAssertTrue(app.staticTexts["图片和文件预览测试"].isHittable)
+    }
+    app.navigationBars.buttons.element(boundBy: 0).tap()
+    app.buttons["profile.personal"].tap()
+    let received = app.buttons["attachment.open.preview-received"]
+    XCTAssertTrue(received.waitForExistence(timeout: 5))
+    expectation(for: loaded, evaluatedWith: received)
+    waitForExpectations(timeout: 10)
+    received.tap()
+    XCTAssertTrue(app.buttons["attachment.preview.done"].waitForExistence(timeout: 5))
+    app.buttons["attachment.preview.done"].tap()
+    app.navigationBars.buttons.element(boundBy: 0).tap()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 5))
+  }
+
   func testRepeatedConversationSwitchAndTabReturnKeepDestinationVisible() {
     let app = XCUIApplication()
     app.launchArguments = ["--preview"]

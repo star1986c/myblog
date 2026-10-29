@@ -5,6 +5,32 @@ import NotesCore
 
 @MainActor
 final class MobileFilesTests: XCTestCase {
+  func testChatThumbnailDownsamplesAndKeepsOriginalAndPreviewCopyIndependent() async throws {
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 1000), format: {
+      let format = UIGraphicsImageRendererFormat(); format.scale = 1; return format
+    }()).image { context in
+      UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 3000, height: 1000))
+    }
+    let data = try XCTUnwrap(image.pngData())
+    let source = try MobileFiles.write(data, name: "original.png")
+    defer { MobileFiles.remove(source) }
+    let cache = MobileThumbnailCache()
+    let result = await cache.image(at: source, key: "primary/photo")
+    let thumbnail = try XCTUnwrap(result)
+    XCTAssertEqual(thumbnail.width, 840)
+    XCTAssertEqual(thumbnail.height, 280)
+    let cached = await cache.image(data: Data(), key: "primary/photo")
+    XCTAssertTrue(cached === thumbnail)
+    let invalid = await cache.image(data: Data("not an image".utf8), key: "personal/photo")
+    XCTAssertNil(invalid)
+    let copy = try MobileFiles.copyPreview(source, name: "照片.png")
+    XCTAssertEqual(try Data(contentsOf: copy), data)
+    MobileFiles.remove(copy)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+    XCTAssertEqual(try Data(contentsOf: source), data)
+    XCTAssertEqual(UIImage(contentsOfFile: source.path)?.cgImage?.width, 3000)
+  }
+
   func testMarkdownKeepsCodeLiteralAndHandlesIncompleteStreamingFence() {
     let blocks = MobileMarkdownBlock.parse("## Heading\n- item\n```swift\n# literal\nlet value = 1")
     XCTAssertEqual(blocks, [MobileMarkdownBlock(kind: .heading(2), text: "Heading"), MobileMarkdownBlock(kind: .text, text: "• item"), MobileMarkdownBlock(kind: .code, text: "# literal\nlet value = 1")])

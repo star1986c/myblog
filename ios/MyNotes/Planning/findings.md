@@ -36,3 +36,11 @@
 - 应用锁用 ContinuousClock 记录真正进入后台的时间，默认 180 秒，可设 0/180/300 秒。inactive 不计时；重复后台通知不重置起点；冷启动始终锁定；后台返回的认证结果不能解锁。
 - 使用系统分组背景、材质、原生导航/选择页及低饱和蓝灰强调色，支持跟随系统、浅色、深色。
 - 原生 navigationLink Picker 选择后自动返回，UI 测试不能再额外点击返回；增加设置区块后旧版本信息断言需先滚动。
+
+## 图片与附件预览
+
+- Hermes 附件目前统一显示图标/文件名，没有解码图片。
+- FilePreview 直接包装 QLPreviewController，无导航容器或显式 dismiss；笔记与聊天共用该组件。
+- 缩略图应在后台解码，内存缓存有上限；按 profile 与描述符隔离，原图预览仍使用原文件。
+- 图片按共享格式策略识别，兼容 image MIME 和 .png 等扩展名；ImageIO 在独立 actor 上按最长边 840 像素解码，单会话缓存最多 40 张/24 MiB，旧加密附件不为缩略图额外落盘明文。
+- Quick Look 外增加 SwiftUI NavigationStack 和带 accessibility ID 的完成按钮；原有 sheet onDismiss 清理预览副本，原图和聊天缓存不删除。离开聊天时取消打开任务，迟到的文件不能弹到另一会话。
