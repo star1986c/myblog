@@ -5,6 +5,54 @@ import NotesCore
 
 @MainActor
 final class MobileLifecycleTests: XCTestCase {
+  func testBarkLinkReturnsToListAndPreservesDrafts() {
+    let model = MobileModel()
+    model.chatPath = [MobileChatRoute(id: "primary")]
+    model.tab = 2
+    model.chatDrafts["primary"] = MobileDraft(text: "未发送草稿")
+    for _ in 0..<2 { model.openURL(URL(string: "mynotes://hermes")!) }
+    XCTAssertEqual(model.tab, 0)
+    XCTAssertTrue(model.chatPath.isEmpty)
+    XCTAssertNil(model.chat.selectedProfileID)
+    XCTAssertEqual(model.chatDrafts["primary"]?.text, "未发送草稿")
+  }
+
+  func testInvalidBarkLinksDoNotChangeNavigation() {
+    let model = MobileModel()
+    model.chatPath = [MobileChatRoute(id: "primary")]
+    model.tab = 1
+    for link in ["https://hermes", "mynotes://other", "mynotes://hermes/send",
+                 "mynotes://hermes?command=approve", "mynotes://hermes#message",
+                 "mynotes://user@hermes", "mynotes://hermes:123", "mynotes:hermes"] {
+      model.openURL(URL(string: link)!)
+      XCTAssertEqual(model.tab, 1, link)
+      XCTAssertEqual(model.chatPath.last?.id, "primary", link)
+    }
+  }
+
+  func testBarkColdStartAndLockRemainEnforced() async {
+    let defaults = preferences()
+    defaults.set(true, forKey: "ios.app-lock")
+    let model = MobileModel(defaults: defaults, authenticate: { false })
+    model.tab = 2
+    model.openURL(URL(string: "mynotes://hermes")!)
+    await model.start()
+    XCTAssertTrue(model.locked)
+    XCTAssertEqual(model.tab, 0)
+    await model.unlock()
+    XCTAssertTrue(model.locked)
+    XCTAssertNil(model.chat.selectedProfileID)
+  }
+
+  func testBarkLinkDoesNotCreateLoginSession() async {
+    let model = MobileModel()
+    await model.notes.logout()
+    model.openURL(URL(string: "mynotes://hermes")!)
+    XCTAssertNil(model.notes.user)
+    XCTAssertEqual(model.tab, 0)
+    XCTAssertTrue(model.chatPath.isEmpty)
+  }
+
   func testFinalReplyReplayAfterColdReloadKeepsOneCompleteBubble() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

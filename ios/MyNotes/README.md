@@ -1,8 +1,8 @@
 # My Notes iPhone 个人版
 
-原生 SwiftUI iPhone 客户端，最低 iOS 17。功能以 Android My Notes 为参考，与 macOS 复用 `NotesCore`、现有 Cloudflare API 和 NAS Hermes 插件。无需为此版本部署 Worker、迁移数据库或升级插件。
+原生 SwiftUI iPhone 客户端，最低 iOS 17。功能以 Android My Notes 为参考，与 macOS 复用 `NotesCore`、现有 Cloudflare API 和 NAS Hermes 插件。Bark 点击跳转需要配套部署 Worker；此增量不需要迁移数据库或升级 NAS 插件。
 
-当前源码版本：**0.1.4 (5)**。本版修复 Hermes 会话列表附件消息摘要空白，优先显示文字说明，否则显示附件名称和数量；保留重放消息去重及图片/附件预览修复；验证与安装状态见 VALIDATION.md。My Notes 本身不直接接入 APNs，也不申请后台常驻能力；Hermes 提醒可由独立 Bark App 接收，见 [Bark 配置说明](../../docs/bark-push.md)。
+当前源码版本：**0.1.7 (8)**。新增 Bark 通知点击打开 My Notes 的 Hermes 会话列表；保留登录、改密与应用锁检查。需要安装新版 App 并部署对应 Worker 后生效，验证与安装状态见 VALIDATION.md。My Notes 不直接接入 APNs；配置见 [Bark 配置说明](../../docs/bark-push.md)。
 
 ## 打开工程
 

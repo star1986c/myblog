@@ -1,4 +1,4 @@
-import { barkConfigured, buildBarkPayload, deliverBark, BARK_RETENTION_DAYS } from './bark-service.js';
+import { barkConfigured, buildBarkPayload, deliverBark, BARK_RETENTION_DAYS, MY_NOTES_BARK_URL } from './bark-service.js';
 import { configuredHermesChatProfiles } from './hermes-chat-gateway.js';
 
 export function initializeBarkQueue(sql) {
@@ -25,7 +25,7 @@ export async function sendHermesBark(env, event, deliver = deliverBark) {
   const { results } = await db.prepare('SELECT * FROM bark_devices WHERE enabled = 1 AND device_token <> ? AND created_at <= ?').bind('', event.created_at).all();
   const eventId = `${event.space_id}:${event.message_id}`;
   const payload = buildBarkPayload({ title: profile.label, body: 'Hermes 有新回复，请打开 My Notes 查看。', group: `Hermes · ${profile.label}`,
-    isArchive: '1', id: event.message_id });
+    isArchive: '1', id: event.message_id, url: MY_NOTES_BARK_URL });
   const outcomes = await Promise.all(results.filter(d => JSON.parse(d.profile_ids).includes(event.space_id)).map(async device => {
     const sent = await db.prepare('SELECT sent_at FROM bark_deliveries WHERE device_key = ? AND event_id = ?').bind(device.device_key, eventId).first();
     if (sent) return false;

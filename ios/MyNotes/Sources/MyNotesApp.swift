@@ -17,6 +17,7 @@ struct MyNotesApp: App {
         .tint(MobileTheme.accent)
         .preferredColorScheme(model.appearance.colorScheme)
         .task { await model.start() }
+        .onOpenURL { model.openURL($0) }
         .onChange(of: phase) { _, value in model.transition(to: value) }
     }
   }
@@ -86,6 +87,20 @@ final class MobileModel: ObservableObject {
       MobileFiles.cleanTemporaryFiles()
       MobileFiles.excludePrivateDataFromBackup()
     }
+  }
+
+  /// Navigation only: the root view still enforces login, password changes and app lock.
+  /// No credentials or actions are accepted from an external notification.
+  func openURL(_ url: URL) {
+    guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          parts.scheme?.lowercased() == "mynotes",
+          parts.host?.lowercased() == "hermes",
+          parts.user == nil, parts.password == nil, parts.port == nil,
+          parts.path.isEmpty || parts.path == "/",
+          parts.query == nil, parts.fragment == nil else { return }
+    // Clear the destination before activating the tab so an unrelated chat isn't marked read.
+    chatPath = []
+    tab = 0
   }
 
   func start() async {

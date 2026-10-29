@@ -9,6 +9,7 @@ const TOKEN = /^[a-f0-9]{64,160}$/i;
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_DEVICES = 10;
 export const BARK_RETENTION_DAYS = 15;
+export const MY_NOTES_BARK_URL = 'mynotes://hermes';
 let jwtCache;
 
 export function barkConfigured(env) {
@@ -224,7 +225,7 @@ export async function handleBarkAdmin(request, env, path) {
   if (!device) throw new ServiceError('设备不存在。', 404);
   if (match[2] && request.method === 'POST') {
     if (!barkConfigured(env) || !device.device_token) throw new ServiceError('服务或设备未就绪。', 409);
-    const result = await deliverBark(env, device, buildBarkPayload({ title: 'My Notes', body: 'Bark 测试推送成功，Hermes 新消息将通过这里提醒。', group: 'My Notes', isArchive: '1' }));
+    const result = await deliverBark(env, device, buildBarkPayload({ title: 'My Notes', body: 'Bark 测试推送成功，点击打开 My Notes。', group: 'My Notes', isArchive: '1', url: MY_NOTES_BARK_URL }));
     if (result.code !== 200) throw new ServiceError(result.message, result.code);
     return Response.json({ ok: true });
   }

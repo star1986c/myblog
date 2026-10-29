@@ -2,6 +2,26 @@ import XCTest
 
 @MainActor
 final class MyNotesUITests: XCTestCase {
+  func testBarkURLReturnsToHermesListFromBackgroundAndColdLaunch() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview"]
+    app.launch()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    app.buttons["profile.primary"].tap()
+    XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+    app.tabBars.buttons["设置"].tap()
+    XCUIDevice.shared.press(.home)
+    app.open(URL(string: "mynotes://hermes")!)
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.tabBars.buttons["Hermes"].isSelected)
+    app.open(URL(string: "mynotes://hermes")!)
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 5))
+    app.terminate()
+    app.open(URL(string: "mynotes://hermes")!)
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.tabBars.buttons["Hermes"].isSelected)
+  }
+
   func testChatStyleLightAndDark() {
     let app = XCUIApplication()
     app.launchArguments = ["--preview", "--preview-chat-style"]

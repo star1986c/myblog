@@ -157,7 +157,7 @@ test('notifications filter profile and opt-out, do not replay old history and de
   const env = environment(t), key = await register(env);
   const event = { space_id: 'primary', message_id: crypto.randomUUID(), created_at: Date.now() + 1 };
   let calls = 0;
-  const deliver = async (_env, _device, payload) => { calls++; assert.equal(payload.aps.alert.body.includes('新回复'), true); assert.equal(JSON.stringify(payload).includes('ciphertext'), false); return { code: 200, retry: false }; };
+  const deliver = async (_env, _device, payload) => { calls++; assert.equal(payload.url, 'mynotes://hermes'); assert.equal(payload.aps.alert.body.includes('新回复'), true); assert.equal(JSON.stringify(payload).includes('ciphertext'), false); return { code: 200, retry: false }; };
   assert.equal(await sendHermesBark(env, { ...event, created_at: 1 }, deliver), false); assert.equal(calls, 0);
   await sendHermesBark(env, event, deliver); await sendHermesBark(env, event, deliver); assert.equal(calls, 1);
   await env.BLOG_DB.prepare('UPDATE bark_devices SET profile_ids = ? WHERE device_key = ?').bind('["personal"]', key).run();
@@ -251,4 +251,21 @@ test('only authenticated agents can supply a supported notification hint', async
   for (const hint of [null, true, 'unknown', {}]) {
     assert.throws(() => validateHermesChatMessage({ notification: hint }, 'agent'), /notification hint/);
   }
+});
+
+
+test('admin test notification carries the My Notes link through APNs', async t => {
+  const env = environment(t), key = await register(env);
+  const cookie = await signSession({ secret: env.SESSION_SECRET, username: 'owner' });
+  const session = await readSession({ cookieHeader: cookie, secret: env.SESSION_SECRET });
+  const payloads = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    payloads.push(JSON.parse(init.body)); return new Response(null, { status: 200 });
+  });
+  const response = await worker.fetch(new Request(`https://example.com/api/admin/bark/devices/${key}/test`, {
+    method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': session.csrfToken }
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].url, 'mynotes://hermes');
 });

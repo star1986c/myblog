@@ -144,3 +144,9 @@
 
 - 最终回归证据：87 插件、14 真实运行、38 审批场景、93 Node、源码/归档各14原生检查通过；Android 构建、离线恢复与原有加密存储回归通过。健康探测采用现有 Hub 字符串自动响应，未更改 Worker。
 - 交付 Android 2.24 与 2.23 证书 SHA-256 一致，插件 0.3.9 两种格式六文件一致。NAS/手机真实后台恢复仍是用户部署后的验证边界。
+
+## 2026-10-29：Bark 深链接
+
+- `buildBarkPayload` 已透传 url；Hermes 自动通知与管理测试通知均需显式添加。
+- iOS 使用 MobileModel.tab/chatPath 作为导航状态；MobileRootView 按锁定、登录、强制改密顺序显示界面。仅切换导航状态不会绕过这些门槛。
+- 自定义 scheme 不需 APNs entitlement 或付费开发者账号；通知仍归属 Bark。

@@ -1,5 +1,13 @@
 # iPhone 验证记录
 
+## 0.1.7 (8) Bark 点击打开 App — 2026-10-29
+
+- 先设计固定入口 `mynotes://hermes`，再实现 iOS scheme 注册与导航处理；Hermes 自动通知、管理页测试通知使用同一地址。仅打开 Hermes 列表，不定位助手或消息；保留草稿、登录、强制改密与应用锁。
+- Node 全量 292 项通过（含 Bark 15 项）；iOS 单元 20 项通过，新增导航/草稿、无效 URL、冷启动应用锁和未登录保护测试。
+- iOS 26.1 专用 QA 模拟器 UI 回归 1 项通过：从后台设置页返回 Hermes 列表、重复打开、终止后冷启动；全部使用合成数据。Worker dry-run、plist 和 diff 检查通过。
+- 证据：`/private/tmp/bark-deeplink-all-node.log`、`/private/tmp/mynotes-bark-link-test.log`、`/private/tmp/mynotes-bark-link-ui.log`、`/private/tmp/bark-deeplink-worker-build.log`。
+- 未提交/推送、未部署 Worker、未覆盖安装 iPhone、未更新续签源码副本、未发送真实通知。需先安装新版 App，再部署 Worker，最后真机验证 Bark 点击（含应用锁）。
+
 ## 0.1.6 (7) 真机安装与续签副本 — 2026-10-29
 
 - 代码提交 `a0bd885` 已推送，从该提交生成固定快照 `git-0.1.6-7-6748cceaf4903f9b`（80 文件），完成 Release 签名、USB 保留数据覆盖安装、设备版本确认和启动验证。
