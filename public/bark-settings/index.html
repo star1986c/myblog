@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+  <title>Bark 通知 · My Notes</title>
+  <link rel="stylesheet" href="/assets/bark-settings.20261029.css">
+  <script type="module" src="/assets/bark-settings.20261029.js"></script>
+</head>
+<body>
+<main>
+  <header><p class="eyebrow">MY NOTES</p><h1>Bark 通知</h1><p>让 Hermes 的新回复，在 iPhone 上轻声提醒你。</p></header>
+  <p id="status" role="status" aria-live="polite"></p>
+  <section id="login-panel" hidden>
+    <h2>登录 My Notes</h2><p>使用 My Notes 账号管理自己的通知设备。</p>
+    <form id="login-form">
+      <label>用户名<input name="username" autocomplete="username" required></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">登录</button>
+    </form>
+  </section>
+  <div id="settings-panel" hidden>
+    <section>
+      <div class="section-heading"><h2>连接你的 iPhone</h2><button id="refresh" class="secondary">刷新设备</button></div>
+      <ol><li>在 iPhone 安装 Bark，并允许通知。</li><li>复制下方服务器地址，在 Bark 的服务器设置中添加。</li><li>返回此页刷新设备，发送测试通知。</li></ol>
+      <label>专属服务器地址<input id="server-url" type="password" readonly autocomplete="off" aria-label="专属服务器地址"></label>
+      <button id="copy-url">复制服务器地址</button>
+      <p class="hint">该地址包含你的访问凭据，请只添加到自己的 Bark。新注册设备默认接收所有现有助手的新回复提醒。</p>
+    </section>
+    <section><h2>通知设备</h2><p class="hint">只推送助手名称和新回复提示，不包含聊天正文。流式更新不会重复通知；当前使用其他客户端时也会提醒。发送记录保留 15 天，每天自动清理；Bark 归档通知附带 15 天有效期。设备和通知设置不随记录清理。</p><div id="devices"></div></section>
+    <footer><a href="/">返回首页</a><button id="logout" class="secondary">退出登录</button></footer>
+  </div>
+</main>
+</body>
+</html>

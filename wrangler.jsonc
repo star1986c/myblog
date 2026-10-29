@@ -99,10 +99,21 @@
         "limit": 5,
         "period": 60
       }
+    },
+    {
+      "name": "BARK_RATE_LIMITER",
+      "namespace_id": "1014004",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
     }
   ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  "triggers": {
+    "crons": ["0 19 * * *"]
   }
 }

@@ -6,6 +6,13 @@ const wrangler = JSON.parse(
   await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 );
 
+test("Bark delivery records are cleaned daily at 03:00 Asia/Taipei with an independent rate limit", () => {
+  assert.deepEqual(wrangler.triggers.crons, ["0 19 * * *"]);
+  assert.deepEqual(wrangler.ratelimits.find(r => r.name === "BARK_RATE_LIMITER"), {
+    name: "BARK_RATE_LIMITER", namespace_id: "1014004", simple: { limit: 60, period: 60 },
+  });
+});
+
 test("deployment config binds the existing private notes R2 bucket", () => {
   assert.equal(wrangler.d1_databases[0].binding, "BLOG_DB");
   assert.deepEqual(wrangler.r2_buckets, [

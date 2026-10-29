@@ -17,6 +17,7 @@ import {
   resolveHermesChatCloudRetentionDays,
 } from "./hermes-chat-retention.js";
 import { resolveHermesChatMessageDeletion } from "./hermes-chat-message-deletion.js";
+import { initializeBarkQueue, queueBarkNotification, nextBarkAlarm, flushBarkQueue } from "./bark-notifications.js";
 
 const MESSAGE_RETENTION_COUNT = 500;
 const REPLAY_BATCH_SIZE = 100;
@@ -72,6 +73,7 @@ class HermesChatRoom extends DurableObject {
         INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at)
         VALUES (4, unixepoch() * 1000);
       `);
+      initializeBarkQueue(this.ctx.storage.sql);
     });
   }
 
@@ -248,7 +250,7 @@ class HermesChatRoom extends DurableObject {
         throw new Error("Unsupported Hermes chat frame.");
       }
       const envelope = validateHermesChatMessage(frame, attachment.role);
-      const stored = this.storeMessage(envelope);
+      const stored = this.storeMessage(envelope, attachment.spaceId);
       if (!stored.duplicate) await this.ensureCleanupAlarm();
       socket.send(JSON.stringify({
         v: CHAT_PROTOCOL_VERSION,
@@ -292,6 +294,7 @@ class HermesChatRoom extends DurableObject {
 
   async alarm() {
     const now = Date.now();
+    await flushBarkQueue(this.ctx, this.env, now);
     const cutoff = hermesChatRetentionCutoff(this.env, now);
     const expired = this.ctx.storage.sql
       .exec("SELECT COUNT(*) AS count FROM messages WHERE created_at <= ?", cutoff)
@@ -305,6 +308,7 @@ class HermesChatRoom extends DurableObject {
   }
 
   async purgeHistory() {
+    this.ctx.storage.sql.exec("DELETE FROM bark_pending");
     const messagesDeleted = this.ctx.storage.sql
       .exec("SELECT COUNT(*) AS count FROM messages")
       .one().count;
@@ -329,6 +333,7 @@ class HermesChatRoom extends DurableObject {
         `DELETE FROM messages WHERE id IN (${placeholders})`,
         ...ids,
       );
+      this.ctx.storage.sql.exec(`DELETE FROM bark_pending WHERE message_id IN (${placeholders})`, ...ids);
       await this.ensureCleanupAlarm();
     }
     return {
@@ -432,7 +437,7 @@ class HermesChatRoom extends DurableObject {
       throw new Error("Standalone Hermes delivery only supports new messages.");
     }
     const envelope = validateHermesChatMessage(frame, "agent");
-    const stored = this.storeMessage(envelope);
+    const stored = this.storeMessage(envelope, spaceId);
     if (!stored.duplicate) {
       await this.ensureCleanupAlarm();
       this.broadcastToOtherRole(
@@ -474,22 +479,28 @@ class HermesChatRoom extends DurableObject {
       .exec("SELECT MIN(created_at) AS created_at FROM messages")
       .one().created_at;
     const existing = await this.ctx.storage.getAlarm();
-    if (!Number.isSafeInteger(oldest) || oldest < 0) {
+    const notificationDue = nextBarkAlarm(this.ctx.storage.sql);
+    const cleanupDue = Number.isSafeInteger(oldest) && oldest >= 0
+      ? nextHermesChatCleanupAt(oldest, resolveHermesChatCloudRetentionDays(this.env), now) : null;
+    const times = [notificationDue, cleanupDue].filter(Number.isSafeInteger);
+    if (times.length === 0) {
       if (existing !== null) await this.ctx.storage.deleteAlarm();
       return;
     }
-    const target = nextHermesChatCleanupAt(
-      oldest,
-      resolveHermesChatCloudRetentionDays(this.env),
-      now,
-    );
+    const target = Math.max(now + 1, Math.min(...times));
     if (existing === null || target < existing) {
       await this.ctx.storage.setAlarm(target);
     }
   }
 
-  storeMessage(envelope) {
-    return this.storeEvent(envelope.id, envelope.sender, envelope);
+  storeMessage(envelope, spaceId) {
+    // Notification metadata is persisted with the incoming event before ACK.
+    // Streaming edits never enqueue another notification for the same message.
+    return this.ctx.storage.transactionSync(() => {
+      const stored = this.storeEvent(envelope.id, envelope.sender, envelope);
+      if (!stored.duplicate && envelope.sender === "agent") queueBarkNotification(this.ctx, this.env, envelope.id, spaceId);
+      return stored;
+    });
   }
 
   storeStreamEdit(edit) {

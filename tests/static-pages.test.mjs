@@ -149,7 +149,9 @@ test("public pages use consistent English SEO metadata", async () => {
 
   const publicRoot = new URL("../public/", import.meta.url);
   const publicFiles = (await readdir(publicRoot, { recursive: true }))
-    .filter((path) => /\.(?:html|js|xml|txt)$/.test(path));
+    .filter((path) => /\.(?:html|js|xml|txt)$/.test(path))
+    // The authenticated notification settings are intentionally Chinese, not public SEO content.
+    .filter((path) => path !== "bark-settings/index.html" && path !== "assets/bark-settings.20261029.js");
   const publicText = await Promise.all(
     publicFiles.map((path) => readFile(new URL(path, publicRoot), "utf8")),
   );
@@ -163,7 +165,14 @@ test("public static pages do not expose a web notes entry", () => {
 });
 
 test("private routes are absent from the public sitemap", () => {
-  assert.doesNotMatch(sitemapXml, /\/blog\/|\/notes\/|\/admin\//);
+  assert.doesNotMatch(sitemapXml, /\/blog\/|\/notes\/|\/admin\/|\/bark-settings\//);
+});
+
+test("Bark settings use a no-index page and never embed device credentials", async () => {
+  const html = await readFile(new URL("../public/bark-settings/index.html", import.meta.url), "utf8");
+  assert.match(html, /name="robots" content="noindex,nofollow"/);
+  assert.match(html, /id="server-url" type="password"/);
+  assert.doesNotMatch(html, /\/bark\/[a-f0-9]{48}/);
 });
 
 test("JSON formatter is served from a standalone page", () => {

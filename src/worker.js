@@ -79,6 +79,8 @@ import {
   normalizeHermesChatSpaceIds,
 } from "./hermes-chat-protocol.js";
 import { resolveHermesChatCloudRetentionDays } from "./hermes-chat-retention.js";
+import { handleBarkRequest, handleBarkAdmin } from "./bark-service.js";
+import { cleanupBarkData } from "./bark-notifications.js";
 
 const IMMUTABLE_ASSET_PATH = /^\/(?:assets|vendor)\//;
 const MIN_ADMIN_PASSWORD_LENGTH = 12;
@@ -114,6 +116,9 @@ const SECURITY_HEADERS = {
 };
 
 export default {
+  async scheduled(controller, env, ctx) {
+    await cleanupBarkData(env, controller.scheduledTime);
+  },
   async fetch(request, env, ctx) {
     try {
       return await handleRequest(request, env, ctx);
@@ -125,6 +130,10 @@ export default {
 
 async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
+
+  if (url.pathname.startsWith("/bark/")) {
+    return withSiteHeaders(request, await handleBarkRequest(request, env));
+  }
 
   if (url.pathname === "/api/hermes-chat/ws") {
     return await handleHermesChatWebSocket(request, env);
@@ -864,6 +873,10 @@ async function handleAdminApi(request, env, path) {
 
   const db = requireDatabase(env);
 
+  if (path === "/api/admin/bark" || path.startsWith("/api/admin/bark/")) {
+    return await handleBarkAdmin(request, env, path);
+  }
+
   if (path === "/api/admin/hermes-chat/profiles" && request.method === "GET") {
     return jsonResponse({ profiles: configuredHermesChatProfiles(env) });
   }
@@ -1357,6 +1370,8 @@ function cacheControlFor(pathname, contentType) {
 
   if (
     pathname === "/notes" ||
+    pathname.startsWith("/bark/") ||
+    pathname.startsWith("/bark-settings") ||
     pathname.startsWith("/notes/") ||
     pathname === "/admin" ||
     pathname.startsWith("/admin/")
