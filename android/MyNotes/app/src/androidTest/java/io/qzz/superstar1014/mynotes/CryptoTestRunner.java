@@ -53,6 +53,12 @@ public final class CryptoTestRunner extends Instrumentation {
         finish(Activity.RESULT_OK, result);
         return;
       }
+      if ("chat-recovery".equals(arguments.getString("uiQa"))) {
+        HermesChatRecoveryTest.run(this);
+        result.putString(REPORT_KEY_STREAMRESULT, "Hermes foreground probe, network recovery, retry coalescing and replay: PASS\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if ("notes-sync".equals(arguments.getString("uiQa"))) {
         NotesIncrementalSyncTest.run(this);
         result.putString(REPORT_KEY_STREAMRESULT, "Notes incremental sync, paging, deletion, retry and encrypted cache: PASS\n");

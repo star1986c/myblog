@@ -87,6 +87,8 @@ final class HermesChatConnectionManager {
   private int reconnectAttempt;
   private volatile boolean authenticated;
   private Runnable reconnectTask;
+  private final HermesChatRecoveryMonitor recoveryMonitor;
+  private long connectingGeneration = -1;
 
   private HermesChatConnectionManager(Context applicationContext) {
     context = applicationContext;
@@ -94,6 +96,20 @@ final class HermesChatConnectionManager {
     secureStore = new SecureSessionStore(applicationContext);
     unreadStore = new HermesChatUnreadStore(applicationContext);
     notifications = new HermesChatNotifications(applicationContext);
+    recoveryMonitor = new HermesChatRecoveryMonitor(applicationContext, handler,
+      new HermesChatRecoveryMonitor.Listener() {
+        @Override public void onForeground() { recoverConnection(); }
+        @Override public void onNetworkChanged(boolean available) {
+          if (sessions.isEmpty()) return;
+          // Invalidate both the old transport and an in-flight ticket on network switch.
+          cancelReconnect();
+          connectionAttempt += 1;
+          if (client != null) client.close();
+          state = State.DISCONNECTED;
+          if (available) recoverConnection();
+          else handleDisconnected(profileGeneration, "网络不可用，恢复后自动连接。");
+        }
+      });
     ensureClient();
     List<Models.HermesChatProfile> cachedProfiles = new HermesChatProfileStore(
       applicationContext
@@ -230,6 +246,13 @@ final class HermesChatConnectionManager {
     if (sessions.isEmpty()) return;
     cancelReconnect();
     authenticateAndConnect(profileGeneration);
+  }
+
+  private void recoverConnection() {
+    if (sessions.isEmpty() || !recoveryMonitor.isNetworkAvailable()) return;
+    if (state == State.CONNECTING) return;
+    if (isReady()) client.checkConnection();
+    else authenticateAndConnect(profileGeneration);
   }
 
   void shutdown() {
@@ -406,8 +429,16 @@ final class HermesChatConnectionManager {
 
   private void authenticateAndConnect(long generation) {
     if (generation != profileGeneration || sessions.isEmpty()) return;
+    if (state == State.CONNECTING && connectingGeneration == generation) return;
     cancelReconnect();
     ensureClient();
+    if (!recoveryMonitor.isNetworkAvailable()) {
+      handleDisconnected(generation, "网络不可用，恢复后自动连接。");
+      return;
+    }
+    // Retire the old socket while authenticating, so stale callbacks cannot mark it ready.
+    client.close();
+    connectingGeneration = generation;
     state = State.CONNECTING;
     publishAllStates();
     long attempt = ++connectionAttempt;
@@ -507,7 +538,7 @@ final class HermesChatConnectionManager {
   }
 
   private void handleReady(long generation) {
-    if (generation != profileGeneration || client == null) return;
+    if (generation != profileGeneration || client == null || !client.isConnected()) return;
     state = State.READY;
     cancelReconnect();
     reconnectAttempt = 0;
@@ -614,6 +645,7 @@ final class HermesChatConnectionManager {
       ? "聊天连接已断开。"
       : reason;
     publishAllStates();
+    if (sessions.isEmpty() || !recoveryMonitor.isNetworkAvailable()) return;
     long baseDelay = Math.min(45_000L, 2_000L << Math.min(reconnectAttempt, 4));
     long jitter = ThreadLocalRandom.current().nextLong(Math.max(1L, baseDelay / 4));
     reconnectAttempt += 1;

@@ -2,6 +2,7 @@ package io.qzz.superstar1014.mynotes;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -23,6 +24,8 @@ import okhttp3.WebSocketListener;
 final class HermesChatClient {
   static final String RELAY_URL = "wss://h.superstar1014.qzz.io/api/hermes-chat/ws";
   private static final long HANDSHAKE_TIMEOUT_MS = 20_000L;
+  private static final long PROBE_TIMEOUT_MS = 8_000L;
+  private static final long PROBE_MIN_INTERVAL_MS = 10_000L;
 
   interface Listener {
     void onReady();
@@ -63,6 +66,8 @@ final class HermesChatClient {
   private volatile boolean closing;
   private Runnable handshakeTimeoutTask;
   private boolean handshakePending;
+  private Runnable probeTimeoutTask;
+  private long lastProbeAt = -PROBE_MIN_INTERVAL_MS;
 
   HermesChatClient(Listener listener) {
     this.listener = listener;
@@ -193,12 +198,43 @@ final class HermesChatClient {
     return socket != null && !closing;
   }
 
+  /** One foreground check; plain ping is answered by the Hub's hibernation API. */
+  void checkConnection() {
+    synchronized (socketStateLock) {
+      if (socket == null || closing || handshakePending || probeTimeoutTask != null) return;
+      long now = SystemClock.elapsedRealtime();
+      if (now - lastProbeAt < PROBE_MIN_INTERVAL_MS) return;
+      lastProbeAt = now;
+      WebSocket expectedSocket = socket;
+      probeTimeoutTask = () -> failProbeIfPending(expectedSocket);
+      handler.postDelayed(probeTimeoutTask, PROBE_TIMEOUT_MS);
+      if (!expectedSocket.send("ping")) failProbeIfPending(expectedSocket);
+    }
+  }
+
+  private void cancelProbeLocked() {
+    if (probeTimeoutTask != null) handler.removeCallbacks(probeTimeoutTask);
+    probeTimeoutTask = null;
+  }
+
+  private void failProbeIfPending(WebSocket expectedSocket) {
+    synchronized (socketStateLock) {
+      if (socket != expectedSocket || closing || probeTimeoutTask == null) return;
+      cancelProbeLocked();
+      socket = null;
+    }
+    expectedSocket.cancel();
+    listener.onDisconnected("聊天连接无响应，正在恢复连接。");
+  }
+
   void close() {
     closing = true;
     for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
     WebSocket current;
     synchronized (socketStateLock) {
       cancelHandshakeTimeoutLocked();
+      cancelProbeLocked();
+      lastProbeAt = -PROBE_MIN_INTERVAL_MS;
       current = socket;
       socket = null;
     }
@@ -279,6 +315,12 @@ final class HermesChatClient {
     @Override
     public void onMessage(WebSocket webSocket, String text) {
       if (webSocket != socket) return;
+      if ("pong".equals(text)) {
+        synchronized (socketStateLock) {
+          if (webSocket == socket) cancelProbeLocked();
+        }
+        return;
+      }
       String spaceId = "";
       String sessionToken = "";
       try {
@@ -386,6 +428,7 @@ final class HermesChatClient {
       synchronized (socketStateLock) {
         if (webSocket != socket) return;
         cancelHandshakeTimeoutLocked();
+        cancelProbeLocked();
         socket = null;
       }
       for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
@@ -397,6 +440,7 @@ final class HermesChatClient {
       synchronized (socketStateLock) {
         if (webSocket != socket) return;
         cancelHandshakeTimeoutLocked();
+        cancelProbeLocked();
         socket = null;
       }
       for (ProfileState profile : profiles.values()) profile.lastTypingActive = null;
