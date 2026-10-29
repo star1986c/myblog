@@ -1,5 +1,18 @@
 # iPhone 验证记录
 
+## 0.1.6 (7) 长消息定位、聊天样式与图标 — 2026-10-29
+
+- 离线合成 200 条多段 Markdown 长报告，复现进入聊天后最新消息 10 秒仍不可见：普通末条短消息和末条超长消息分别失败。截图显示滚动落在旧内容/长消息中段，未复现用户真实 zql 会话的整块空白，未据此声称生产接口已验证正常。
+- iOS 复用 Mac 的首屏文本/换行/附件预算（最多 40 条，按内容量缩减，最末条始终完整保留），更早历史仍可展开。初次进入、最新消息按钮和新消息自动滚动均直接定位末条消息底部，避免依赖懒布局的末尾空白占位符。两种失败用例修复后通过。
+- 聊天参考用户 Telegram 截图：浅绿背景、白色/浅绿左右气泡、右下时间、浅蓝代码块与复制、回形针附件入口、半透明输入栏和对应深色配色。保留原有附件、录音、命令、搜索与导航功能。移除 Markdown 块边界多余换行，代码内部空白不改。
+- iPhone 图标替换为 1024×1024 不透明 PNG；背景铺满四角，不预画圆角或留透明边。macOS 图标保持原样。
+- 共享 Swift 107 项通过。iOS 首轮全量运行中 15 单元和 7/9 UI 通过，两处 UI 失败均为过时文字查询；修正查询并补充 Markdown 空白测试后，最终定向回归 16 单元 + 4 UI 全部通过，另 5 个 UI 用例已在全量运行通过。续签离线测试 11 项通过。Release 安装状态另行记录。
+- 证据：`/private/tmp/hermes-white-before.log`、`hermes-white-regression.log`（负向复现）；`/private/tmp/hermes-final-core.log`、`hermes-final-ui.log`、`hermes-016-final.log`（回归）。浅深色合成聊天截图保存于忽略目录 `output/ios-chat-016/`。未读取真实聊天正文或向生产发送测试消息。
+
+图标使用内置 imagegen，保存为 `ios/MyNotes/Assets.xcassets/AppIcon.appiconset/AppIcon.png`。最终提示词：
+
+> Use case: logo-brand / app icon redesign. Edit the provided current My Notes iPhone app icon into a refined production-ready 1024x1024 iOS app icon. Preserve its recognizable white note-sheet motif, three horizontal note lines and a small simple privacy lock incorporated into the folded corner, with one restrained four-point blue sparkle. Simplify the bulky 3D appearance to elegant crisp softly dimensional forms. Important technical correction: the BLUE background must completely fill the ENTIRE SQUARE canvas including all four corners, with NO pre-rounded outer tile, NO white or transparent margins, NO outside border, NO inset frame. iOS applies its own corner mask. Full-bleed rich azure-to-deep-blue gradient, subtle teal highlight, centered large white note glyph occupying about 65 percent of canvas, optically balanced. Clean silhouette recognizable at 40 pixels. No text, no letters, no phone mockup, no perspective, no extra decorative objects. Opaque square PNG intended to replace the current app icon.
+
 ## 0.1.5 (6) 真机安装与续签副本 — 2026-10-29
 
 - 已推送代码提交 `1a4a364`，从该提交生成固定快照 `git-0.1.5-6-a5a24f39fdd21469`（79 文件），完成 Release 签名构建和 USB 保留数据覆盖安装；CoreDevice 确认版本并启动成功。

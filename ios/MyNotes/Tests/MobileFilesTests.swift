@@ -31,6 +31,11 @@ final class MobileFilesTests: XCTestCase {
     XCTAssertEqual(UIImage(contentsOfFile: source.path)?.cgImage?.width, 3000)
   }
 
+  func testMarkdownAvoidsExtraBubblePaddingButPreservesCodeWhitespace() {
+    let blocks = MobileMarkdownBlock.parse("## 标题\n\n正文\n\n```text\n\n  code\n\n```\n\n结束\n")
+    XCTAssertEqual(blocks.map(\.text), ["标题", "正文", "\n  code\n", "结束"])
+  }
+
   func testMarkdownKeepsCodeLiteralAndHandlesIncompleteStreamingFence() {
     let blocks = MobileMarkdownBlock.parse("## Heading\n- item\n```swift\n# literal\nlet value = 1")
     XCTAssertEqual(blocks, [MobileMarkdownBlock(kind: .heading(2), text: "Heading"), MobileMarkdownBlock(kind: .text, text: "• item"), MobileMarkdownBlock(kind: .code, text: "# literal\nlet value = 1")])

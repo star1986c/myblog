@@ -2,6 +2,50 @@ import XCTest
 
 @MainActor
 final class MyNotesUITests: XCTestCase {
+  func testChatStyleLightAndDark() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview", "--preview-chat-style"]
+    app.launch()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    app.buttons["profile.primary"].tap()
+    XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+    let reply = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "如果有异常，把结果发给我")).firstMatch
+    XCTAssertTrue(reply.waitForExistence(timeout: 5))
+    XCTAssertTrue(reply.isHittable)
+    var shot = XCTAttachment(screenshot: app.screenshot())
+    shot.name = "chat-style-light"; shot.lifetime = .keepAlways; add(shot)
+    app.tabBars.buttons["设置"].tap()
+    app.buttons["settings.appearance"].tap()
+    app.buttons["深色"].tap()
+    app.tabBars.buttons["Hermes"].tap()
+    XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+    shot = XCTAttachment(screenshot: app.screenshot())
+    shot.name = "chat-style-dark"; shot.lifetime = .keepAlways; add(shot)
+  }
+
+  func testLongHistoryOpensAtVisibleLatestMessageOffline() {
+    verifyLongHistory(extraArguments: [])
+  }
+
+  func testOversizedNewestMessageOpensAtItsEndOffline() {
+    verifyLongHistory(extraArguments: ["--preview-long-latest"])
+  }
+
+  private func verifyLongHistory(extraArguments: [String]) {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview", "--preview-long-history"] + extraArguments
+    app.launch()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    app.buttons["profile.primary"].tap()
+    XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 10))
+    let latest = app.staticTexts["长历史最新消息可见"]
+    let visible = NSPredicate(format: "exists == true AND hittable == true")
+    expectation(for: visible, evaluatedWith: latest)
+    waitForExpectations(timeout: 10)
+    let screenshot = XCTAttachment(screenshot: app.screenshot())
+    screenshot.name = "offline-long-history"; screenshot.lifetime = .keepAlways; add(screenshot)
+  }
+
   func testImageThumbnailsAndAttachmentPreviewsReturnToTheSameChat() {
     let app = XCUIApplication()
     app.launchArguments = ["--preview", "--preview-attachments"]
@@ -129,7 +173,7 @@ final class MyNotesUITests: XCTestCase {
     composer.typeText("draft primary")
     app.navigationBars.buttons.element(boundBy: 0).tap()
     app.buttons["profile.personal"].tap()
-    XCTAssertEqual(app.textFields["chat.composer"].value as? String, "消息或 /命令")
+    XCTAssertEqual(app.textFields["chat.composer"].value as? String, "输入消息或 /命令")
     app.navigationBars.buttons.element(boundBy: 0).tap()
     app.buttons["profile.primary"].tap()
     XCTAssertEqual(app.textFields["chat.composer"].value as? String, "draft primary")

@@ -60,3 +60,23 @@ enum MobileTheme {
   static let surface = Color(uiColor: .secondarySystemGroupedBackground)
   static let outgoing = Color(uiColor: .tertiarySystemFill)
 }
+
+/// Conversation-specific colors; notes and settings keep their system surfaces.
+@MainActor
+enum MobileChatStyle {
+  private static func color(_ light: UInt32, _ dark: UInt32) -> Color {
+    Color(uiColor: UIColor { traits in
+      let value = traits.userInterfaceStyle == .dark ? dark : light
+      return UIColor(red: CGFloat((value >> 16) & 255) / 255,
+        green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1)
+    })
+  }
+  static let accent = color(0x0879BC, 0x74C4F4)
+  static let wallpaperTop = color(0xE5EDCE, 0x14242A)
+  static let wallpaperBottom = color(0xCCE5D9, 0x172D32)
+  static let incoming = color(0xFFFFFF, 0x24373E)
+  static let outgoing = color(0xDCF4C7, 0x315246)
+  static let code = color(0xEAF5F7, 0x1C3039)
+  static let codeAccent = color(0x267F94, 0x79C4D6)
+  static let input = color(0xFFFFFF, 0x26383F)
+}

@@ -166,6 +166,12 @@ private struct ChatView: View {
   private var draft: MobileDraft { model.chatDrafts[profile.id] ?? MobileDraft() }
   private var allMessages: [HermesChatMessage] {
     #if DEBUG
+    if model.isPreview && ProcessInfo.processInfo.arguments.contains("--preview-chat-style") {
+      return MobileChatStyleFixture.messages
+    }
+    if model.isPreview && ProcessInfo.processInfo.arguments.contains("--preview-long-history") {
+      return MobileLongHistoryFixture.messages
+    }
     if model.isPreview && ProcessInfo.processInfo.arguments.contains("--preview-attachments") {
       return MobileAttachmentFixtures.messages(spaceID: profile.id)
     }
@@ -175,7 +181,10 @@ private struct ChatView: View {
   private var matchingMessages: [HermesChatMessage] {
     search.isEmpty ? allMessages : allMessages.filter { $0.text.localizedCaseInsensitiveContains(search) || $0.attachments.contains { $0.name.localizedCaseInsensitiveContains(search) } }
   }
-  private var messages: [HermesChatMessage] { Array(matchingMessages.suffix(limit)) }
+  private var visibleCount: Int {
+    HermesChatMessageWindow.visibleCount(in: matchingMessages, limit: limit)
+  }
+  private var messages: [HermesChatMessage] { Array(matchingMessages.suffix(visibleCount)) }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -192,7 +201,11 @@ private struct ChatView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(MobileTheme.canvas)
+    .background {
+      LinearGradient(colors: [MobileChatStyle.wallpaperTop, MobileChatStyle.wallpaperBottom],
+        startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
+    }
+    .tint(MobileChatStyle.accent)
     .safeAreaInset(edge: .bottom, spacing: 0) {
       if chat.isConfigured(spaceID: profile.id) {
         if selecting { selectionBar } else { composer }
@@ -202,6 +215,13 @@ private struct ChatView: View {
     .searchable(text: $search, prompt: "搜索本机聊天记录")
     .onChange(of: search) { _, _ in limit = 40 }
     .toolbar {
+      ToolbarItem(placement: .principal) {
+        VStack(spacing: 2) {
+          Text(profile.label).font(.headline).lineLimit(1)
+          Text(chat.connectionState == .connected ? "端到端加密" : "正在连接…")
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+      }
       ToolbarItem(placement: .topBarTrailing) {
         Menu {
           Button("聊天密钥", systemImage: "key") { configuring = true }
@@ -232,9 +252,9 @@ private struct ChatView: View {
   private var timeline: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: 18) {
-          if matchingMessages.count > limit {
-            Button("加载更早的消息（还有 \(matchingMessages.count - limit) 条）") { limit += 40 }
+        LazyVStack(alignment: .leading, spacing: 8) {
+          if matchingMessages.count > visibleCount {
+            Button("加载更早的消息（还有 \(matchingMessages.count - visibleCount) 条）") { limit += 40 }
               .frame(maxWidth: .infinity).padding(.vertical, 8)
           }
           if chat.isRefreshingMessages { ProgressView("正在补同步…").frame(maxWidth: .infinity) }
@@ -252,7 +272,7 @@ private struct ChatView: View {
           }
           Color.clear.frame(height: 1).id("bottom")
             .onAppear { nearBottom = true }.onDisappear { nearBottom = false }
-        }.padding()
+        }.padding(.horizontal, 10).padding(.vertical, 12)
       }
       .scrollDismissesKeyboard(.interactively)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -273,22 +293,21 @@ private struct ChatView: View {
         // conversation's default bottom anchor / lazy-layout offset.
         await Task.yield()
         guard !Task.isCancelled else { return }
-        proxy.scrollTo("bottom", anchor: .bottom)
+        proxy.scrollTo(messages.last?.id ?? "bottom", anchor: .bottom)
       }
       .overlay(alignment: .bottomTrailing) {
-        if !nearBottom { Button("最新消息", systemImage: "arrow.down") { proxy.scrollTo("bottom", anchor: .bottom) }.buttonStyle(.borderedProminent).padding() }
+        if !nearBottom { Button { proxy.scrollTo(messages.last?.id ?? "bottom", anchor: .bottom) } label: {
+          Image(systemName: "arrow.down").font(.system(size: 18, weight: .semibold))
+            .frame(width: 44, height: 44).background(MobileChatStyle.incoming, in: Circle())
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+        }.accessibilityLabel("最新消息").padding(12) }
       }
-      .onChange(of: allMessages.count) { _, _ in if nearBottom && search.isEmpty { proxy.scrollTo("bottom", anchor: .bottom) } }
+      .onChange(of: allMessages.count) { _, _ in if nearBottom && search.isEmpty { proxy.scrollTo(messages.last?.id ?? "bottom", anchor: .bottom) } }
     }
   }
 
   private func messageBubble(_ message: HermesChatMessage) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Text(message.isAgent ? "Hermes" : "你").font(.caption.bold()).foregroundStyle(.secondary)
-        Spacer()
-        Text(Date(timeIntervalSince1970: Double(message.sentAt) / 1000), style: .time).font(.caption2).foregroundStyle(.secondary)
-      }
+    VStack(alignment: .leading, spacing: 6) {
       if !message.text.isEmpty { MessageMarkdown(text: message.text).equatable() }
       ForEach(message.attachments) { attachment in
         MobileChatAttachment(descriptor: attachment, isOpening: openingID == attachment.id,
@@ -310,11 +329,18 @@ private struct ChatView: View {
           }
         }
       }
+      Text(Date(timeIntervalSince1970: Double(message.sentAt) / 1000), style: .time)
+        .font(.caption2).foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
-    .padding(14)
+    .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 7)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(message.isAgent ? MobileTheme.surface : MobileTheme.outgoing, in: RoundedRectangle(cornerRadius: 18))
-    .padding(message.isAgent ? .trailing : .leading, 20)
+    .background(message.isAgent ? MobileChatStyle.incoming : MobileChatStyle.outgoing,
+      in: UnevenRoundedRectangle(topLeadingRadius: 16,
+        bottomLeadingRadius: message.isAgent ? 5 : 16,
+        bottomTrailingRadius: message.isAgent ? 16 : 5, topTrailingRadius: 16))
+    .shadow(color: .black.opacity(0.05), radius: 1, y: 1)
+    .padding(message.isAgent ? .trailing : .leading, 32)
     .contextMenu {
       Button("复制文字", systemImage: "doc.on.doc") { UIPasteboard.general.setItems([["public.utf8-plain-text": message.text]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]) }
       ShareLink(item: message.text) { Label("分享文字", systemImage: "square.and.arrow.up") }
@@ -344,11 +370,12 @@ private struct ChatView: View {
           }
         }
       }
-      HStack(alignment: .bottom, spacing: 12) {
-        MediaPickerMenu(includeFiles: true, onCapture: { addFiles([$0.url]) }, onFiles: addFiles)
+      HStack(alignment: .bottom, spacing: 6) {
+        MediaPickerMenu(includeFiles: true, onCapture: { addFiles([$0.url]) }, onFiles: addFiles, symbol: "paperclip")
           .frame(minWidth: 44, minHeight: 44).disabled(chat.isSending)
-        TextField("消息或 /命令", text: Binding(get: { draft.text }, set: updateText), axis: .vertical)
-          .lineLimit(1...6).padding(10).background(MobileTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+        TextField("输入消息或 /命令", text: Binding(get: { draft.text }, set: updateText), axis: .vertical)
+          .lineLimit(1...6).padding(.horizontal, 14).padding(.vertical, 11)
+          .background(MobileChatStyle.input, in: RoundedRectangle(cornerRadius: 23))
           .overlay { RoundedRectangle(cornerRadius: 20).stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5) }
           .disabled(chat.isSending).accessibilityIdentifier("chat.composer")
         Button {
@@ -361,13 +388,12 @@ private struct ChatView: View {
             }
           }
         } label: {
-          if chat.isSending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.system(size: 30, weight: .medium)) }
+          if chat.isSending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.system(size: 38, weight: .medium)) }
         }.frame(minWidth: 44, minHeight: 44).disabled(chat.isSending || chat.connectionState != .connected || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.files.isEmpty))
           .accessibilityLabel("发送消息").accessibilityIdentifier("chat.send")
       }
       if chat.connectionState != .connected { Text("等待连接，草稿会保留在本次运行中").font(.caption).foregroundStyle(.secondary) }
-    }.padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
-      .overlay(alignment: .top) { Divider() }
+    }.padding(.horizontal, 8).padding(.vertical, 6).background(.ultraThinMaterial)
   }
   private var selectionBar: some View {
     HStack {
@@ -460,7 +486,9 @@ struct MobileMarkdownBlock: Equatable {
     var code = false
     func flush() {
       if !lines.isEmpty {
-        blocks.append(MobileMarkdownBlock(kind: code ? .code : .text, text: lines.joined(separator: "\n")))
+        let joined = lines.joined(separator: "\n")
+        let text = code ? joined : joined.trimmingCharacters(in: .newlines)
+        if !text.isEmpty { blocks.append(MobileMarkdownBlock(kind: code ? .code : .text, text: text)) }
         lines = []
       }
     }
@@ -491,12 +519,19 @@ struct MessageMarkdown: View, Equatable {
         case .code:
           VStack(alignment: .leading) {
             HStack {
-              Text("代码").font(.caption).foregroundStyle(.secondary)
+              Text("代码").font(.caption.weight(.semibold)).foregroundStyle(MobileChatStyle.codeAccent)
               Spacer()
-              Button("复制") { UIPasteboard.general.setItems([["public.utf8-plain-text": block.text]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]) }.font(.caption)
+              Button { UIPasteboard.general.setItems([["public.utf8-plain-text": block.text]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]) } label: {
+                Image(systemName: "doc.on.doc").frame(minWidth: 44, minHeight: 44)
+              }.accessibilityLabel("复制代码").foregroundStyle(MobileChatStyle.codeAccent)
             }
             ScrollView(.horizontal) { Text(block.text).font(.system(.footnote, design: .monospaced)).textSelection(.enabled) }
-          }.padding(10).background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+          }.padding(.horizontal, 10).padding(.bottom, 10)
+            .background(MobileChatStyle.code, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(alignment: .leading) {
+              UnevenRoundedRectangle(topLeadingRadius: 3, bottomLeadingRadius: 3)
+                .fill(MobileChatStyle.codeAccent).frame(width: 3)
+            }
         case .heading(let level):
           Text(inline(block.text)).font(level == 1 ? .title3.bold() : .headline).textSelection(.enabled)
         case .text:
@@ -509,3 +544,39 @@ struct MessageMarkdown: View, Equatable {
     (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
   }
 }
+
+#if DEBUG
+private enum MobileLongHistoryFixture {
+  static let messages: [HermesChatMessage] = {
+    let report = (0..<120).map { line in
+      "## 分析项目 \(line)\n\n这是用于离线复现长消息布局的合成报告。包含**重点**、任务说明和多段正文。\n\n```text\n检查记录 \(line)\n```\n"
+    }.joined()
+    var result: [HermesChatMessage] = []
+    for index in 0..<200 {
+      let sequence = Int64(index + 1)
+      let newest = ProcessInfo.processInfo.arguments.contains("--preview-long-latest")
+        ? report + "\n## 长历史最新消息可见" : "长历史最新消息可见"
+      let text: String = index == 199 ? newest : report
+      let message = HermesChatMessage(id: "load-\(index)", sender: "agent", sentAt: sequence,
+        sequence: sequence, text: text)
+      result.append(message)
+    }
+    return result
+  }()
+}
+#endif
+
+#if DEBUG
+private enum MobileChatStyleFixture {
+  static let messages: [HermesChatMessage] = [
+    HermesChatMessage(id: "style-1", sender: "client", sentAt: 1_793_250_000_000,
+      sequence: 1, text: "帮我整理一下今天的工作安排。"),
+    HermesChatMessage(id: "style-2", sender: "agent", sentAt: 1_793_250_060_000,
+      sequence: 2, text: "## 今天的安排\n\n先把最重要的事情做好，给临时任务留一点空间。\n\n- 上午：检查服务运行情况\n- 下午：完成项目更新\n- 晚上：整理笔记与待办"),
+    HermesChatMessage(id: "style-3", sender: "client", sentAt: 1_793_250_120_000,
+      sequence: 3, text: "查看服务状态用什么命令？"),
+    HermesChatMessage(id: "style-4", sender: "agent", sentAt: 1_793_250_180_000,
+      sequence: 4, text: "可以先查看运行状态：\n\n```bash\nhermes status\n```\n\n如果有异常，把结果发给我，我们一起排查。")
+  ]
+}
+#endif

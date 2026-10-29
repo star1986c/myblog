@@ -103,6 +103,7 @@ struct MediaPickerMenu: View {
   let includeFiles: Bool
   let onCapture: (CapturedMedia) -> Void
   let onFiles: ([URL]) -> Void
+  var symbol = "plus.circle"
   @State private var photo: PhotosPickerItem?
   @State private var camera = false
   @State private var recording = false
@@ -117,7 +118,7 @@ struct MediaPickerMenu: View {
       }
       Button("录音", systemImage: "mic") { recording = true }
       if includeFiles { Button("选择文件", systemImage: "doc") { importing = true } }
-    } label: { Image(systemName: "plus.circle").font(.title2).accessibilityLabel("添加附件") }
+    } label: { Image(systemName: symbol).font(.title2).accessibilityLabel("添加附件") }
       .onChange(of: photo) { _, item in
         photoTask?.cancel()
         guard let item else { return }
