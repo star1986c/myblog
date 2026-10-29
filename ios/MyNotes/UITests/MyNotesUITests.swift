@@ -2,6 +2,59 @@ import XCTest
 
 @MainActor
 final class MyNotesUITests: XCTestCase {
+  func testRepeatedConversationSwitchAndTabReturnKeepDestinationVisible() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview"]
+    app.launch()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    for _ in 0..<3 {
+      for id in ["primary", "personal"] {
+        app.buttons["profile.\(id)"].tap()
+        XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+        let message = app.staticTexts[id == "primary" ? "Gateway online" : "个人助手已就绪。"]
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertTrue(message.isHittable)
+        XCTAssertTrue(app.buttons["chat.send"].exists)
+        app.tabBars.buttons["设置"].tap()
+        app.tabBars.buttons["Hermes"].tap()
+        XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+        XCTAssertTrue(message.isHittable)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertTrue(message.isHittable)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 5))
+      }
+    }
+  }
+
+  func testNativeAppearanceAndGraceSettings() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview"]
+    app.launch()
+    app.tabBars.buttons["设置"].tap()
+    app.buttons["settings.lock-delay"].tap()
+    XCTAssertTrue(app.buttons["5 分钟后"].waitForExistence(timeout: 5))
+    app.buttons["5 分钟后"].tap()
+    XCTAssertTrue(app.buttons["settings.appearance"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.buttons["settings.lock-delay"].value as? String, "5 分钟后")
+    app.buttons["settings.appearance"].tap()
+    app.buttons["深色"].tap()
+    XCTAssertTrue(app.buttons["settings.lock-delay"].waitForExistence(timeout: 5))
+    let settings = XCTAttachment(screenshot: app.screenshot())
+    settings.name = "iPhone-settings-dark"
+    settings.lifetime = .keepAlways
+    add(settings)
+    app.tabBars.buttons["Hermes"].tap()
+    app.buttons["profile.personal"].tap()
+    XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+    let chat = XCTAttachment(screenshot: app.screenshot())
+    chat.name = "iPhone-chat-dark"
+    chat.lifetime = .keepAlways
+    add(chat)
+  }
+
   func testBackgroundReturnPreservesDraft() {
     let app = XCUIApplication()
     app.launchArguments = ["--preview"]
@@ -55,6 +108,7 @@ final class MyNotesUITests: XCTestCase {
     add(screenshot)
     app.buttons["note.done"].tap()
     app.tabBars.buttons["设置"].tap()
+    app.swipeUp()
     XCTAssertTrue(app.staticTexts["iPhone 个人版"].waitForExistence(timeout: 5))
   }
 

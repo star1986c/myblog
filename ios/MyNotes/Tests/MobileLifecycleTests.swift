@@ -57,13 +57,134 @@ final class MobileLifecycleTests: XCTestCase {
     XCTAssertEqual(store.selectedID, "preview_0002")
   }
 
-  func testLateDepartureCannotClearNewlyVisibleChat() {
+  func testNavigationPathControlsSelectionAcrossTabAndBackgroundChanges() {
     let model = MobileModel()
-    model.enterChat("primary")
-    model.enterChat("personal")
-    model.leaveChat("primary")
-    XCTAssertEqual(model.chat.selectedProfileID, "personal")
-    model.leaveChat("personal")
+    model.chatPath = [MobileChatRoute(id: "primary")]
+    XCTAssertEqual(model.chat.selectedProfileID, "primary")
+    model.tab = 1
     XCTAssertNil(model.chat.selectedProfileID)
+    XCTAssertEqual(model.chatPath.last?.id, "primary")
+    model.tab = 0
+    XCTAssertEqual(model.chat.selectedProfileID, "primary")
+    model.transition(to: .inactive)
+    model.transition(to: .background)
+    XCTAssertNil(model.chat.selectedProfileID)
+    model.transition(to: .active)
+    XCTAssertEqual(model.chat.selectedProfileID, "primary")
+    model.chatPath = [MobileChatRoute(id: "personal")]
+    XCTAssertEqual(model.chat.selectedProfileID, "personal")
+    model.chatPath = []
+    XCTAssertNil(model.chat.selectedProfileID)
+  }
+
+  private func preferences() -> UserDefaults {
+    let name = "mobile-lifecycle-tests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    return defaults
+  }
+
+  func testThreeMinuteGraceUsesTimeAwayAndRestoresRoute() async {
+    let defaults = preferences()
+    defaults.set(true, forKey: "ios.app-lock")
+    var instant = ContinuousClock.now
+    let model = MobileModel(defaults: defaults, now: { instant }, authenticate: { true })
+    XCTAssertTrue(model.locked) // Cold launch still authenticates.
+    XCTAssertEqual(model.lockDelay, .threeMinutes)
+    await model.unlock()
+    model.chatPath = [MobileChatRoute(id: "primary")]
+    instant = instant.advanced(by: .seconds(600)) // Time spent using the app is not the grace window.
+    model.transition(to: .background)
+    instant = instant.advanced(by: .seconds(179))
+    model.transition(to: .active)
+    XCTAssertFalse(model.locked)
+    XCTAssertEqual(model.chat.selectedProfileID, "primary")
+    model.transition(to: .background)
+    instant = instant.advanced(by: .seconds(180))
+    model.transition(to: .active)
+    XCTAssertTrue(model.locked)
+    XCTAssertEqual(model.chatPath.last?.id, "primary")
+    XCTAssertNil(model.chat.selectedProfileID)
+    await model.unlock()
+    XCTAssertEqual(model.chat.selectedProfileID, "primary")
+  }
+
+  func testFiveMinuteGracePersistsAndInactiveDoesNotStartTimer() async {
+    let defaults = preferences()
+    defaults.set(true, forKey: "ios.app-lock")
+    var instant = ContinuousClock.now
+    let model = MobileModel(defaults: defaults, now: { instant }, authenticate: { true })
+    await model.unlock()
+    model.setLockDelay(.fiveMinutes)
+    XCTAssertEqual(defaults.integer(forKey: "ios.app-lock-delay"), 300)
+    model.transition(to: .inactive) // Face ID, a permission dialog, or Control Center.
+    instant = instant.advanced(by: .seconds(400))
+    model.transition(to: .active)
+    XCTAssertFalse(model.locked)
+    model.transition(to: .background)
+    instant = instant.advanced(by: .seconds(299))
+    model.transition(to: .background) // Repeated callbacks must not extend the grace.
+    model.transition(to: .active)
+    XCTAssertFalse(model.locked)
+    model.transition(to: .background)
+    instant = instant.advanced(by: .seconds(300))
+    model.transition(to: .active)
+    XCTAssertTrue(model.locked)
+    let restarted = MobileModel(defaults: defaults, authenticate: { true })
+    XCTAssertEqual(restarted.lockDelay, .fiveMinutes)
+    XCTAssertTrue(restarted.locked)
+  }
+
+  func testImmediateLockAndDisabledLock() async {
+    let model = MobileModel(defaults: preferences(), authenticate: { true })
+    model.setLockDelay(.immediately)
+    model.transition(to: .background)
+    model.transition(to: .active)
+    XCTAssertFalse(model.locked)
+    await model.setAppLock(true)
+    model.transition(to: .background)
+    XCTAssertTrue(model.locked)
+  }
+
+  func testCancelledAuthenticationDoesNotUnlockOrClearRoute() async {
+    let defaults = preferences()
+    defaults.set(true, forKey: "ios.app-lock")
+    let model = MobileModel(defaults: defaults, authenticate: { false })
+    model.chatPath = [MobileChatRoute(id: "personal")]
+    await model.unlock()
+    XCTAssertTrue(model.locked)
+    XCTAssertEqual(model.chatPath.last?.id, "personal")
+    XCTAssertFalse(model.isAuthenticating)
+  }
+
+  func testAppearanceAndInvalidSavedGrace() {
+    let defaults = preferences()
+    defaults.set(-100, forKey: "ios.app-lock-delay")
+    let model = MobileModel(defaults: defaults)
+    XCTAssertEqual(model.lockDelay, .threeMinutes)
+    model.setAppearance(.dark)
+    XCTAssertEqual(MobileModel(defaults: defaults).appearance, .dark)
+  }
+
+  func testAuthenticationCannotBeDuplicatedOrUnlockInBackground() async {
+    let defaults = preferences()
+    defaults.set(true, forKey: "ios.app-lock")
+    var pending: CheckedContinuation<Bool, Never>?
+    var attempts = 0
+    let model = MobileModel(defaults: defaults, authenticate: {
+      attempts += 1
+      return await withCheckedContinuation { pending = $0 }
+    })
+    let task = Task { await model.unlock() }
+    while pending == nil { await Task.yield() }
+    await model.unlock()
+    XCTAssertEqual(attempts, 1)
+    model.transition(to: .background)
+    pending?.resume(returning: true)
+    await task.value
+    XCTAssertTrue(model.locked)
+    XCTAssertFalse(model.isAuthenticating)
+    model.transition(to: .active)
+    XCTAssertTrue(model.locked)
   }
 }

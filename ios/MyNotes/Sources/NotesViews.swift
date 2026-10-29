@@ -18,7 +18,7 @@ struct NotesListView: View {
           editor = NoteSelection(id: note.id)
         } label: {
           HStack(spacing: 12) {
-            Image(systemName: note.isProtected ? "lock.doc" : "doc.text").foregroundStyle(.indigo)
+            Image(systemName: note.isProtected ? "lock.doc" : "doc.text").foregroundStyle(MobileTheme.accent)
             VStack(alignment: .leading, spacing: 5) {
               Text(note.content.title.isEmpty ? "无标题笔记" : note.content.title).font(.headline).foregroundStyle(.primary).lineLimit(2)
               Text(note.isProtected ? "受保护的笔记" : note.content.content.isEmpty ? "暂无内容" : note.content.content)
@@ -31,6 +31,7 @@ struct NotesListView: View {
         }.disabled(notes.isWorking || creating).accessibilityIdentifier("note.\(note.id)")
       }
     }
+    .listStyle(.insetGrouped)
     .overlay { if notes.visibleNotes.isEmpty && !notes.isWorking { ContentUnavailableView.search(text: notes.searchQuery) } }
     .searchable(text: Binding(get: { notes.searchQuery }, set: notes.updateSearchQuery), prompt: "在本机搜索笔记")
     .navigationTitle(notes.locationTitle)

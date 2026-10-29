@@ -14,7 +14,8 @@ struct MyNotesApp: App {
         .environmentObject(model)
         .environmentObject(model.notes)
         .environmentObject(model.chat)
-        .tint(.indigo)
+        .tint(MobileTheme.accent)
+        .preferredColorScheme(model.appearance.colorScheme)
         .task { await model.start() }
         .onChange(of: phase) { _, value in model.transition(to: value) }
     }
@@ -26,7 +27,8 @@ final class MobileModel: ObservableObject {
   let notes: NotesStore
   let chat: HermesChatStore
   let isPreview: Bool
-  @Published var tab = 0
+  @Published var tab = 0 { didSet { updateChatVisibility() } }
+  @Published var chatPath: [MobileChatRoute] = [] { didSet { updateChatVisibility() } }
   @Published var chatDrafts: [String: MobileDraft] = [:]
   @Published var privacyCovered = false
   @Published var locked: Bool
@@ -38,9 +40,20 @@ final class MobileModel: ObservableObject {
   private var hasNetwork = false
   private var phase: ScenePhase = .active
   private var started = false
-  private var visibleChatID: String?
+  @Published private(set) var appLockEnabled: Bool
+  @Published private(set) var lockDelay: MobileLockDelay
+  @Published private(set) var appearance: MobileAppearance
+  @Published private(set) var isAuthenticating = false
+  private let preferences: UserDefaults
+  private let now: () -> ContinuousClock.Instant
+  private let authenticate: () async throws -> Bool
+  private var lockGrace = MobileLockGrace()
 
-  init() {
+  init(defaults: UserDefaults? = nil,
+       now: @escaping () -> ContinuousClock.Instant = { .now },
+       authenticate: @escaping () async throws -> Bool = {
+         try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "解锁 My Notes")
+       }) {
     #if DEBUG
     isPreview = ProcessInfo.processInfo.arguments.contains("--preview")
       || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -61,7 +74,14 @@ final class MobileModel: ObservableObject {
     notes = NotesStore(api: api, autoSaveDelay: .seconds(2))
     chat = HermesChatStore(api: api)
     #endif
-    locked = !isPreview && UserDefaults.standard.bool(forKey: "ios.app-lock")
+    self.now = now
+    self.authenticate = authenticate
+    // UI previews must never alter the user's real privacy/appearance preferences.
+    preferences = defaults ?? (isPreview ? UserDefaults(suiteName: "ios-preview-\(UUID().uuidString)")! : .standard)
+    appLockEnabled = preferences.bool(forKey: "ios.app-lock")
+    lockDelay = (preferences.object(forKey: "ios.app-lock-delay") as? Int).flatMap(MobileLockDelay.init(rawValue:)) ?? .threeMinutes
+    appearance = preferences.string(forKey: "ios.appearance").flatMap(MobileAppearance.init(rawValue:)) ?? .system
+    locked = preferences.bool(forKey: "ios.app-lock") // A fresh launch always requires authentication when enabled.
     if !isPreview {
       MobileFiles.cleanTemporaryFiles()
       MobileFiles.excludePrivateDataFromBackup()
@@ -72,7 +92,7 @@ final class MobileModel: ObservableObject {
     guard !started else { return }
     started = true
     if !isPreview { await notes.start() }
-    if notes.user != nil { await chat.start(); chat.selectProfile(visibleChatID) }
+    if notes.user != nil { await chat.start(); updateChatVisibility() }
     isStarting = false
     guard !isPreview else { return }
     monitor.pathUpdateHandler = { [weak self] path in
@@ -95,26 +115,33 @@ final class MobileModel: ObservableObject {
       await previous?.value
       guard phase == .active, notes.user != nil else { return }
       await chat.resumeTransport()
+      updateChatVisibility()
     }
   }
 
-  func enterChat(_ id: String) {
-    visibleChatID = id
-    chat.selectProfile(id)
-    chat.setApplicationActive(phase == .active && !locked)
+  private func updateChatVisibility() {
+    let active = phase == .active && tab == 0 && !locked
+    // The path is the single source of truth, including after tab/background changes.
+    chat.setApplicationActive(false)
+    chat.selectProfile(active ? chatPath.last?.id : nil)
+    chat.setApplicationActive(active)
   }
 
-  func leaveChat(_ id: String) {
-    guard visibleChatID == id else { return }
-    visibleChatID = nil
-    if chat.selectedProfileID == id { chat.selectProfile(nil) }
+  func setLockDelay(_ delay: MobileLockDelay) {
+    lockDelay = delay
+    preferences.set(delay.rawValue, forKey: "ios.app-lock-delay")
+  }
+
+  func setAppearance(_ value: MobileAppearance) {
+    appearance = value
+    preferences.set(value.rawValue, forKey: "ios.appearance")
   }
 
   func login(username: String, password: String) async {
     sessionBusy = true
     defer { sessionBusy = false }
     await notes.login(username: username, password: password)
-    if notes.user != nil { await chat.start(); chat.selectProfile(visibleChatID) }
+    if notes.user != nil { await chat.start(); updateChatVisibility() }
   }
 
   func logout() async {
@@ -123,7 +150,8 @@ final class MobileModel: ObservableObject {
     guard await notes.saveSelected() else { return }
     await chat.stop()
     chatDrafts = [:]
-    visibleChatID = nil
+    chatPath = []
+    lockGrace.reset()
     await notes.logout()
     MobileFiles.cleanTemporaryFiles()
     tab = 0
@@ -133,8 +161,14 @@ final class MobileModel: ObservableObject {
     phase = next
     privacyCovered = next != .active
     MobilePrivacyShield.setVisible(next != .active)
-    chat.setApplicationActive(next == .active && tab == 0 && !locked)
-    if next == .background && UserDefaults.standard.bool(forKey: "ios.app-lock") { locked = true }
+    if next == .background {
+      lockGrace.enteredBackground(at: now())
+      if appLockEnabled && lockDelay == .immediately { locked = true }
+    } else if next == .active {
+      let expired = lockGrace.returnedToForeground(at: now(), delay: lockDelay)
+      if appLockEnabled && expired { locked = true }
+    }
+    updateChatVisibility()
     guard !isPreview else { return }
     let previous = lifecycleTask
     lifecycleTask = Task {
@@ -148,8 +182,9 @@ final class MobileModel: ObservableObject {
         _ = await notes.saveSelected()
         await notes.relock()
 
-      } else if next == .active && notes.user != nil {
+      } else if next == .active && phase == .active && notes.user != nil {
         await chat.resumeTransport()
+        updateChatVisibility()
         // Refresh only the list; don't replace the note currently being edited.
         if tab != 1 { await notes.refresh() }
       }
@@ -157,24 +192,34 @@ final class MobileModel: ObservableObject {
   }
 
   func unlock() async {
+    guard !isAuthenticating else { return }
+    isAuthenticating = true
+    defer { isAuthenticating = false }
     do {
-      let context = LAContext()
-      if try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "解锁 My Notes") {
+      if try await authenticate(), phase != .background {
         locked = false
+        lockGrace.reset()
+        updateChatVisibility()
       }
     } catch { self.error = error.localizedDescription }
   }
 
   func setAppLock(_ enabled: Bool) async {
+    guard !isAuthenticating else { return }
+    isAuthenticating = true
+    defer { isAuthenticating = false }
     if enabled {
       do {
-        let context = LAContext()
-        guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "开启 My Notes 应用锁") else { return }
+        guard try await authenticate(), phase != .background else { return }
       } catch { self.error = error.localizedDescription; return }
     }
-    UserDefaults.standard.set(enabled, forKey: "ios.app-lock")
-    objectWillChange.send()
+    appLockEnabled = enabled
+    locked = false
+    lockGrace.reset()
+    preferences.set(enabled, forKey: "ios.app-lock")
+    updateChatVisibility()
   }
+
 }
 
 struct MobileRootView: View {
@@ -186,18 +231,19 @@ struct MobileRootView: View {
     ZStack {
       if model.locked {
         VStack(spacing: 24) {
-          Image(systemName: "lock.shield").font(.system(size: 54)).foregroundStyle(.indigo)
+          Image(systemName: "lock.shield").font(.system(size: 54)).foregroundStyle(MobileTheme.accent)
           Text("My Notes 已锁定").font(.title2.bold())
           Button("使用 Face ID 或设备密码解锁") { Task { await model.unlock() } }
-            .buttonStyle(.borderedProminent)
-        }
+            .buttonStyle(.borderedProminent).disabled(model.isAuthenticating)
+          if model.isAuthenticating { ProgressView() }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MobileTheme.canvas)
       } else if notes.user == nil {
         LoginView()
       } else if notes.user?.mustChangePassword == true {
         NavigationStack { AccountPasswordView(required: true) }
       } else {
         TabView(selection: $model.tab) {
-          NavigationStack { ConversationsView() }
+          HermesNavigationView()
             .tabItem { Label("Hermes", systemImage: "bubble.left.and.bubble.right") }.tag(0)
             .badge(chat.totalUnread)
           NavigationStack { NotesListView() }
@@ -205,13 +251,9 @@ struct MobileRootView: View {
           NavigationStack { SettingsView() }
             .tabItem { Label("设置", systemImage: "gearshape") }.tag(2)
         }
-        .onChange(of: model.tab) { _, tab in
-          chat.setApplicationActive(tab == 0)
-          if tab != 0 { chat.selectProfile(nil) }
-        }
       }
       if model.privacyCovered {
-        Color(.systemBackground).ignoresSafeArea()
+        MobileTheme.canvas.ignoresSafeArea()
           .overlay { Label("My Notes", systemImage: "lock.shield").font(.title2) }
       }
     }
@@ -229,7 +271,7 @@ private struct LoginView: View {
       Form {
         Section {
           VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: "note.text").font(.system(size: 40)).foregroundStyle(.indigo)
+            Image(systemName: "note.text").font(.system(size: 40)).foregroundStyle(MobileTheme.accent)
             Text("你的笔记与 AI 工作区").font(.title2.bold())
             Text("使用与安卓、Mac 相同的账号登录。笔记和 Hermes 聊天继续使用现有加密协议。")
               .font(.subheadline).foregroundStyle(.secondary)
@@ -288,7 +330,8 @@ struct MobileErrorBanner: ViewModifier {
           Image(systemName: "exclamationmark.circle.fill")
           Text(message).font(.footnote).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
           Button("关闭提示", systemImage: "xmark") { model.error = nil; notes.clearError(); chat.clearError() }.labelStyle(.iconOnly)
-        }.padding(12).foregroundStyle(.primary).background(Color.orange.opacity(0.18))
+        }.padding(12).foregroundStyle(.primary).background(.regularMaterial)
+          .overlay(alignment: .bottom) { Divider() }
       }
     }
   }

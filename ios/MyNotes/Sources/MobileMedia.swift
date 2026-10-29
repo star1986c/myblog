@@ -276,7 +276,7 @@ private struct RecordingView: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 24) {
-        Image(systemName: recorder.recording ? "waveform" : "mic").font(.system(size: 64)).foregroundStyle(.indigo)
+        Image(systemName: recorder.recording ? "waveform" : "mic").font(.system(size: 64)).foregroundStyle(MobileTheme.accent)
         Text(recorder.recording ? "正在录音，最长 5 分钟" : "准备录音")
         if let error = recorder.error { Text(error).foregroundStyle(.red) }
         Button(recorder.recording ? "完成录音" : "开始录音") {
@@ -306,7 +306,7 @@ enum MobilePrivacyShield {
           let cover = UIView(frame: window.bounds)
           cover.tag = tag
           cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-          cover.backgroundColor = .systemBackground
+          cover.backgroundColor = .systemGroupedBackground
           let label = UILabel()
           label.text = "My Notes"
           label.font = .preferredFont(forTextStyle: .title2)

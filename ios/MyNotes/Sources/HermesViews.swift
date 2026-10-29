@@ -6,6 +6,33 @@ struct MobileDraft {
   var files: [URL] = []
 }
 
+/// Keep destination registration outside the lazy list and the route in the app model.
+struct HermesNavigationView: View {
+  @EnvironmentObject private var model: MobileModel
+  @EnvironmentObject private var chat: HermesChatStore
+
+  var body: some View {
+    NavigationStack(path: $model.chatPath) {
+      VStack(spacing: 0) { ConversationsView() }
+        .navigationDestination(for: MobileChatRoute.self) { route in
+          if let profile = chat.profiles.first(where: { $0.id == route.id }) {
+            ChatView(profile: profile).id(route.id)
+          } else {
+            ContentUnavailableView {
+              Label("会话暂不可用", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+            } description: {
+              Text("会话配置可能已更新，请返回列表刷新后重试。")
+            } actions: {
+              Button("返回会话列表") { model.chatPath = [] }
+            }
+            .navigationTitle("Hermes")
+            .background(MobileTheme.canvas)
+          }
+        }
+    }
+  }
+}
+
 struct ConversationsView: View {
   @EnvironmentObject private var chat: HermesChatStore
   @State private var keyProfile: HermesChatProfile?
@@ -20,32 +47,45 @@ struct ConversationsView: View {
         }
       }
       ForEach(chat.profiles) { profile in
-        NavigationLink(value: profile) {
+        NavigationLink(value: MobileChatRoute(id: profile.id)) {
           HStack(spacing: 14) {
-            Image(systemName: "sparkles").font(.title2).foregroundStyle(.indigo)
-              .frame(width: 44, height: 44).background(.indigo.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+            Image(systemName: "bubble.left.and.bubble.right").font(.title3)
+              .foregroundStyle(MobileTheme.accent)
+              .frame(width: 44, height: 44)
+              .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
+              .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
-              Text(profile.label).font(.headline)
+              HStack(alignment: .firstTextBaseline) {
+                Text(profile.label).font(.headline).foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                if let last = chat.lastMessage(spaceID: profile.id) {
+                  Text(Date(timeIntervalSince1970: Double(last.sentAt) / 1000), style: .time)
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+              }
               Text(chat.isConfigured(spaceID: profile.id) ? (chat.lastMessage(spaceID: profile.id)?.text ?? "开始聊天") : "点击配置聊天密钥")
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer(minLength: 0)
             if chat.unreadCount(spaceID: profile.id) > 0 {
               Text("\(chat.unreadCount(spaceID: profile.id))").font(.caption.bold()).padding(7)
-                .foregroundStyle(.white).background(.indigo, in: Capsule())
+                .foregroundStyle(.primary).background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+                .accessibilityLabel("\(chat.unreadCount(spaceID: profile.id)) 条未读消息")
             }
           }.padding(.vertical, 5)
         }.accessibilityIdentifier("profile.\(profile.id)")
           .contextMenu { Button("配置密钥", systemImage: "key") { keyProfile = profile } }
+          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("密钥", systemImage: "key") { keyProfile = profile }.tint(MobileTheme.accent)
+          }
       }
     }
+    .listStyle(.insetGrouped)
     .navigationTitle("Hermes")
     .overlay { if chat.profiles.isEmpty && !chat.isRefreshing { ContentUnavailableView("暂无会话", systemImage: "bubble.left.and.bubble.right", description: Text("下拉刷新，从服务器加载已配置的 Hermes profiles。")) } }
     .refreshable { await chat.refreshProfiles(); await chat.resumeTransport() }
     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("重新连接", systemImage: "arrow.clockwise") { Task { await chat.resumeTransport() } } } }
-    .navigationDestination(for: HermesChatProfile.self) { profile in ChatView(profile: profile).id(profile.id) }
     .sheet(item: $keyProfile) { profile in ProfileKeyView(profile: profile) }
-    .onAppear { chat.selectProfile(nil) }
   }
   private var connectionLabel: String {
     switch chat.connectionState {
@@ -129,6 +169,12 @@ private struct ChatView: View {
         if chat.typingProfiles.contains(profile.id) || chat.awaitingProfiles.contains(profile.id) {
           HStack { ProgressView().controlSize(.small); Text(chat.typingProfiles.contains(profile.id) ? "Hermes 正在输入…" : "等待 Hermes 回复…").font(.caption); Spacer() }.padding(.horizontal).padding(.vertical, 6)
         }
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(MobileTheme.canvas)
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if chat.isConfigured(spaceID: profile.id) {
         if selecting { selectionBar } else { composer }
       }
     }
@@ -160,8 +206,6 @@ private struct ChatView: View {
         Task { if await chat.deleteMessages(targets, spaceID: profile.id) { selected = []; selecting = false } }
       }
     } message: { Text("消息和附件将从云端删除，并影响其他设备。") }
-    .onAppear { model.enterChat(profile.id) }
-    .onDisappear { model.leaveChat(profile.id) }
   }
 
   private var timeline: some View {
@@ -190,7 +234,26 @@ private struct ChatView: View {
         }.padding()
       }
       .scrollDismissesKeyboard(.interactively)
-      .defaultScrollAnchor(.bottom)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .overlay {
+        if matchingMessages.isEmpty {
+          if chat.isRefreshing || chat.isRefreshingMessages {
+            ProgressView("正在加载聊天…")
+          } else if !search.isEmpty {
+            ContentUnavailableView.search(text: search)
+          } else {
+            ContentUnavailableView("还没有消息", systemImage: "bubble.left.and.bubble.right",
+              description: Text("从下面发送消息，开始与 \(profile.label) 对话。"))
+          }
+        }
+      }
+      .task(id: profile.id) {
+        // Resolve the new destination's layout before scrolling; never reuse another
+        // conversation's default bottom anchor / lazy-layout offset.
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+        proxy.scrollTo("bottom", anchor: .bottom)
+      }
       .overlay(alignment: .bottomTrailing) {
         if !nearBottom { Button("最新消息", systemImage: "arrow.down") { proxy.scrollTo("bottom", anchor: .bottom) }.buttonStyle(.borderedProminent).padding() }
       }
@@ -234,7 +297,10 @@ private struct ChatView: View {
         }
       }
     }
-    .padding(14).background(message.isAgent ? Color(.secondarySystemGroupedBackground) : Color.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 16))
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(message.isAgent ? MobileTheme.surface : MobileTheme.outgoing, in: RoundedRectangle(cornerRadius: 18))
+    .padding(message.isAgent ? .trailing : .leading, 20)
     .contextMenu {
       Button("复制文字", systemImage: "doc.on.doc") { UIPasteboard.general.setItems([["public.utf8-plain-text": message.text]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)]) }
       ShareLink(item: message.text) { Label("分享文字", systemImage: "square.and.arrow.up") }
@@ -265,9 +331,11 @@ private struct ChatView: View {
         }
       }
       HStack(alignment: .bottom, spacing: 12) {
-        MediaPickerMenu(includeFiles: true, onCapture: { addFiles([$0.url]) }, onFiles: addFiles).disabled(chat.isSending)
+        MediaPickerMenu(includeFiles: true, onCapture: { addFiles([$0.url]) }, onFiles: addFiles)
+          .frame(minWidth: 44, minHeight: 44).disabled(chat.isSending)
         TextField("消息或 /命令", text: Binding(get: { draft.text }, set: updateText), axis: .vertical)
-          .lineLimit(1...6).padding(10).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+          .lineLimit(1...6).padding(10).background(MobileTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+          .overlay { RoundedRectangle(cornerRadius: 20).stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5) }
           .disabled(chat.isSending).accessibilityIdentifier("chat.composer")
         Button {
           let sentDraft = draft
@@ -279,12 +347,13 @@ private struct ChatView: View {
             }
           }
         } label: {
-          if chat.isSending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.largeTitle) }
-        }.disabled(chat.isSending || chat.connectionState != .connected || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.files.isEmpty))
+          if chat.isSending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.system(size: 30, weight: .medium)) }
+        }.frame(minWidth: 44, minHeight: 44).disabled(chat.isSending || chat.connectionState != .connected || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.files.isEmpty))
           .accessibilityLabel("发送消息").accessibilityIdentifier("chat.send")
       }
       if chat.connectionState != .connected { Text("等待连接，草稿会保留在本次运行中").font(.caption).foregroundStyle(.secondary) }
-    }.padding(.horizontal).padding(.vertical, 10).background(.bar)
+    }.padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
+      .overlay(alignment: .top) { Divider() }
   }
   private var selectionBar: some View {
     HStack {
@@ -325,7 +394,7 @@ private struct CommandPicker: View {
       List(HermesCommandCatalog.search(query)) { command in
         Button { choose(command) } label: {
           VStack(alignment: .leading, spacing: 5) {
-            Text(command.usage).font(.system(.body, design: .monospaced)).foregroundStyle(.indigo)
+            Text(command.usage).font(.system(.body, design: .monospaced)).foregroundStyle(MobileTheme.accent)
             Text(command.description).font(.caption).foregroundStyle(Color.secondary)
             if command.caution { Text("此命令可能修改远端状态").font(.caption2).foregroundStyle(.orange) }
           }
