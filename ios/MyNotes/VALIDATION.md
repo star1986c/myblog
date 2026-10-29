@@ -1,5 +1,14 @@
 # iPhone 验证记录
 
+## 0.1.7 (8) 发布与真实 Bark 点击验收 — 2026-10-29
+
+- 审查未发现阻碍发布的代码问题；修正 README 中遗留的“不需部署 Worker”说明。功能提交 `d3032fee1198a91f9dad62f02a2913d070d24926` 已推送至 `codex/macos-notes-app`。
+- 从该提交生成固定快照 `git-0.1.7-8-b45b9a889a050e06`（80 文件），验证团队、Bundle ID、目标设备、URL scheme、代码签名与描述文件后，经 USB 保留数据覆盖安装；CoreDevice 确认手机版本 0.1.7 (8)。安装成功后更新续签配置、状态、清单、元数据和构建，旧版保留于 `upgrade-backups/0.1.6-to-0.1.7-20261029T082505Z/`。
+- 签名到期仍为 **2026-11-04 16:14:22（台北）**；正常续签检查 `healthy / not_due`，自动任务继续暂停。续签离线测试 11 项通过。
+- Worker `wispy-cloud-0978` 使用 `wrangler deploy --keep-vars` 部署成功，版本 `e522af08-bb39-48ad-bc1b-9451e84ebc00`；没有新增迁移、改变 Secrets 或更新 NAS 插件。
+- 16:26:11 从已登录的生产 Bark 管理页向唯一注册 iPhone 发送一次测试通知；APNs 接受，D1 `last_error=null`。用户最初未看到通知，随后在通知中心找到，并亲自点击确认“已成功打开 Hermes 会话列表”。真实 Bark → iOS → My Notes 路径验收通过；真机应用锁/冷启动分场景未单独重测，相关自动化覆盖见下。
+- 证据：续签目录 `logs/upgrade-017-{summary,after,install}.json`、`upgrade-017-build.log`；`/private/tmp/bark-017-worker-deploy.log`、`bark-017-delivery-status.json`、`bark-017-test-sent.png`。最终点击结果由用户回报确认，未声称直接读取 iPhone 屏幕。
+
 ## 0.1.7 (8) Bark 点击打开 App — 2026-10-29
 
 - 先设计固定入口 `mynotes://hermes`，再实现 iOS scheme 注册与导航处理；Hermes 自动通知、管理页测试通知使用同一地址。仅打开 Hermes 列表，不定位助手或消息；保留草稿、登录、强制改密与应用锁。

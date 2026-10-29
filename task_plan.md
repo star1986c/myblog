@@ -105,5 +105,5 @@ SwiftPM 受限环境报 sandbox_apply: Operation not permitted；改用外部构
 
 用户授权审查后提交推送、安装 iPhone、部署 Worker 并验证真实 Bark 点击。
 1. [complete] 审查导航、安全边界、通知载荷、测试及文档；修正文档部署条件矛盾。
-2. [in_progress] 提交推送并从固定提交签名构建、安装，更新续签副本。
-3. [pending] 部署 Worker、发送真实测试通知、确认真机点击结果。
+2. [complete] 提交 d3032fe 已推送；0.1.7 (8) USB 安装与续签副本更新完成。
+3. [complete] Worker e522af08 已部署；生产测试通知到达通知中心，用户点击确认打开 Hermes 列表。

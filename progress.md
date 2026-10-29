@@ -113,3 +113,5 @@
 - 设计先完成：固定入口到 Hermes 列表，保持登录与锁定门槛，严格验证 URL，保留草稿。开始实现。
 
 - 已完成 0.1.7 (8) 实现、文档和审查；Node 292 项、iOS 单元 20 项、后台/重复/冷启动 UI 1 项通过，Worker dry-run 通过。未部署、未安装手机、未提交推送。详细证据见 ios/MyNotes/VALIDATION.md。
+
+- 发布完成：d3032fe 已推送，0.1.7 (8) 已 USB 覆盖安装；续签固定副本更新、旧版已备份，状态 healthy/not_due。Worker e522af08-bb39-48ad-bc1b-9451e84ebc00 已部署。16:26 测试通知获 APNs 接受，用户在通知中心找到并亲自点击确认进入 Hermes 列表。详细结果见 VALIDATION.md。
