@@ -2,7 +2,7 @@
 
 原生 SwiftUI iPhone 客户端，最低 iOS 17。功能以 Android My Notes 为参考，与 macOS 复用 `NotesCore`、现有 Cloudflare API 和 NAS Hermes 插件。无需为此版本部署 Worker、迁移数据库或升级插件。
 
-当前源码版本：**0.1.3 (4)**。本版修复打开 App 或恢复连接后 Hermes 同一回复出现多个气泡；保留图片展示和附件预览返回修复；验证与安装状态见 VALIDATION.md。My Notes 本身不直接接入 APNs，也不申请后台常驻能力；Hermes 提醒可由独立 Bark App 接收，见 [Bark 配置说明](../../docs/bark-push.md)。
+当前源码版本：**0.1.4 (5)**。本版修复 Hermes 会话列表附件消息摘要空白，优先显示文字说明，否则显示附件名称和数量；保留重放消息去重及图片/附件预览修复；验证与安装状态见 VALIDATION.md。My Notes 本身不直接接入 APNs，也不申请后台常驻能力；Hermes 提醒可由独立 Bark App 接收，见 [Bark 配置说明](../../docs/bark-push.md)。
 
 ## 打开工程
 
@@ -31,7 +31,7 @@ python3 scripts/generate-ios-project.py
 
 官方资料：[免费账号限制](https://developer.apple.com/help/account/basics/about-your-developer-account)、[在设备上运行应用](https://developer.apple.com/documentation/xcode/running-your-app-in-simulator-or-on-a-device)。
 
-本机双击脚本、无线手动续签及账号故障处理见 [续签说明](AUTO_RENEWAL.md)；自动任务已按用户要求暂停。本机已安装 0.1.3 (4)，续签固定快照已同步更新；以后升级仍需一并更新快照，脚本的版本检查会阻止旧快照覆盖较新安装。
+本机双击脚本、无线手动续签及账号故障处理见 [续签说明](AUTO_RENEWAL.md)；自动任务已按用户要求暂停。本机已安装 0.1.4 (5)，续签固定快照已同步更新；以后升级仍需一并更新快照，脚本的版本检查会阻止旧快照覆盖较新安装。
 
 ## iPhone 交互与隐私设置
 

@@ -43,7 +43,7 @@ for name, folder, kind in [('MyNotes','Sources','application'), ('MyNotesTests',
     products.append(product)
     configs=[]
     for config in ['Debug','Release']:
-        values={'PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'io.qzz.superstar1014.mynotes.ios' + ('' if name=='MyNotes' else '.'+name), 'CODE_SIGN_STYLE':'Automatic', 'SWIFT_VERSION':'6.0','TARGETED_DEVICE_FAMILY':'1','IPHONEOS_DEPLOYMENT_TARGET':'17.0','MARKETING_VERSION':'0.1.3','CURRENT_PROJECT_VERSION':'4','GENERATE_INFOPLIST_FILE':'YES'}
+        values={'PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'io.qzz.superstar1014.mynotes.ios' + ('' if name=='MyNotes' else '.'+name), 'CODE_SIGN_STYLE':'Automatic', 'SWIFT_VERSION':'6.0','TARGETED_DEVICE_FAMILY':'1','IPHONEOS_DEPLOYMENT_TARGET':'17.0','MARKETING_VERSION':'0.1.4','CURRENT_PROJECT_VERSION':'5','GENERATE_INFOPLIST_FILE':'YES'}
         if name=='MyNotes': values.update({'GENERATE_INFOPLIST_FILE':'NO','INFOPLIST_FILE':'Info.plist','ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','PRODUCT_MODULE_NAME':'MyNotes','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
         if name=='MyNotesTests': values.update({'TEST_HOST':'$(BUILT_PRODUCTS_DIR)/MyNotes.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MyNotes','BUNDLE_LOADER':'$(TEST_HOST)'})
         if name=='MyNotesUITests': values['TEST_TARGET_NAME']='MyNotes'

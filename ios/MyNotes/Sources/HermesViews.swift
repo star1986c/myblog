@@ -63,7 +63,7 @@ struct ConversationsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 }
               }
-              Text(chat.isConfigured(spaceID: profile.id) ? (chat.lastMessage(spaceID: profile.id)?.text ?? "开始聊天") : "点击配置聊天密钥")
+              Text(previewText(for: profile))
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer(minLength: 0)
@@ -86,6 +86,17 @@ struct ConversationsView: View {
     .refreshable { await chat.refreshProfiles(); await chat.resumeTransport() }
     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("重新连接", systemImage: "arrow.clockwise") { Task { await chat.resumeTransport() } } } }
     .sheet(item: $keyProfile) { profile in ProfileKeyView(profile: profile) }
+  }
+  private func previewText(for profile: HermesChatProfile) -> String {
+    guard chat.isConfigured(spaceID: profile.id) else { return "点击配置聊天密钥" }
+    guard let message = chat.lastMessage(spaceID: profile.id) else { return "开始聊天" }
+    let description = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !description.isEmpty { return description }
+    guard let attachment = message.attachments.first else { return "加密消息" }
+    let name = attachment.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let label = name.isEmpty ? "未命名附件" : name
+    let count = message.attachments.count
+    return count > 1 ? "附件：\(label) 等 \(count) 个附件" : "附件：\(label)"
   }
   private var connectionLabel: String {
     switch chat.connectionState {
