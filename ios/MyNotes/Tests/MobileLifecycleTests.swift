@@ -5,6 +5,24 @@ import NotesCore
 
 @MainActor
 final class MobileLifecycleTests: XCTestCase {
+  func testFinalReplyReplayAfterColdReloadKeepsOneCompleteBubble() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let crypto = try HermesChatCrypto(encodedKey: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    let history = try HermesChatHistoryStore(spaceID: "primary", crypto: crypto, directory: root)
+    let final = HermesChatMessage(id: "final", sender: "agent", sentAt: 1000, sequence: 22,
+      text: "完整回复", replaceSequence: 21, finalUpdate: true)
+    _ = await history.recordBatch([final, final])
+    let reopened = try HermesChatHistoryStore(spaceID: "primary", crypto: crypto, directory: root)
+    let original = HermesChatMessage(id: "original", sender: "agent", sentAt: 999, sequence: 21,
+      text: "正在回复")
+    let snapshot = await reopened.recordBatch([final, original, final])
+    XCTAssertEqual(snapshot.messages.count, 1)
+    XCTAssertEqual(snapshot.messages.first?.id, "original")
+    XCTAssertEqual(snapshot.messages.first?.text, "完整回复")
+    XCTAssertEqual(snapshot.lastSequence, 22)
+  }
+
   func testLateMicrophonePermissionDoesNotStartCancelledRecording() async {
     var permission: CheckedContinuation<Bool, Never>?
     var requests = 0

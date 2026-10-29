@@ -769,23 +769,8 @@ public final class HermesChatStore: ObservableObject {
     var unreadDelta = 0
     for pending in incomingMessages {
       let incoming = pending.message
-      if incoming.replaceSequence > 0 {
-        if let index = messages.firstIndex(where: { $0.sequence == incoming.replaceSequence }) {
-          messages[index].text = incoming.text
-          if !incoming.attachments.isEmpty { messages[index].attachments = incoming.attachments }
-          messages[index].interaction = incoming.interaction
-        } else if incoming.finalUpdate {
-          var standalone = incoming
-          standalone.replaceSequence = 0
-          standalone.finalUpdate = false
-          messages.append(standalone)
-        }
-      } else if let index = messages.firstIndex(where: { $0.id == incoming.id }) {
-        messages[index] = incoming
-      } else {
-        messages.append(incoming)
-        if pending.countUnread { unreadDelta += 1 }
-      }
+      let inserted = HermesChatMessageMerge.apply(incoming, to: &messages)
+      if inserted && pending.countUnread { unreadDelta += 1 }
     }
     messages.sort(by: Self.messageOrder)
     if messages.count > 20_000 { messages.removeFirst(messages.count - 20_000) }

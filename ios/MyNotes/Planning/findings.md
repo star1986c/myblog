@@ -44,3 +44,12 @@
 - 缩略图应在后台解码，内存缓存有上限；按 profile 与描述符隔离，原图预览仍使用原文件。
 - 图片按共享格式策略识别，兼容 image MIME 和 .png 等扩展名；ImageIO 在独立 actor 上按最长边 840 像素解码，单会话缓存最多 40 张/24 MiB，旧加密附件不为缩略图额外落盘明文。
 - Quick Look 外增加 SwiftUI NavigationStack 和带 accessibility ID 的完成按钮；原有 sheet onDismiss 清理预览副本，原图和聊天缓存不删除。离开聊天时取消打开任务，迟到的文件不能弹到另一会话。
+
+## 重复气泡
+
+- 用户确认是同一回复出现多个气泡。Store.applyBatch 与 History.recordBatch 均在 final edit 缺失 target 时直接 append，并抹去 replaceSequence/finalUpdate；下一次重放无法按目标定位，甚至同一 edit ID 也不去重。
+- 冷启动默认补最近 24 小时，服务端按事件时间和最多 500 个事件截取，可能只返回最终事件而不含原始消息，因此缺 target 是有效恢复场景。
+- 现有正常 target 更新也没有保存已应用的 edit 序号，旧 base 或旧 final 重放可能回滚正文。修复需要共享合并规则及向后兼容的本地版本元数据。
+
+- 已用同一 final 事件跨批次、重启重放复现 3 个气泡；修复后为 1 个。共享合并器保存原目标序号和本地最后编辑序号，旧原文/旧 final 不覆盖新回复。缓存加载按 ID/正序号归并，重放时修复旧孤立 final；不按正文去重。
+- 新增 8 项共享回归（含旧加密缓存、附件/交互、后台代次、相同文字独立消息）及 1 项 iOS 冷启动回归。修改不改变传输加密格式或服务器协议。

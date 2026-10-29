@@ -161,6 +161,8 @@ public struct HermesChatMessage: Codable, Equatable, Identifiable, Sendable {
   public var interaction: HermesChatInteraction?
   public var replaceSequence: Int64
   public var finalUpdate: Bool
+  // Local snapshot metadata; wire envelopes do not encode this field.
+  public var lastEditSequence: Int64?
 
   public init(
     id: String,

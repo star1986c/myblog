@@ -4,6 +4,22 @@ import Testing
 
 @testable import NotesCore
 
+@Test("Final-only replay stays one bubble across batches and a cold reload")
+func hermesFinalOnlyReplayIsIdempotent() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let crypto = try HermesChatCrypto(encodedKey: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+  let store = try HermesChatHistoryStore(spaceID: "primary", crypto: crypto, directory: root)
+  let final = HermesChatMessage(id: "final-only", sender: "agent", sentAt: 1000, sequence: 22,
+    text: "complete", replaceSequence: 21, finalUpdate: true)
+  _ = await store.recordBatch([final, final])
+  let reopened = try HermesChatHistoryStore(spaceID: "primary", crypto: crypto, directory: root)
+  let snapshot = await reopened.record(final)
+  #expect(snapshot.messages.count == 1)
+  #expect(snapshot.messages.first?.text == "complete")
+  #expect(snapshot.lastSequence == 22)
+}
+
 @Test("Hermes macOS history keeps sequence checkpoints while cleaning old messages")
 func hermesHistoryRetentionKeepsCheckpoint() async throws {
   let root = FileManager.default.temporaryDirectory

@@ -53,28 +53,7 @@ public actor HermesChatHistoryStore {
     for incoming in incomingMessages {
       if incoming.replaceSequence > 0 && !incoming.finalUpdate { continue }
 
-      if incoming.replaceSequence > 0 {
-        if let index = snapshot.messages.firstIndex(where: {
-          $0.sequence == incoming.replaceSequence
-        }) {
-          var target = snapshot.messages[index]
-          target.text = incoming.text
-          if !incoming.attachments.isEmpty { target.attachments = incoming.attachments }
-          target.interaction = incoming.interaction
-          target.replaceSequence = 0
-          target.finalUpdate = false
-          snapshot.messages[index] = target
-        } else {
-          var standalone = incoming
-          standalone.replaceSequence = 0
-          standalone.finalUpdate = false
-          snapshot.messages.append(standalone)
-        }
-      } else if let index = snapshot.messages.firstIndex(where: { $0.id == incoming.id }) {
-        snapshot.messages[index] = incoming
-      } else {
-        snapshot.messages.append(incoming)
-      }
+      HermesChatMessageMerge.apply(incoming, to: &snapshot.messages)
       snapshot.lastSequence = max(snapshot.lastSequence, max(0, incoming.sequence))
       changed = true
     }
@@ -159,9 +138,10 @@ public actor HermesChatHistoryStore {
       }
       let snapshot = HermesChatHistorySnapshot(
         lastSequence: payload.lastSequence,
-        messages: valid
+        messages: HermesChatMessageMerge.normalize(valid)
       )
       cached = snapshot
+      if snapshot.messages != valid { try? write(snapshot) }
       return snapshot
     } catch {
       try? FileManager.default.removeItem(at: snapshotURL)
