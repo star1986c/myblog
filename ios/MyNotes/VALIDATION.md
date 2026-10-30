@@ -205,3 +205,14 @@
 - 模拟器构建通过，20 项现有 iOS 单元测试通过；6 项不同相关 UI 用例最终均通过（主流程、文件夹/搜索/删除取消、浅深色、草稿隔离、保护/命令、外观/宽限期）。最后 3 项相关用例全通过，最后仅提示颜色变更后追加浅深色单项通过。
 - 截图审查、验证边界与逐屏前后对照见 [UI 审查报告](Planning/UI-AUDIT-20261030.md)。本地截图及日志：`output/ios-design-20261030/`。
 - 未提交推送、未安装 iPhone、未部署；版本保持 0.1.7 (8)。未验证 VoiceOver、极大字号、小屏和真实硬件权限。
+
+
+## 2026-10-30：0.1.8 (9) 发布、iPhone 安装及手动续期副本
+
+- 用户明确授权提交推送、安装 iPhone 并更新手动续期固定副本。审查无阻断问题；0.1.8 (9) 代码提交 `09eee9f` 已推送至 `origin/codex/macos-notes-app`。
+- 从该提交创建 `git-0.1.8-9-faab6d6756d6d672` 固定快照，80 个源文件逐一核对 SHA-256，与 Git 提交内容完全一致。Release 真机签名构建成功，版本、Bundle ID、团队、目标设备、描述文件有效期及 codesign 验证通过。
+- USB 覆盖安装成功；CoreDevice 安装结果及安装后应用列表均确认 **0.1.8 (9)**，未卸载应用。未以启动/真实聊天测试代替版本验证。
+- 安装确认后更新续期 config、manifest、metadata、state 和已签名构建。旧版配置/状态/构建保存在 `~/Library/Application Support/MyNotesRenewal/upgrade-backups/0.1.7-to-0.1.8-20261030T024029Z/`，旧源码快照保留。
+- 11 项续期离线测试、桌面入口 zsh 语法、80 文件快照校验通过；正常手动检查返回 `healthy / not_due`。续期脚本与仓库一致，桌面双击入口无需更改。
+- 实际签名到期 **2026-11-06 09:49:33（Asia/Taipei）**，沿用用户今天已续签的签名；本次升级不代表新增加 7 天。未恢复自动任务、未部署 Worker 或 NAS。
+- 安装证据：私有续期目录 `logs/upgrade-018-summary.json`、`upgrade-018-install.json`、`upgrade-018-after.json`、`upgrade-018-build.log`、`upgrade-018-signature.log`。
