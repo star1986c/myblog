@@ -68,8 +68,8 @@ struct ConversationsView: View {
             }
             Spacer(minLength: 0)
             if chat.unreadCount(spaceID: profile.id) > 0 {
-              Text("\(chat.unreadCount(spaceID: profile.id))").font(.caption.bold()).padding(7)
-                .foregroundStyle(.primary).background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+              Text("\(chat.unreadCount(spaceID: profile.id))").font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 5)
+                .foregroundStyle(Color(uiColor: .systemBackground)).background(MobileTheme.accent, in: Capsule())
                 .accessibilityLabel("\(chat.unreadCount(spaceID: profile.id)) 条未读消息")
             }
           }.padding(.vertical, 5)
@@ -91,7 +91,12 @@ struct ConversationsView: View {
     guard chat.isConfigured(spaceID: profile.id) else { return "点击配置聊天密钥" }
     guard let message = chat.lastMessage(spaceID: profile.id) else { return "开始聊天" }
     let description = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !description.isEmpty { return description }
+    if !description.isEmpty {
+      // A list preview should read as a sentence, without Markdown heading markers.
+      let line = description.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? description
+      let plain = line.replacingOccurrences(of: "^#{1,6}\\s+", with: "", options: .regularExpression)
+      return (try? AttributedString(markdown: plain)).map { String($0.characters) } ?? plain
+    }
     guard let attachment = message.attachments.first else { return "加密消息" }
     let name = attachment.name.trimmingCharacters(in: .whitespacesAndNewlines)
     let label = name.isEmpty ? "未命名附件" : name
@@ -100,10 +105,10 @@ struct ConversationsView: View {
   }
   private var connectionLabel: String {
     switch chat.connectionState {
-    case .connected: "已连接 · 双向加密"
+    case .connected: "已连接 · 端到端加密"
     case .connecting: "正在连接…"
-    case .disconnected: "连接中断，正在重试"
-    case .idle: "配置密钥后连接"
+    case .disconnected: "连接已断开 · 可重新连接"
+    case .idle: "尚未连接"
     }
   }
 }
@@ -148,6 +153,7 @@ struct ProfileKeyView: View {
 private struct ChatView: View {
   @EnvironmentObject private var chat: HermesChatStore
   @EnvironmentObject private var model: MobileModel
+  @Environment(\.colorScheme) private var colorScheme
   let profile: HermesChatProfile
   @State private var search = ""
   @State private var limit = 40
@@ -162,6 +168,7 @@ private struct ChatView: View {
   @State private var openingID: String?
   @State private var openingTask: Task<Void, Never>?
   @State private var thumbnails = MobileThumbnailCache()
+  @FocusState private var composerFocused: Bool
 
   private var draft: MobileDraft { model.chatDrafts[profile.id] ?? MobileDraft() }
   private var allMessages: [HermesChatMessage] {
@@ -218,7 +225,7 @@ private struct ChatView: View {
       ToolbarItem(placement: .principal) {
         VStack(spacing: 2) {
           Text(profile.label).font(.headline).lineLimit(1)
-          Text(chat.connectionState == .connected ? "端到端加密" : "正在连接…")
+          Text(connectionLabel)
             .font(.caption2).foregroundStyle(.secondary)
         }
       }
@@ -265,7 +272,8 @@ private struct ChatView: View {
                   if selected.contains(message.id) { selected.remove(message.id) }
                   else if selected.count < 100 { selected.insert(message.id) }
                 } label: { Image(systemName: selected.contains(message.id) ? "checkmark.circle.fill" : "circle") }
-                  .disabled(message.sequence <= 0).accessibilityLabel("选择消息")
+                  .frame(minWidth: 44, minHeight: 44)
+                  .disabled(message.sequence <= 0).accessibilityLabel(selected.contains(message.id) ? "取消选择消息" : "选择消息")
               }
               messageBubble(message)
             }.id(message.id)
@@ -371,12 +379,22 @@ private struct ChatView: View {
         }
       }
       HStack(alignment: .bottom, spacing: 6) {
+        if composerFocused {
+          Button { composerFocused = false } label: {
+            Image(systemName: "keyboard.chevron.compact.down").font(.title3)
+              .frame(width: 44, height: 44)
+          }.accessibilityLabel("收起键盘").accessibilityIdentifier("chat.dismiss-keyboard")
+        }
         MediaPickerMenu(includeFiles: true, onCapture: { addFiles([$0.url]) }, onFiles: addFiles, symbol: "paperclip")
           .frame(minWidth: 44, minHeight: 44).disabled(chat.isSending)
-        TextField("输入消息或 /命令", text: Binding(get: { draft.text }, set: updateText), axis: .vertical)
+        TextField("输入消息或 /命令", text: Binding(get: { draft.text }, set: updateText),
+          prompt: Text("输入消息或 /命令").foregroundColor(colorScheme == .dark
+            ? Color(red: 0.72, green: 0.78, blue: 0.81)
+            : Color(red: 0.38, green: 0.43, blue: 0.46)), axis: .vertical)
           .lineLimit(1...6).padding(.horizontal, 14).padding(.vertical, 11)
           .background(MobileChatStyle.input, in: RoundedRectangle(cornerRadius: 23))
           .overlay { RoundedRectangle(cornerRadius: 20).stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5) }
+          .focused($composerFocused)
           .disabled(chat.isSending).accessibilityIdentifier("chat.composer")
         Button {
           let sentDraft = draft
@@ -402,6 +420,14 @@ private struct ChatView: View {
       Button("删除", role: .destructive) { deleting = true }.disabled(selected.isEmpty)
       Button("完成") { selecting = false; selected = [] }
     }.padding().background(.bar)
+  }
+  private var connectionLabel: String {
+    switch chat.connectionState {
+    case .connected: "端到端加密"
+    case .connecting: "正在连接…"
+    case .disconnected: "连接已断开"
+    case .idle: chat.isConfigured(spaceID: profile.id) ? "尚未连接" : "尚未配置密钥"
+    }
   }
   private func updateText(_ text: String) {
     var value = draft; value.text = text; model.chatDrafts[profile.id] = value

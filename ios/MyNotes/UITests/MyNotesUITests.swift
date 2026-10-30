@@ -2,6 +2,87 @@ import XCTest
 
 @MainActor
 final class MyNotesUITests: XCTestCase {
+  func testDesignAuditMainFlow() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview", "--preview-chat-style"]
+    app.launch()
+    XCTAssertTrue(app.buttons["profile.primary"].waitForExistence(timeout: 10))
+    captureDesignStep("01-conversations", app)
+    app.buttons["profile.primary"].tap()
+    XCTAssertTrue(app.textFields["chat.composer"].waitForExistence(timeout: 5))
+    captureDesignStep("02-chat", app)
+    app.textFields["chat.composer"].tap()
+    app.textFields["chat.composer"].typeText("Draft for review")
+    captureDesignStep("03-composer", app)
+    app.buttons["chat.dismiss-keyboard"].tap()
+    XCTAssertTrue(app.tabBars.buttons["笔记"].isHittable)
+    XCTAssertEqual(app.textFields["chat.composer"].value as? String, "Draft for review")
+    app.tabBars.buttons["笔记"].tap()
+    XCTAssertTrue(app.buttons["note.preview_0001"].waitForExistence(timeout: 5))
+    captureDesignStep("04-notes", app)
+    app.buttons["文件夹"].tap()
+    XCTAssertTrue(app.buttons["回收站"].waitForExistence(timeout: 5))
+    captureDesignStep("05-folders", app)
+    app.buttons["回收站"].tap()
+    XCTAssertTrue(app.navigationBars["回收站"].waitForExistence(timeout: 5))
+    captureDesignStep("06-trash", app)
+    app.buttons["文件夹"].tap()
+    app.buttons["全部笔记"].tap()
+    app.buttons["note.preview_0001"].tap()
+    XCTAssertTrue(app.textViews["note.body"].waitForExistence(timeout: 5))
+    captureDesignStep("07-editor", app)
+    app.buttons["note.done"].tap()
+    app.tabBars.buttons["设置"].tap()
+    XCTAssertTrue(app.buttons["settings.appearance"].waitForExistence(timeout: 5))
+    captureDesignStep("08-settings", app)
+    app.swipeUp()
+    captureDesignStep("09-settings-more", app)
+  }
+
+  func testFolderSearchAndCloudDeletionClarity() {
+    let app = XCUIApplication()
+    app.launchArguments = ["--preview"]
+    app.launch()
+    app.tabBars.buttons["笔记"].tap()
+    app.buttons["文件夹"].tap()
+    XCTAssertTrue((app.buttons["全部笔记"].value as? String)?.contains("当前选择") == true)
+    app.buttons["未分类"].tap()
+    XCTAssertTrue(app.navigationBars["未分类"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["note.preview_0003"].exists)
+    XCTAssertFalse(app.buttons["note.preview_0001"].exists)
+    captureDesignStep("10-unfiled", app)
+    let search = app.searchFields.firstMatch
+    search.tap()
+    search.typeText("no-match-93827")
+    XCTAssertTrue(app.staticTexts["没有找到笔记"].waitForExistence(timeout: 5))
+    captureDesignStep("11-empty-search", app)
+    app.buttons["清除搜索"].tap()
+    XCTAssertTrue(app.buttons["note.preview_0003"].waitForExistence(timeout: 5))
+    search.tap()
+    search.typeText("Cloudflare")
+    XCTAssertTrue(app.buttons["note.preview_0002"].waitForExistence(timeout: 5))
+    // Search spans local notes, including notes outside the current folder.
+    XCTAssertTrue(app.navigationBars["搜索结果"].exists)
+    app.buttons.matching(NSPredicate(format: "label IN %@", ["Close", "取消"])).firstMatch.tap()
+    app.tabBars.buttons["设置"].tap()
+    app.swipeUp()
+    app.buttons["settings.purge"].tap()
+    XCTAssertTrue(app.buttons["Hermes 主助手"].waitForExistence(timeout: 5))
+    app.buttons["Hermes 主助手"].tap()
+    XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5))
+    XCTAssertTrue(app.alerts.staticTexts["会删除云端及本机聊天记录和附件，无法撤销。"].exists)
+    captureDesignStep("12-cloud-delete-confirmation", app)
+    app.alerts.buttons["取消"].tap()
+    XCTAssertFalse(app.alerts.firstMatch.exists)
+  }
+
+  private func captureDesignStep(_ name: String, _ app: XCUIApplication) {
+    let attachment = XCTAttachment(screenshot: app.screenshot())
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   func testBarkURLReturnsToHermesListFromBackgroundAndColdLaunch() {
     let app = XCUIApplication()
     app.launchArguments = ["--preview"]

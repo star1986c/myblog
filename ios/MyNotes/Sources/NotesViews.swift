@@ -9,51 +9,92 @@ struct NotesListView: View {
   @State private var folders = false
   @State private var creating = false
 
+  private var isSearching: Bool { !notes.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+  private var title: String {
+    if isSearching { return notes.location.isTrash ? "回收站搜索" : "搜索结果" }
+    return notes.location == .unfiled ? "未分类" : notes.locationTitle
+  }
+
   var body: some View {
     List {
       if notes.isWorking { ProgressView("正在同步笔记…") }
-      ForEach(notes.visibleNotes) { note in
-        Button {
-          guard MobileNoteSelection.open(note.id, in: notes), !creating else { return }
-          editor = NoteSelection(id: note.id)
-        } label: {
-          HStack(spacing: 12) {
-            Image(systemName: note.isProtected ? "lock.doc" : "doc.text").foregroundStyle(MobileTheme.accent)
-            VStack(alignment: .leading, spacing: 5) {
-              Text(note.content.title.isEmpty ? "无标题笔记" : note.content.title).font(.headline).foregroundStyle(.primary).lineLimit(2)
-              Text(note.isProtected ? "受保护的笔记" : note.content.content.isEmpty ? "暂无内容" : note.content.content)
-                .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-              Text(notes.folderName(for: note.folderId)).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-          }.padding(.vertical, 4)
-        }.disabled(notes.isWorking || creating).accessibilityIdentifier("note.\(note.id)")
+      Section {
+        ForEach(notes.visibleNotes) { note in
+          Button {
+            guard MobileNoteSelection.open(note.id, in: notes), !creating else { return }
+            editor = NoteSelection(id: note.id)
+          } label: {
+            HStack(alignment: .top, spacing: 12) {
+              Image(systemName: note.isProtected ? "lock.doc" : "doc.text")
+                .font(.title3).foregroundStyle(MobileTheme.accent)
+                .frame(width: 36, height: 40)
+                .background(MobileTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+                .accessibilityHidden(true)
+              VStack(alignment: .leading, spacing: 5) {
+                Text(note.content.title.isEmpty ? "无标题笔记" : note.content.title).font(.headline).foregroundStyle(.primary).lineLimit(2)
+                Text(note.isProtected ? "受保护的笔记" : note.content.content.isEmpty ? "暂无内容" : note.content.content)
+                  .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                Label(note.folderId == nil ? "未分类" : notes.folderName(for: note.folderId), systemImage: "folder")
+                  .font(.caption).foregroundStyle(.secondary)
+              }
+              Spacer(minLength: 0)
+              Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).padding(.top, 6)
+            }.padding(.vertical, 6).contentShape(Rectangle())
+          }.buttonStyle(.plain).disabled(notes.isWorking || creating).accessibilityIdentifier("note.\(note.id)")
+        }
+      } header: {
+        if !notes.visibleNotes.isEmpty {
+          Text(isSearching ? "找到 \(notes.visibleNotes.count) 篇笔记" : "\(notes.visibleNotes.count) 篇笔记")
+        }
+      } footer: {
+        if notes.location.isTrash && !notes.visibleNotes.isEmpty { Text("打开笔记可恢复，或永久删除。") }
+        else if isSearching && !notes.visibleNotes.isEmpty { Text("搜索本机已加载的全部笔记；受保护正文不参与搜索。") }
       }
     }
     .listStyle(.insetGrouped)
-    .overlay { if notes.visibleNotes.isEmpty && !notes.isWorking { ContentUnavailableView.search(text: notes.searchQuery) } }
-    .searchable(text: Binding(get: { notes.searchQuery }, set: notes.updateSearchQuery), prompt: "在本机搜索笔记")
-    .navigationTitle(notes.locationTitle)
+    .overlay { if notes.visibleNotes.isEmpty && !notes.isWorking { emptyState } }
+    .searchable(text: Binding(get: { notes.searchQuery }, set: notes.updateSearchQuery), prompt: notes.location.isTrash ? "搜索回收站" : "搜索本机全部笔记")
+    .navigationTitle(title)
     .refreshable { await notes.refresh() }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) { Button("文件夹", systemImage: "folder") { folders = true } }
       ToolbarItem(placement: .topBarTrailing) {
-        Button("新建笔记", systemImage: "square.and.pencil") {
-          creating = true
-          Task {
-            defer { creating = false }
-            let previous = Set(notes.activeNotes.map(\.id))
-            await notes.createNote()
-            if let id = notes.selectedID, !previous.contains(id) { editor = NoteSelection(id: id) }
-          }
-        }.disabled(notes.location.isTrash || notes.isWorking || creating).accessibilityIdentifier("notes.new")
+        if !notes.location.isTrash {
+          Button("新建笔记", systemImage: "square.and.pencil", action: createNote)
+            .disabled(notes.isWorking || creating).accessibilityIdentifier("notes.new")
+        }
       }
     }
     .sheet(isPresented: $folders) { FolderListView().mobileErrors() }
     .sheet(item: $editor) { selection in
       NavigationStack { NoteEditorView(noteID: selection.id) }
         .interactiveDismissDisabled()
+    }
+  }
+
+  private var emptyState: some View {
+    ContentUnavailableView {
+      Label(isSearching ? "没有找到笔记" : notes.location.isTrash ? "回收站为空" : "这里还没有笔记",
+        systemImage: isSearching ? "magnifyingglass" : notes.location.isTrash ? "trash" : "note.text")
+    } description: {
+      Text(isSearching ? "换个关键词试试；受保护正文不参与搜索。" : notes.location.isTrash ? "删除的笔记会显示在这里，可恢复或永久删除。" : "记下想法，或从其他文件夹移动笔记到这里。")
+    } actions: {
+      if isSearching { Button("清除搜索") { notes.updateSearchQuery("") }.buttonStyle(.bordered) }
+      else if !notes.location.isTrash {
+        Button("新建笔记", systemImage: "square.and.pencil", action: createNote)
+          .buttonStyle(.borderedProminent).disabled(creating)
+      }
+    }
+  }
+
+  private func createNote() {
+    guard !creating, !notes.isWorking, !notes.location.isTrash else { return }
+    creating = true
+    Task {
+      defer { creating = false }
+      let previous = Set(notes.activeNotes.map(\.id))
+      await notes.createNote()
+      if let id = notes.selectedID, !previous.contains(id) { editor = NoteSelection(id: id) }
     }
   }
 }
@@ -69,24 +110,23 @@ private struct FolderListView: View {
     NavigationStack {
       List {
         Section {
-          location("全部笔记", "tray.full", .allNotes)
-          location("未分类", "tray", .unfiled)
-          location("回收站", "trash", .trash)
+          location("全部笔记", "tray.full", .allNotes, count: notes.activeNotes.count)
+          location("未分类", "tray", .unfiled, count: notes.noteCount(in: nil))
+          location("回收站", "trash", .trash, count: notes.trashedNotes.count)
         }
         Section("文件夹") {
           ForEach(notes.folders) { folder in
-            HStack {
+            HStack(spacing: 0) {
               Button { notes.selectLocation(.folder(folder.id)); dismiss() } label: {
-                Label(folder.name, systemImage: "folder").foregroundStyle(.primary)
-              }
-              Spacer()
-              Text("\(notes.noteCount(in: folder.id))").foregroundStyle(.secondary)
+                locationLabel(folder.name, "folder", .folder(folder.id), count: notes.noteCount(in: folder.id))
+              }.buttonStyle(.plain).accessibilityValue(notes.location == .folder(folder.id) ? "当前文件夹" : "")
               Menu {
                 Button("重命名") { editingID = folder.id; name = folder.name; naming = true }
                 Button("上移") { Task { await notes.moveFolder(id: folder.id, offset: -1) } }
                 Button("下移") { Task { await notes.moveFolder(id: folder.id, offset: 1) } }
                 Button("删除文件夹", role: .destructive) { deleting = folder }
-              } label: { Image(systemName: "ellipsis.circle").padding(.leading, 8) }
+              } label: { Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44) }
+                .accessibilityLabel("\(folder.name) 的文件夹操作")
             }
           }
         }
@@ -106,8 +146,20 @@ private struct FolderListView: View {
         } message: { Text("文件夹中的笔记会按服务器规则移出文件夹。") }
     }
   }
-  private func location(_ title: String, _ icon: String, _ value: NoteLocation) -> some View {
-    Button { notes.selectLocation(value); dismiss() } label: { Label(title, systemImage: icon).foregroundStyle(.primary) }
+  private func location(_ title: String, _ icon: String, _ value: NoteLocation, count: Int) -> some View {
+    Button { notes.selectLocation(value); dismiss() } label: { locationLabel(title, icon, value, count: count) }
+      .buttonStyle(.plain).accessibilityLabel(title).accessibilityValue(notes.location == value ? "当前选择，\(count) 篇" : "\(count) 篇")
+  }
+  private func locationLabel(_ title: String, _ icon: String, _ value: NoteLocation, count: Int) -> some View {
+    HStack(spacing: 12) {
+      Image(systemName: icon).foregroundStyle(MobileTheme.accent).frame(width: 24)
+      Text(title).foregroundStyle(.primary)
+      Spacer(minLength: 8)
+      Text("\(count)").font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+      if notes.location == value {
+        Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(MobileTheme.accent)
+      }
+    }.frame(minHeight: 44).contentShape(Rectangle())
   }
 }
 
@@ -181,7 +233,7 @@ private struct NoteEditorView: View {
                 }
               }
               if !notes.location.isTrash {
-                MediaPickerMenu(includeFiles: false, onCapture: add, onFiles: { _ in })
+                MediaPickerMenu(includeFiles: false, onCapture: add, onFiles: { _ in }, title: "添加照片或录音")
                   .disabled(notes.isAttachmentWorking || !canOperate || pendingMedia != nil)
                 if notes.isAttachmentWorking { ProgressView("正在加密并上传…") }
                 if let media = pendingMedia, !notes.isAttachmentWorking {
