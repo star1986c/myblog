@@ -10,9 +10,16 @@ android {
     applicationId "io.qzz.superstar1014.mynotes"
     minSdk 36
     targetSdk 36
-    versionCode 35
-    versionName "2.24"
+    versionCode 36
+    versionName "2.25"
     testInstrumentationRunner "io.qzz.superstar1014.mynotes.CryptoTestRunner"
+  }
+
+  // Keep upgrade signing stable even when ANDROID_USER_HOME is a temporary build directory.
+  signingConfigs {
+    debug {
+      storeFile file(System.getProperty("user.home") + "/.android/debug.keystore")
+    }
   }
 
   buildTypes {

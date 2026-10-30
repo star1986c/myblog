@@ -1,5 +1,6 @@
 package io.qzz.superstar1014.mynotes;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -8,6 +9,7 @@ import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -17,11 +19,13 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.media.MediaPlayer;
+import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.text.Editable;
@@ -80,6 +84,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   static final String EXTRA_DEMO_LONG_HISTORY = "hermes_demo_long_history";
   private static final int REQUEST_ATTACHMENT = 2201;
   private static final int REQUEST_SAVE_ATTACHMENT = 2202;
+  private static final int REQUEST_RECORD_AUDIO = 2203;
+  private static final int MAX_VOICE_DURATION_MS = 5 * 60 * 1000;
   private static final long INTERACTION_RESULT_TIMEOUT_MS = 20_000L;
   private static final long SHARE_FILE_LIFETIME_MS = 60 * 60 * 1_000L;
   private static final long STALE_SHARE_FILE_AGE_MS = 24 * 60 * 60 * 1_000L;
@@ -102,6 +108,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private final Set<String> selectedMessageIds = new HashSet<>();
   private final Set<String> pendingInteractionPromptIds = new HashSet<>();
   private final Map<String, PendingInteractionAction> pendingInteractionActions = new HashMap<>();
+  private final Set<InputStream> voiceUploadInputs = java.util.Collections.synchronizedSet(new HashSet<>());
   private final Set<File> playbackFiles = new HashSet<>();
   private final Set<Dialog> playbackDialogs = new HashSet<>();
   private final OnBackInvokedCallback backCallback = this::handleSystemBack;
@@ -137,6 +144,17 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private Uri pendingAttachmentUri;
   private String pendingAttachmentName = "";
   private String pendingAttachmentContentType = "";
+  private boolean attachmentSending;
+  private boolean pendingVoicePermission;
+  private File pendingVoiceFile;
+  private File recordingFile;
+  private MediaRecorder recorder;
+  private AlertDialog recordingDialog;
+  private TextView recordingTime;
+  private Runnable recordingTicker;
+  private long recordingStartedAt;
+  private MediaPlayer voicePreview;
+  private Button previewVoiceButton;
   private JSONObject pendingSaveDescriptor;
   private String pendingSaveSpaceId;
   private String requestedProfileId;
@@ -181,6 +199,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     requestedProfileId = getIntent().getStringExtra(EXTRA_PROFILE_ID);
     if (!demoMode) HermesChatCleanupService.schedule(this);
     cleanupStalePlaybackFiles();
+    cleanupStaleVoiceCaptures();
     HermesShareFileProvider.cleanupStale(
       this,
       System.currentTimeMillis() - STALE_SHARE_FILE_AGE_MS
@@ -198,6 +217,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   protected void onResume() {
     super.onResume();
     resumed = true;
+    if (pendingVoicePermission) {
+      pendingVoicePermission = false;
+      if (selectedProfile != null) beginVoiceRecording();
+    }
     if (selectedProfile != null && connectionListener != null) {
       connection.setProfileVisible(selectedProfile.id, connectionListener, true);
     }
@@ -208,6 +231,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   @Override
   protected void onPause() {
     resumed = false;
+    if (recorder != null) finishVoiceRecording(false, false);
+    stopVoicePreview();
     if (selectedProfile != null && connectionListener != null) {
       connection.setProfileVisible(selectedProfile.id, connectionListener, false);
     }
@@ -217,6 +242,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   @Override
   protected void onDestroy() {
     destroyed = true;
+    if (recorder != null) finishVoiceRecording(false, false);
+    clearPendingAttachment();
     handler.removeCallbacksAndMessages(null);
     if (messageScroll != null) messageScroll.removeCallbacks(applyPendingBottomScroll);
     if (connectionListener != null) connection.detach(connectionListener);
@@ -225,6 +252,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     cleanupPlaybackFiles();
     getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
     executor.shutdownNow();
+    synchronized (voiceUploadInputs) {
+      for (InputStream input : voiceUploadInputs) {
+        try { input.close(); } catch (Exception ignored) {}
+      }
+      voiceUploadInputs.clear();
+    }
     super.onDestroy();
   }
 
@@ -279,7 +312,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     runOnUiThread(() -> {
       webSocketReady = true;
       restoreConversationStatus();
-      sendButton.setEnabled(true);
+      sendButton.setEnabled(!attachmentSending);
     });
   }
 
@@ -393,10 +426,12 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     back.setOnClickListener(view -> finish());
     top.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
+    boolean compactHeader = getResources().getConfiguration().screenWidthDp < 360
+      || getResources().getConfiguration().fontScale > 1.15f;
     FrameLayout avatar = chatAvatar();
     LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(44), dp(44));
     avatarParams.setMarginStart(dp(4));
-    top.addView(avatar, avatarParams);
+    if (!compactHeader) top.addView(avatar, avatarParams);
 
     LinearLayout heading = vertical();
     chatTitle = text("Hermes", 19, R.color.text_primary);
@@ -422,7 +457,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     top.addView(search, new LinearLayout.LayoutParams(dp(48), dp(48)));
     ImageButton reconnect = iconButton(R.drawable.ic_refresh, "重新连接");
     reconnect.setOnClickListener(view -> connection.reconnect());
-    top.addView(reconnect, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    if (!compactHeader) top.addView(reconnect, new LinearLayout.LayoutParams(dp(48), dp(48)));
     ImageButton settings = iconButton(R.drawable.ic_more, "聊天与缓存设置");
     settings.setOnClickListener(this::showSettings);
     top.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -532,16 +567,25 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       pendingAttachmentLabel,
       new LinearLayout.LayoutParams(0, dp(40), 1)
     );
+    previewVoiceButton = new Button(this);
+    previewVoiceButton.setText("试听");
+    previewVoiceButton.setTextSize(14);
+    previewVoiceButton.setTextColor(getColor(R.color.brand_primary_dark));
+    previewVoiceButton.setAllCaps(false);
+    previewVoiceButton.setBackground(rounded(R.color.background, 12));
+    previewVoiceButton.setVisibility(View.GONE);
+    previewVoiceButton.setOnClickListener(view -> previewVoice());
+    pendingAttachmentBar.addView(previewVoiceButton, new LinearLayout.LayoutParams(dp(64), dp(48)));
     Button removeAttachment = new Button(this);
     removeAttachment.setText("移除");
-    removeAttachment.setTextSize(12);
+    removeAttachment.setTextSize(14);
     removeAttachment.setTextColor(getColor(R.color.danger));
     removeAttachment.setAllCaps(false);
     removeAttachment.setBackground(rounded(R.color.background, 12));
     removeAttachment.setOnClickListener(view -> clearPendingAttachment());
     pendingAttachmentBar.addView(
       removeAttachment,
-      new LinearLayout.LayoutParams(dp(64), dp(40))
+      new LinearLayout.LayoutParams(dp(64), dp(48))
     );
     LinearLayout.LayoutParams pendingParams = new LinearLayout.LayoutParams(-1, -2);
     pendingParams.setMargins(0, 0, 0, dp(8));
@@ -550,17 +594,20 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     LinearLayout compose = horizontal(Gravity.BOTTOM);
     LinearLayout inputTools = horizontal(Gravity.CENTER_VERTICAL);
     inputTools.setBaselineAligned(false);
-    ImageButton attachment = iconButton(R.drawable.ic_attach_file, "添加图片或文件");
-    attachment.setBackground(rounded(R.color.surface_tonal, 16));
+    Button attachment = composerTool(R.drawable.ic_attach_file, "附件");
     attachment.setOnClickListener(view -> chooseAttachment());
-    inputTools.addView(attachment, new LinearLayout.LayoutParams(dp(48), dp(48)));
-    ImageButton commandButton = iconButton(R.drawable.ic_command, "打开 Hermes 快捷指令");
-    commandButton.setBackground(rounded(R.color.surface_tonal, 16));
+    inputTools.addView(attachment, new LinearLayout.LayoutParams(0, dp(48), 1));
+    Button voiceButton = composerTool(R.drawable.ic_mic, "录音");
+    voiceButton.setOnClickListener(view -> startVoiceRecording());
+    LinearLayout.LayoutParams voiceParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+    voiceParams.setMargins(dp(8), 0, dp(8), 0);
+    inputTools.addView(voiceButton, voiceParams);
+    Button commandButton = composerTool(R.drawable.ic_command, "指令");
     commandButton.setOnClickListener(view -> showCommandPalette());
-    LinearLayout.LayoutParams commandButtonParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-    commandButtonParams.setMarginStart(dp(8));
-    inputTools.addView(commandButton, commandButtonParams);
-    compose.addView(inputTools, new LinearLayout.LayoutParams(-2, dp(48)));
+    inputTools.addView(commandButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+    LinearLayout.LayoutParams toolsParams = new LinearLayout.LayoutParams(-1, dp(48));
+    toolsParams.setMargins(0, 0, 0, dp(8));
+    composePanel.addView(inputTools, toolsParams);
     composer = new EditText(this);
     composer.setHint("给 Hermes 发消息");
     composer.setTextColor(getColor(R.color.text_primary));
@@ -580,7 +627,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       @Override public void afterTextChanged(Editable editable) {}
     });
     LinearLayout.LayoutParams composerParams = new LinearLayout.LayoutParams(0, -2, 1);
-    composerParams.setMargins(dp(8), 0, dp(8), 0);
+    composerParams.setMargins(0, 0, dp(8), 0);
     compose.addView(composer, composerParams);
     sendButton = new Button(this);
     sendButton.setText("发送");
@@ -596,6 +643,22 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     column.addView(composePanel, new LinearLayout.LayoutParams(-1, -2));
 
     setContentView(applyInsets(root));
+  }
+
+  private Button composerTool(int icon, String label) {
+    Button button = new Button(this);
+    button.setText(label);
+    button.setTextSize(14);
+    button.setAllCaps(false);
+    button.setTextColor(getColor(R.color.brand_primary_dark));
+    button.setBackground(rounded(R.color.surface_tonal, 16));
+    android.graphics.drawable.Drawable drawable = getDrawable(icon).mutate();
+    drawable.setTint(getColor(R.color.brand_primary_dark));
+    drawable.setBounds(0, 0, dp(20), dp(20));
+    button.setCompoundDrawablesRelative(drawable, null, null, null);
+    button.setCompoundDrawablePadding(dp(6));
+    button.setPadding(dp(14), 0, dp(14), 0);
+    return button;
   }
 
   private boolean isMessageSearchActive() {
@@ -790,6 +853,10 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
 
   private void selectProfile(Models.HermesChatProfile profile) {
     if (destroyed) return;
+    if (recorder != null) finishVoiceRecording(false, false);
+    attachmentSending = false;
+    sendButton.setText("发送");
+    pendingVoicePermission = false;
     profileGeneration += 1;
     handler.removeCallbacksAndMessages(null);
     webSocketReady = false;
@@ -826,6 +893,9 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     if (selectedProfile == null) return;
     try {
       HermesChatCrypto targetCrypto = new HermesChatCrypto(encodedKey);
+      // The previous generation cannot complete its upload after a key replacement.
+      attachmentSending = false;
+      sendButton.setText("发送");
       sendButton.setEnabled(false);
       String spaceId = selectedProfile.id;
       long generation = ++profileGeneration;
@@ -1217,6 +1287,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   }
 
   private void sendCurrentMessage() {
+    if (attachmentSending) return;
     if (pendingAttachmentUri != null) sendAttachment(pendingAttachmentUri);
     else sendText();
   }
@@ -1237,6 +1308,151 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       toast(error.getMessage());
       focusComposer(true);
     }
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    if (requestCode != REQUEST_RECORD_AUDIO) return;
+    if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+      pendingVoicePermission = true;
+      if (resumed) { pendingVoicePermission = false; beginVoiceRecording(); }
+    } else {
+      toast("需要麦克风权限才能录制语音，请授权后重试。");
+    }
+  }
+
+  private void startVoiceRecording() {
+    if (selectedProfile == null) { toast("请先打开 Hermes 会话。"); return; }
+    if (pendingAttachmentUri != null) { toast("请先发送或移除已添加的附件。"); return; }
+    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, REQUEST_RECORD_AUDIO);
+      return;
+    }
+    beginVoiceRecording();
+  }
+
+  private void beginVoiceRecording() {
+    if (destroyed || !resumed || selectedProfile == null || recorder != null
+        || pendingAttachmentUri != null || attachmentSending) return;
+    try {
+      File directory = new File(getCacheDir(), "hermes-voice-captures");
+      if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建录音缓存。");
+      recordingFile = File.createTempFile("voice-", ".m4a", directory);
+      recorder = new MediaRecorder(this);
+      recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+      recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+      recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+      recorder.setAudioEncodingBitRate(64_000);
+      recorder.setAudioSamplingRate(44_100);
+      recorder.setMaxDuration(MAX_VOICE_DURATION_MS);
+      recorder.setMaxFileSize(HermesChatCrypto.MAX_ATTACHMENT_BYTES - 64 * 1024);
+      recorder.setOutputFile(recordingFile);
+      recorder.setOnInfoListener((source, what, extra) -> {
+        if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED
+            || what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED) {
+          handler.post(() -> { if (recorder == source) finishVoiceRecording(true, true); });
+        }
+      });
+      recorder.setOnErrorListener((source, what, extra) -> handler.post(() -> {
+        if (recorder == source) { finishVoiceRecording(false, false); toast("录音失败，请重试。"); }
+      }));
+      recorder.prepare();
+      recorder.start();
+      recordingStartedAt = SystemClock.elapsedRealtime();
+      LinearLayout panel = vertical();
+      panel.setPadding(dp(24), dp(20), dp(24), dp(8));
+      TextView recordingTitle = text("正在录音", 20, R.color.text_primary);
+      recordingTitle.setGravity(Gravity.CENTER);
+      recordingTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+      panel.addView(recordingTitle, new LinearLayout.LayoutParams(-1, -2));
+      recordingTime = text("00:00 / 05:00", 26, R.color.brand_primary_dark);
+      recordingTime.setGravity(Gravity.CENTER);
+      panel.addView(recordingTime, new LinearLayout.LayoutParams(-1, dp(56)));
+      TextView hint = text("最长 5 分钟。完成后可试听，发送前只保存在本机。", 13, R.color.text_secondary);
+      hint.setGravity(Gravity.CENTER);
+      panel.addView(hint, new LinearLayout.LayoutParams(-1, -2));
+      recordingDialog = new AlertDialog.Builder(this).setView(panel)
+        .setNegativeButton("取消", (dialog, which) -> finishVoiceRecording(false, false))
+        .setPositiveButton("完成录音", (dialog, which) -> finishVoiceRecording(true, false))
+        .setCancelable(false).create();
+      recordingDialog.show();
+      recordingTicker = new Runnable() {
+        @Override public void run() {
+          if (recorder == null || recordingTime == null) return;
+          long seconds = Math.min(MAX_VOICE_DURATION_MS, SystemClock.elapsedRealtime() - recordingStartedAt) / 1000;
+          recordingTime.setText(String.format(Locale.ROOT, "%02d:%02d / 05:00", seconds / 60, seconds % 60));
+          handler.postDelayed(this, 250);
+        }
+      };
+      handler.post(recordingTicker);
+    } catch (Exception error) {
+      finishVoiceRecording(false, false);
+      toast("无法开始录音，请检查麦克风权限或重试。");
+    }
+  }
+
+  private void finishVoiceRecording(boolean keep, boolean reachedLimit) {
+    MediaRecorder active = recorder;
+    File file = recordingFile;
+    recorder = null;
+    recordingFile = null;
+    boolean requestedKeep = keep;
+    long duration = SystemClock.elapsedRealtime() - recordingStartedAt;
+    if (recordingTicker != null) handler.removeCallbacks(recordingTicker);
+    recordingTicker = null;
+    recordingTime = null;
+    if (active != null) {
+      try { active.stop(); } catch (RuntimeException error) { keep = false; }
+      active.release();
+    } else keep = false;
+    if (recordingDialog != null) recordingDialog.dismiss();
+    recordingDialog = null;
+    if (!keep || file == null || duration < 500 || file.length() == 0
+        || file.length() > HermesChatCrypto.MAX_ATTACHMENT_BYTES) {
+      if (file != null) file.delete();
+      if (requestedKeep) toast("录音太短或文件无效，请重新录制。");
+      return;
+    }
+    pendingVoiceFile = file;
+    pendingAttachmentUri = Uri.fromFile(file);
+    pendingAttachmentName = "语音消息.m4a";
+    pendingAttachmentContentType = "audio/mp4";
+    pendingAttachmentLabel.setText("语音 · " + String.format(Locale.ROOT, "%02d:%02d",
+      duration / 60000, (duration / 1000) % 60));
+    composer.setHint("语音说明（可选）");
+    pendingAttachmentBar.setVisibility(View.VISIBLE);
+    previewVoiceButton.setVisibility(View.VISIBLE);
+    showConnectionAwareStatus("语音已录制，点击发送后才会上传");
+    if (reachedLimit) toast("录音达到上限，已自动完成。");
+  }
+
+  private void previewVoice() {
+    if (pendingVoiceFile == null) return;
+    if (voicePreview != null) { stopVoicePreview(); return; }
+    try {
+      voicePreview = new MediaPlayer();
+      voicePreview.setDataSource(pendingVoiceFile.getAbsolutePath());
+      voicePreview.setOnCompletionListener(player -> stopVoicePreview());
+      voicePreview.setOnErrorListener((player, what, extra) -> {
+        stopVoicePreview(); toast("无法播放录音，请重新录制。"); return true;
+      });
+      voicePreview.prepare();
+      voicePreview.start();
+      previewVoiceButton.setText("停止");
+    } catch (Exception error) { stopVoicePreview(); toast("无法播放录音，请重新录制。"); }
+  }
+
+  private void stopVoicePreview() {
+    if (voicePreview != null) { voicePreview.release(); voicePreview = null; }
+    if (previewVoiceButton != null) previewVoiceButton.setText("试听");
+  }
+
+  private void cleanupStaleVoiceCaptures() {
+    File[] files = new File(getCacheDir(), "hermes-voice-captures").listFiles();
+    if (files == null) return;
+    long cutoff = System.currentTimeMillis() - STALE_SHARE_FILE_AGE_MS;
+    for (File file : files) if (file.isFile() && file.lastModified() < cutoff) file.delete();
   }
 
   private void chooseAttachment() {
@@ -1260,6 +1476,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       if (size > HermesChatCrypto.MAX_ATTACHMENT_BYTES) {
         throw new IllegalArgumentException("附件超过 10 MiB 限制。");
       }
+      clearPendingAttachment();
       pendingAttachmentUri = uri;
       pendingAttachmentName = HermesChatAttachmentPolicy.safeDisplayName(name, resolved);
       pendingAttachmentContentType = resolved.contentType;
@@ -1271,22 +1488,27 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       showConnectionAwareStatus("附件已添加，点击发送后才会上传");
       focusComposer(true);
     } catch (Exception error) {
-      clearPendingAttachment();
       toast(error.getMessage());
       focusComposer(true);
     }
   }
 
   private void clearPendingAttachment() {
+    stopVoicePreview();
+    if (pendingVoiceFile != null) pendingVoiceFile.delete();
+    pendingVoiceFile = null;
+    if (previewVoiceButton != null) previewVoiceButton.setVisibility(View.GONE);
     pendingAttachmentUri = null;
     pendingAttachmentName = "";
     pendingAttachmentContentType = "";
+    if (composer != null) composer.setHint("给 Hermes 发消息");
     if (pendingAttachmentLabel != null) pendingAttachmentLabel.setText("");
     if (pendingAttachmentBar != null) pendingAttachmentBar.setVisibility(View.GONE);
     focusComposer(true);
   }
 
   private void sendAttachment(Uri uri) {
+    if (attachmentSending) return;
     if (selectedProfile == null || !connection.isReady(selectedProfile.id)) {
       toast("请等待 Hermes 连接成功后再发送附件。");
       return;
@@ -1301,13 +1523,37 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
     }
     long generation = profileGeneration;
     showConnectionAwareStatus("正在加密并上传附件…");
-    String caption = composer.getText().toString().trim();
+    String originalText = composer.getText().toString();
+    String caption = originalText.trim();
     String filename = pendingAttachmentName;
     String contentType = pendingAttachmentContentType;
+    // Keep the recording readable even if the user removes the draft during upload.
+    final InputStream voiceInput;
+    try {
+      voiceInput = pendingVoiceFile != null && uri.equals(pendingAttachmentUri)
+        ? new FileInputStream(pendingVoiceFile) : null;
+    } catch (Exception error) {
+      toast("无法读取录音，请重新录制。");
+      return;
+    }
+    if (voiceInput != null) voiceUploadInputs.add(voiceInput);
+    attachmentSending = true;
+    stopVoicePreview();
+    sendButton.setText("发送中");
     sendButton.setEnabled(false);
+    HermesChatImageCache targetImages = imageCache;
     executor.submit(() -> {
       try {
-        byte[] data = readBounded(uri, HermesChatCrypto.MAX_ATTACHMENT_BYTES);
+        byte[] data;
+        if (voiceInput != null) {
+          try (InputStream input = voiceInput) {
+            data = readBounded(input, HermesChatCrypto.MAX_ATTACHMENT_BYTES);
+          } finally {
+            voiceUploadInputs.remove(voiceInput);
+          }
+        } else {
+          data = readBounded(uri, HermesChatCrypto.MAX_ATTACHMENT_BYTES);
+        }
         HermesChatAttachmentPolicy.ResolvedType resolved = HermesChatAttachmentPolicy.resolve(
           contentType,
           filename
@@ -1322,13 +1568,13 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
           encrypted.descriptor.getString("id"),
           encrypted.ciphertext
         );
-        HermesChatImageCache targetImages = imageCache;
         if (targetImages != null) targetImages.write(encrypted.descriptor, encrypted.ciphertext);
         JSONArray attachments = new JSONArray().put(encrypted.descriptor);
         runOnUiThread(() -> {
-          if (generation != profileGeneration || selectedProfile == null
-              || !spaceId.equals(selectedProfile.id)
-              || !targetConnection.isCurrentProfile(spaceId, targetSessionToken)) return;
+          if (destroyed || generation != profileGeneration || selectedProfile == null
+              || !spaceId.equals(selectedProfile.id)) return;
+          attachmentSending = false;
+          sendButton.setText("发送");
           try {
             HermesChatCrypto.ChatMessage message = targetConnection.sendMessage(
               spaceId,
@@ -1336,7 +1582,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
               attachments,
               targetSessionToken
             );
-            composer.setText("");
+            if (originalText.equals(composer.getText().toString())) composer.setText("");
             if (uri.equals(pendingAttachmentUri)) clearPendingAttachment();
             appendMessage(message);
             sendButton.setEnabled(true);
@@ -1353,6 +1599,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       } catch (Exception error) {
         runOnUiThread(() -> {
           if (destroyed || generation != profileGeneration) return;
+          attachmentSending = false;
+          sendButton.setText("发送");
           toast(error.getMessage());
           showConnectionAwareStatus("附件发送失败");
           sendButton.setEnabled(
@@ -3606,7 +3854,8 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       return;
     }
     PopupMenu menu = new PopupMenu(this, anchor);
-    menu.getMenu().add(0, 1, 0, "查看并复制聊天密钥").setIcon(R.drawable.ic_key);
+    menu.getMenu().add(0, 5, 0, "重新连接").setIcon(R.drawable.ic_refresh);
+    menu.getMenu().add(0, 1, 1, "查看并复制聊天密钥").setIcon(R.drawable.ic_key);
     menu.getMenu().add(0, 2, 1, "替换聊天密钥").setIcon(R.drawable.ic_refresh);
     menu.getMenu().add(
       0,
@@ -3623,6 +3872,7 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
       else if (item.getItemId() == 2) showKeySetup(true);
       else if (item.getItemId() == 3) showCacheRetentionDialog();
       else if (item.getItemId() == 4) confirmClearChatCache();
+      else if (item.getItemId() == 5) connection.reconnect();
       return true;
     });
     menu.show();
@@ -3815,17 +4065,21 @@ public final class HermesChatActivity extends Activity implements HermesChatConn
   private byte[] readBounded(Uri uri, int maximum) throws Exception {
     try (InputStream input = getContentResolver().openInputStream(uri)) {
       if (input == null) throw new IllegalArgumentException("无法读取附件。");
-      ByteArrayOutputStream output = new ByteArrayOutputStream();
-      byte[] buffer = new byte[16 * 1024];
-      int count;
-      while ((count = input.read(buffer)) != -1) {
-        if (output.size() + count > maximum) {
-          throw new IllegalArgumentException("附件超过 10 MiB 限制。");
-        }
-        output.write(buffer, 0, count);
-      }
-      return output.toByteArray();
+      return readBounded(input, maximum);
     }
+  }
+
+  private byte[] readBounded(InputStream input, int maximum) throws Exception {
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    byte[] buffer = new byte[16 * 1024];
+    int count;
+    while ((count = input.read(buffer)) != -1) {
+      if (output.size() + count > maximum) {
+        throw new IllegalArgumentException("附件超过 10 MiB 限制。");
+      }
+      output.write(buffer, 0, count);
+    }
+    return output.toByteArray();
   }
 
   private String displayName(Uri uri) {

@@ -119,6 +119,12 @@ APK 输出到 `android/MyNotes/app/build/outputs/apk/debug/app-debug.apk`。本�
 export ANDROID_HOME=/Users/star/Library/Android/sdk
 ```
 
+Android 2.25（36）新增 Hermes 对话内录音：点击“录音”，完成后可试听、移除或添加文字说明，点击发送后按音频附件加密上传。单段最长 5 分钟；取消或录音中离开页面会丢弃当前录音。发送失败可保留草稿重试。普通屏、窄屏与大字体下的工具栏和语音草稿布局已做模拟器检查，真实麦克风音质及 NAS 端到端处理仍需实机验证。
+
+覆盖升级必须保留原签名。Debug 构建固定读取 `~/.android/debug.keystore`，即使设置临时 `ANDROID_USER_HOME` 也不会另换签名；不要删除原 keystore。2.24 → 2.25 已验证覆盖安装及应用私有文件保留。
+
+语音专项验证：构建并安装应用和测试 APK 后，在测试设备授予麦克风权限，执行 `adb shell am instrument -w -e uiQa voice io.qzz.superstar1014.mynotes.test/io.qzz.superstar1014.mynotes.CryptoTestRunner`，覆盖录音、试听、加密往返、取消/移除、后台资源清理与上传中重连的发送按钮保护。
+
 Android 默认先打开 Hermes 会话页，登录恢复在后台进行，不等待笔记同步。点会话页左上角笔记图标可进入笔记：先显示上次同步的本机加密阅读缓存，联网验证登录、并行加载工作区密钥和保护配置后按游标同步，完成后开放编辑。首次建立同步基线时分页获取正常笔记、回收站和文件夹，之后只下载变化记录；未变化的正常笔记复用已解密内容。旧服务端尚未提供增量接口时自动回退原有全量接口，并保留回收站按需加载。
 
 笔记阅读缓存使用 Android Keystore 和 AES-GCM，加密文件保存在不参与备份的私有目录；不保存工作区密钥、保护密码、解锁后的受保护正文或其附件密钥。离线或临时网络失败时保留只读缓存，确认登录失效、切换账号或退出登录时清理。受保护正文及附件需同步完成后按原有方式访问。

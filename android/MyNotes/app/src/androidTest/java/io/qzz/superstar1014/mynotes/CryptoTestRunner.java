@@ -47,6 +47,12 @@ public final class CryptoTestRunner extends Instrumentation {
   public void onStart() {
     Bundle result = new Bundle();
     try {
+      if ("voice".equals(arguments.getString("uiQa"))) {
+        HermesVoiceTest.run(this);
+        result.putString(REPORT_KEY_STREAMRESULT, "Hermes recording, preview, encryption, removal, cancel and background cleanup: PASS\n");
+        finish(Activity.RESULT_OK, result);
+        return;
+      }
       if ("attachment-share".equals(arguments.getString("uiQa"))) {
         verifyHermesImageShareProvider();
         result.putString(REPORT_KEY_STREAMRESULT, "Hermes attachment share names, content and read-only access: PASS\n");
