@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renew a pinned personal iPhone build; called by the local Codex heartbeat.
+"""Renew a pinned personal iPhone build from the desktop manual entry point.
 
 No passwords, private keys, device erase, app uninstall, or certificate revocation.
 Only a confirmed install advances the recorded on-device expiration.
@@ -88,7 +88,8 @@ class Runner:
         logfile = self.logs / (name + ".log")
         if self.interactive:
             labels = {"device": "检查 iPhone 连接", "installed-app": "核对手机上的应用版本",
-                      "build": "申请新签名并构建（通常需要 1–3 分钟）",
+                      "build": "清理旧构建、申请新签名并重新构建（通常需要 1–3 分钟）",
+                      "verify-cached-signature": "检查待安装包的完整签名，损坏时自动重新构建",
                       "verify-signature": "验证安装包签名", "install": "覆盖安装到 iPhone，保留应用数据"}
             print("→ " + labels.get(name, name), flush=True)
         with logfile.open("wb") as out:
@@ -193,17 +194,28 @@ class Runner:
     def build(self):
         source = self.check_source()
         with self.refreshed_profile_cache():
+            # A refreshed embedded.mobileprovision can otherwise be copied into
+            # yesterday's product without rerunning CodeSign. Clean the dedicated
+            # renewal build before building; never reuse its incremental product.
             self.run(["/usr/bin/xcodebuild", "-project", str(source / "ios/MyNotes/MyNotes.xcodeproj"),
                       "-scheme", "MyNotes", "-configuration", "Release", "-destination",
                       "id=" + self.config["device"], "-destination-timeout", "30",
                       "-derivedDataPath", str(self.root / "build"),
                       "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
                       "DEVELOPMENT_TEAM=" + self.config["team"], "CODE_SIGN_STYLE=Automatic",
-                      "build"], "build", 900)
+                      "clean", "build"], "build", 900)
+
+    def verify_signature(self, name="verify-signature"):
+        self.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=4", str(self.app)],
+                 name, 30)
+        info = plistlib.loads((self.app / "Info.plist").read_bytes())
+        if (info.get("CFBundleIdentifier"), info.get("CFBundleShortVersionString"),
+                info.get("CFBundleVersion")) != (self.config["bundle_id"], self.config["version"],
+                                                self.config["build_number"]):
+            raise RuntimeError("安装包标识或版本与固定版本不一致，未安装。")
 
     def install(self):
-        self.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.app)],
-                 "verify-signature", 30)
+        self.verify_signature()
         installed = self.device_command(["install", "app", str(self.app)], "install", 180)
         if not any(app.get("bundleID") == self.config["bundle_id"]
                    for app in installed.get("installedApplications", [])):
@@ -229,7 +241,11 @@ def renew(runner, state, now, force=False, use_prebuilt=False):
             try:
                 candidate = runner.profile(runner.app / "embedded.mobileprovision")
                 validate_profile(candidate, config, now, state["installed_expiration"])
-            except (RuntimeError, subprocess.SubprocessError, ValueError, KeyError):
+                # A valid profile alone says nothing about the sealed app. A
+                # damaged/interrupted build must rebuild instead of failing on
+                # every subsequent double-click with the same cached product.
+                runner.verify_signature("verify-cached-signature")
+            except (RuntimeError, subprocess.SubprocessError, ValueError, KeyError, OSError):
                 candidate = None
         runner.check_source()
         if candidate is None:

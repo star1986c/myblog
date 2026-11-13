@@ -3,6 +3,10 @@
 import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import plistlib
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -24,6 +28,8 @@ class FakeRunner:
     def __init__(self, app, expiry=NOW + timedelta(days=7)):
         self.app, self.expiry = app, expiry
         self.calls, self.fail_install = [], False
+        self.bad_signature = False
+        self.bad_build_signature = False
     def device_command(self, *args):
         if args[1] == "installed-app":
             return {"apps": [{"bundleIdentifier": "test.notes", "version": "0.1.0", "bundleVersion": "1"}]}
@@ -33,9 +39,15 @@ class FakeRunner:
         self.calls.append("source")
     def build(self):
         self.calls.append("build")
+        self.bad_signature = self.bad_build_signature
     def profile(self, *args):
         return profile(self.expiry)
+    def verify_signature(self, name="verify-signature"):
+        self.calls.append(name)
+        if self.bad_signature:
+            raise RuntimeError("a sealed resource is missing or invalid: embedded.mobileprovision")
     def install(self):
+        self.verify_signature()
         self.calls.append("install")
         if self.fail_install:
             raise RuntimeError("device locked")
@@ -60,7 +72,7 @@ class RenewalTests(unittest.TestCase):
         result = renewal.renew(runner, self.state, NOW)
         self.assertEqual(result["status"], "renewed")
         self.assertEqual(result["transport"], "localNetwork")
-        self.assertEqual(runner.calls, ["device", "source", "build", "install"])
+        self.assertEqual(runner.calls, ["device", "source", "build", "verify-signature", "install"])
         self.assertEqual(renewal.timestamp(self.state["installed_expiration"]), runner.expiry)
 
     def test_failed_install_keeps_original_on_device_expiry(self):
@@ -77,6 +89,37 @@ class RenewalTests(unittest.TestCase):
         renewal.renew(runner, self.state, NOW)
         self.assertNotIn("build", runner.calls)
         self.assertIn("install", runner.calls)
+        self.assertLess(runner.calls.index("verify-cached-signature"), runner.calls.index("install"))
+
+    def test_new_profile_with_broken_app_signature_rebuilds_before_install(self):
+        self.app.mkdir()
+        runner = FakeRunner(self.app)
+        runner.bad_signature = True
+        result = renewal.renew(runner, self.state, NOW, force=True)
+        self.assertEqual(result["status"], "renewed")
+        self.assertEqual(runner.calls, ["device", "verify-cached-signature", "source", "build",
+                                        "verify-signature", "install"])
+
+    def test_invalid_rebuilt_app_is_not_installed_or_counted_as_renewed(self):
+        self.app.mkdir()
+        runner = FakeRunner(self.app)
+        runner.bad_signature = runner.bad_build_signature = True
+        original = dict(self.state)
+        with self.assertRaisesRegex(RuntimeError, "sealed resource"):
+            renewal.renew(runner, self.state, NOW, force=True)
+        self.assertEqual(self.state, original)
+        self.assertNotIn("install", runner.calls)
+        self.assertEqual(runner.calls.count("build"), 1)
+
+    def test_explicit_prebuilt_invalid_signature_stops_without_install_or_rebuild(self):
+        runner = FakeRunner(self.app)
+        runner.bad_signature = True
+        original = dict(self.state)
+        with self.assertRaisesRegex(RuntimeError, "sealed resource"):
+            renewal.renew(runner, self.state, NOW, use_prebuilt=True)
+        self.assertEqual(self.state, original)
+        self.assertNotIn("build", runner.calls)
+        self.assertNotIn("install", runner.calls)
 
     def test_reused_old_profile_cannot_claim_renewal(self):
         runner = FakeRunner(self.app, NOW + timedelta(days=6))
@@ -129,6 +172,61 @@ class RenewalTests(unittest.TestCase):
                 raise RuntimeError("build failed")
         self.assertEqual(mine.read_bytes(), b"my profile")
         self.assertEqual(other.read_bytes(), b"other profile")
+
+
+@unittest.skipUnless(sys.platform == "darwin", "Uses macOS codesign with an ad-hoc test signature")
+class SealedAppTests(unittest.TestCase):
+    def test_real_modified_profile_is_detected_and_recovers_on_next_renewal(self):
+        # Reproduce the actual failure with a real seal; no Apple account,
+        # provisioning request, personal certificate, or phone is involved.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = renewal.Runner(root, CONFIG)
+            runner.app.mkdir(parents=True)
+            shutil.copyfile("/usr/bin/true", runner.app / "MyNotes")
+            (runner.app / "MyNotes").chmod(0o755)
+            info = {"CFBundleIdentifier": CONFIG["bundle_id"], "CFBundleExecutable": "MyNotes",
+                    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": CONFIG["version"],
+                    "CFBundleVersion": CONFIG["build_number"]}
+            (runner.app / "Info.plist").write_bytes(plistlib.dumps(info))
+            embedded = runner.app / "embedded.mobileprovision"
+            embedded.write_bytes(b"old profile")
+
+            def sign():
+                subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(runner.app)],
+                               check=True, capture_output=True)
+
+            sign()
+            runner.verify_signature()
+            embedded.write_bytes(b"new profile")
+            with self.assertRaises(RuntimeError):
+                runner.verify_signature()
+            self.assertIn("embedded.mobileprovision", (root / "logs/verify-signature.log").read_text())
+
+            fake = FakeRunner(runner.app)
+            runner.profile = fake.profile
+            runner.device_command = lambda parts, name, *args: (
+                {"installedApplications": [{"bundleID": CONFIG["bundle_id"]}]}
+                if name == "install" else fake.device_command(parts, name))
+            runner.check_source = fake.check_source
+
+            def rebuild():
+                fake.calls.append("build")
+                sign()
+
+            runner.build = rebuild
+            state = {"installed_expiration": (NOW + timedelta(hours=24)).isoformat()}
+            result = renewal.renew(runner, state, NOW, force=True)
+            self.assertEqual(result["status"], "renewed")
+            self.assertEqual(fake.calls.count("build"), 1)
+            runner.verify_signature()
+
+            # A sealed package with another version is also ineligible for reuse.
+            info["CFBundleVersion"] = "other"
+            (runner.app / "Info.plist").write_bytes(plistlib.dumps(info))
+            sign()
+            with self.assertRaisesRegex(RuntimeError, "版本"):
+                runner.verify_signature()
 
 
 if __name__ == "__main__":
