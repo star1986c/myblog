@@ -58,7 +58,7 @@ MAX_PENDING_INTERACTIONS = 128
 INTERACTION_TIMEOUT_SECONDS = 300
 PICKER_TIMEOUT_SECONDS = 15 * 60
 APPLICATION_ACK_TIMEOUT_SECONDS = 15.0
-HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.11"
+HTTP_USER_AGENT = "Hermes-Cloudflare-Chat/0.3.12"
 RECONNECT_STABLE_SECONDS = 60.0
 RECONNECT_MAX_SECONDS = 30.0
 MAX_STREAM_EDIT_CACHE = 128
@@ -860,6 +860,9 @@ class CloudflareChatAdapter(BasePlatformAdapter):
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render Hermes' shared approval text and permitted actions as encrypted buttons."""
+        request_id = getattr(prompt, "request_id", None)
+        if not isinstance(request_id, str) or not request_id.strip():
+            return SendResult(success=False, error="Approval request ID is required")
         return await self._send_interaction_prompt(
             chat_id=prompt.chat_id,
             kind="approval",
@@ -873,6 +876,7 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             option_values={choice: choice for _, choice, _ in prompt.actions},
             timeout_seconds=_approval_timeout_seconds(),
             session_key=prompt.session_key,
+            request_id=request_id,
         )
 
     async def send_slash_confirm(
@@ -1225,7 +1229,13 @@ class CloudflareChatAdapter(BasePlatformAdapter):
             from tools.approval import resolve_gateway_approval
 
             choice = str(selected)
-            count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
+            # Never fall back to FIFO: the original request may have timed out or
+            # been answered elsewhere while this card was still visible.
+            request_id = state.get("request_id")
+            count = 0
+            if isinstance(request_id, str) and request_id.strip():
+                count = resolve_gateway_approval(
+                    str(state.get("session_key") or ""), choice, request_id=request_id)
             labels = {
                 "once": "已批准：仅本次",
                 "session": "已批准：本会话",

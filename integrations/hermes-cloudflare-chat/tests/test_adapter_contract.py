@@ -44,6 +44,7 @@ def install_hermes_stubs():
         description: str
         smart_denied: bool
         metadata: dict | None = None
+        request_id: str | None = None
 
     class BasePlatformAdapter:
         def __init__(self, config, platform):
@@ -64,6 +65,7 @@ def install_hermes_stubs():
         async def send_exec_approval(
             self, chat_id, command, session_key, description="dangerous command",
             metadata=None, allow_permanent=True, allow_session=True, smart_denied=False,
+            request_id=None,
         ):
             choices = ["once"]
             if not smart_denied and allow_session:
@@ -74,7 +76,7 @@ def install_hermes_stubs():
             return await self._send_exec_approval_prompt(ExecApprovalPrompt(
                 chat_id=chat_id, session_key=session_key, text=f"{command}\n{description}",
                 actions=[(choice, choice, "") for choice in choices], command=command,
-                description=description, smart_denied=smart_denied, metadata=metadata))
+                description=description, smart_denied=smart_denied, metadata=metadata, request_id=request_id))
 
         async def _send_exec_approval_prompt(self, prompt):
             return SendResult(success=False, error="Not supported")
@@ -468,7 +470,7 @@ class AdapterContractTests(unittest.TestCase):
 
         headers = instance._http_headers()
 
-        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.11")
+        self.assertEqual(headers["User-Agent"], "Hermes-Cloudflare-Chat/0.3.12")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Python-urllib", headers["User-Agent"])
 
@@ -991,8 +993,8 @@ class AdapterContractTests(unittest.TestCase):
         tools_module = types.ModuleType("tools")
         approval_module = types.ModuleType("tools.approval")
 
-        def resolve_gateway_approval(session_key, choice):
-            resolved.append((session_key, choice))
+        def resolve_gateway_approval(session_key, choice, *, request_id):
+            resolved.append((session_key, choice, request_id))
             return 1
 
         approval_module.resolve_gateway_approval = resolve_gateway_approval
@@ -1017,6 +1019,7 @@ class AdapterContractTests(unittest.TestCase):
                     chat_id="primary",
                     command="touch /tmp/approved",
                     session_key="approval-session",
+                    request_id="approval-request-A",
                 )
                 self.assertTrue(result.success)
                 prompt_id = next(iter(instance._pending_interactions))
@@ -1042,7 +1045,7 @@ class AdapterContractTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-        self.assertEqual(resolved, [("approval-session", "once")])
+        self.assertEqual(resolved, [("approval-session", "once", "approval-request-A")])
         self.assertEqual(instance.resumed_typing_chats, ["primary"])
         self.assertEqual(instance._pending_interactions, {})
         final_payload = instance._cipher.decrypt_message(
@@ -1058,12 +1061,29 @@ class AdapterContractTests(unittest.TestCase):
         self.assertTrue(self.adapter.CloudflareChatAdapter.supports_exec_approval_buttons())
         self.assertNotIn("send_exec_approval", self.adapter.CloudflareChatAdapter.__dict__)
 
+    def test_approval_without_valid_request_id_does_not_send_a_card(self):
+        instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
+
+        async def scenario():
+            send_prompt = AsyncMock()
+            with patch.object(instance, "_send_interaction_prompt", send_prompt):
+                for request_id in (None, "", "  ", 123, []):
+                    with self.subTest(request_id=request_id):
+                        result = await instance.send_exec_approval(
+                            chat_id="primary", command="synthetic", session_key="approval-session",
+                            request_id=request_id)
+                        self.assertFalse(result.success)
+                        self.assertIn("request ID", result.error)
+            send_prompt.assert_not_awaited()
+
+        asyncio.run(scenario())
+
     def test_approval_renderer_preserves_upstream_text_and_action_subset(self):
         instance = self.adapter.CloudflareChatAdapter(types.SimpleNamespace(extra={}))
         prompt = self.adapter.ExecApprovalPrompt(
             chat_id="primary", session_key="restricted-session", text="Upstream safety prompt",
             actions=[("Reject this request", "deny", "danger")], command="unused raw command",
-            description="unused raw reason", smart_denied=True)
+            description="unused raw reason", smart_denied=True, request_id="restricted-request")
 
         async def scenario():
             send_prompt = AsyncMock(return_value=self.adapter.SendResult(success=True, message_id="73"))
@@ -1075,6 +1095,7 @@ class AdapterContractTests(unittest.TestCase):
             self.assertEqual(payload["options"], [self.adapter._interaction_option(
                 "deny", "Reject this request", style="danger", wide=True)])
             self.assertEqual(payload["session_key"], prompt.session_key)
+            self.assertEqual(payload["request_id"], prompt.request_id)
 
         asyncio.run(scenario())
 
@@ -1094,6 +1115,7 @@ class AdapterContractTests(unittest.TestCase):
                                 await instance.send_exec_approval(
                                     chat_id="primary", command="synthetic approval request",
                                     session_key="approval-session", smart_denied=smart_denied,
+                                    request_id="restricted-request",
                                     allow_session=allow_session, allow_permanent=allow_permanent)
                             expected = ["once"]
                             if not smart_denied and allow_session:
@@ -1145,6 +1167,7 @@ class AdapterContractTests(unittest.TestCase):
                     chat_id="primary",
                     command="touch /tmp/approved",
                     session_key="approval-session",
+                    request_id="timeout-request",
                 )
             self.assertTrue(result.success)
             self.assertEqual(send_prompt.await_args.kwargs["timeout_seconds"], 720)

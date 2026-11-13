@@ -1,5 +1,25 @@
 # Cloudflare Chat Hermes plugin
 
+## 0.3.12: bind approval cards to their requests
+
+Requires Hermes `>=0.22.6`. Each approval card keeps the upstream request ID in
+server-side interaction state and resolves only that request. An old card cannot
+approve a later queued request after its original request was answered elsewhere
+or timed out. Out-of-order and concurrent clicks remain tied to their own requests;
+repeated clicks do not consume another approval. Missing request IDs fail closed,
+without falling back to FIFO approval.
+
+Verified against Hermes v0.22.6 and v0.23.0 with real approval queues, encrypted
+loopback actions, two profiles and the existing runtime integration suite.
+No Worker, Android, iPhone or macOS client update is required for this fix. The
+wire protocol, dependencies and Bark notification classification are unchanged.
+
+Replace the complete plugin directory in every enabled NAS profile after current
+tasks and approvals finish, retain the profile's outer `.env` and configuration,
+and restart the shared gateway once. Keep `plugins.isolation: in_process`.
+Existing cards do not survive a gateway restart; create new requests for acceptance.
+NAS networking, real models and phone delivery still require live verification.
+
 ## 0.3.11: Bark notification timing
 
 Requires the matching relay update for notification hints. Hermes editable previews (`expect_edits`) and interim progress (`_interim_send`) are silent; a durable final edit notifies once using the original message ID. Final standalone replies and files retain normal notifications. Approval/confirmation/choice cards are marked for immediate notification and never wait for the reply they block. Only the notification category is visible to the relay; text, files and authorization details remain encrypted.

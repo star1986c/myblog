@@ -154,11 +154,11 @@ hermes profile list
 ```
 
 把仓库 `integrations/hermes-cloudflare-chat/cloudflare_chat/` 的完整内容复制到每个
-需要聊天能力的 profile。0.3.10 面向 Hermes `v0.22.4`，清单声明最低
+需要聊天能力的 profile。0.3.12 要求 Hermes `>=0.22.6`，已验证 v0.22.6 和 v0.23.0；清单声明最低
 Hermes 版本及 `python_dependencies`，由 Hermes 的原生插件安装/更新流程管理依赖。
 手工复制目录不会自动安装依赖；如需手工补装，用运行 `hermes` 的同一个 Python/
 虚拟环境安装本版 `requirements.txt`。正确升级的目标 Hermes 环境已有满足要求的
-cryptography 50.0.1 和 websockets 15.0.1，无需强制重装，也不要再安装旧版插件的
+cryptography 50.0.2 和 websockets 15.0.1，无需强制重装，也不要再安装旧版插件的
 requirements。不要在插件目录保存 secret。
 
 每个 profile 都有独立的插件启用配置。复制完成后为 `personal` 单独启用，并授予
@@ -221,6 +221,17 @@ hermes -p personal gateway restart
 hermes status
 hermes -p personal status
 ```
+
+### 插件 0.3.12：审批请求 ID 关联
+
+审批卡片只处理它绑定的上游 request_id。原请求在其他入口处理或超时后，旧卡片不能
+批准下一条请求；并发请求可乱序处理，重复点击不多消费审批。缺少 ID 时拒绝按钮
+审批，不回退为 FIFO。最低版本提高到 Hermes v0.22.6，你可以在该版本先更新插件。
+
+等待当前任务和审批结束，替换每个启用 profile 的完整插件目录，保留外层 `.env`
+和配置，保持 `plugins.isolation: in_process`，重启共享 Gateway 一次。
+本修复无需同步更新 Worker 或 My Notes 客户端。交付与验证见
+[0.3.12 发布说明](hermes-cloudflare-chat-0.3.12-release.md)。
 
 ### 插件 0.3.10：Hermes v0.22.4 连接锁适配
 
